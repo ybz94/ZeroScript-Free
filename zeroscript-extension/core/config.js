@@ -155,10 +155,14 @@ const ZS = (() => {
   // display name (e.g. "DeepSeek").
   //
   // `opts` may be a string (just the siteName) or an object { siteName,
-  // customPrompt, providerNotes, servers, toolNames }. `customPrompt` is the
+  // customPrompt, providerNotes, servers, toolNames, userLang }. `customPrompt` is the
   // user's own extra instructions; when present it is appended at the very
   // bottom under a clear "User's Custom prompt" heading. It NEVER edits the
   // prompt above - it only adds a layer below it.
+  //
+  // `userLang` is the user's browser language (e.g. "zh-CN"); it selects the
+  // reply-language rule (Chinese browser → explicit 简体中文 directive,
+  // anything else → mirror the user's language).
   //
   // `servers` is the live per-server health list from the bridge
   // ([{id, alive, tools}]) and `toolNames` the advertised tool names. From
@@ -176,7 +180,7 @@ const ZS = (() => {
   // every other provider is untouched by definition.
   function buildSystemPrompt(opts = {}) {
     if (typeof opts === "string") opts = { siteName: opts };
-    const { siteName = "this AI site", customPrompt = "", providerNotes = "", servers = null, toolNames = null } = opts;
+    const { siteName = "this AI site", customPrompt = "", providerNotes = "", servers = null, toolNames = null, userLang = "" } = opts;
     const srv = Array.isArray(servers) ? servers : null;
     const hasRoblox = srv === null || srv.some((x) => x.id === "roblox");
     // The ###LUA### block belongs to execute_luau (a Roblox tool) - only offer
@@ -225,7 +229,17 @@ return "result"
 ${BT}
 
 ` : "";
+    // Reply-language rule. The prompt and the tool results are English, so
+    // without an explicit instruction the model drifts into English even when
+    // the user writes Chinese/Japanese/etc. Chinese browsers get an explicit
+    // 简体中文 directive; every other language gets "mirror the user".
+    // Commands themselves must NEVER be translated either way.
+    const langRule = (String(userLang || "").toLowerCase().startsWith("zh")
+      ? "- LANGUAGE: the user's browser is in Chinese - reply in 简体中文 (Simplified Chinese): every explanation, note around a command, and final answer must be in Chinese. If the user writes in another language, follow THEIR language instead. "
+      : "- LANGUAGE: reply to the user in the SAME language they write to you in (they write Chinese → answer in Chinese, Japanese → Japanese, English → English). "
+    ) + "NEVER translate the commands themselves: ZeroScript commands, JSON, tool names, parameter keys, code, markers (###LUA### etc.) and file paths stay exactly as the command list specifies - only your own prose follows the user's language.";
     const rules = [
+      langRule,
       "- ONE command block per reply, inside a fenced code block. If you need several, do them one at a time and wait for each result. (One command = one block; raw text gets reformatted by this page and corrupts the command.)",
       "- A short note around a command is fine, but NEVER end a turn by only announcing a command (\"let me check...\", \"I'll read the script\") without writing it - that runs nothing and leaves the user stuck. Either write the command now, or give your final answer.",
       "- Final answers: plain text only, no Markdown or code fences. Do ONLY what was asked - fewest commands, no unrequested double-checks. When the task is done or the user is satisfied (\"thanks\", \"perfect\"...), reply ONE short sentence and STOP.",

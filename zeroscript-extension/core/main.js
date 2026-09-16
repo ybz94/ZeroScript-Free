@@ -1675,12 +1675,17 @@
   // server topology. One definition, used both by the bootstrap and by the
   // periodic re-injection, so the two can never drift apart.
   function systemPrompt() {
+    let lang = "";
+    try {
+      lang = (navigator.languages && navigator.languages[0]) || navigator.language || "";
+    } catch {}
     return ZS.buildSystemPrompt({
       siteName: P.displayName,
       customPrompt: ui.getCustomPrompt(),
       providerNotes: P.promptExtra || "",
       servers: A.bridge && A.bridge.servers || null,
       toolNames: [...(A.toolNames || [])],
+      userLang: lang,
     });
   }
 
