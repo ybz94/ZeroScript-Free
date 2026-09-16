@@ -48,6 +48,33 @@ Roblox Studio is the **default** MCP server, not a requirement. The Bridge speak
 
 When no Roblox server is configured, the Roblox-only bits (the place-loaded status, project memory) are simply skipped, and the status dot goes green when any connected server has tools.
 
+### Use your servers from an external MCP client (e.g. Arena Agent Mode)
+
+The Bridge also exposes the exact same tools over **MCP over HTTP** (Streamable HTTP transport), so any external MCP client can drive the same local servers - Roblox Studio, your added servers, all of them - without the browser extension. This is how to connect **Arena.ai Agent Mode** (or Claude Desktop, Cursor, or any other HTTP MCP client) to Roblox Studio:
+
+1. **Run the Bridge** (step 3 above). The console window prints a line like:
+   ```
+   HTTP MCP endpoint (external clients): http://127.0.0.1:17614/mcp/9f2ab3c1...
+   ```
+   The long tail is a random access token - **the URL itself is the credential**. Keep it secret, treat it like a password. (The port is fixed to `17614` by default and binds to `127.0.0.1` only; set `ZS_MCP_HTTP_PORT=0` to turn the endpoint off.)
+2. **Open a public tunnel to it** (the client must be able to reach your PC). In a terminal:
+   ```
+   cloudflared tunnel --url http://127.0.0.1:17614
+   ```
+   Cloudflared prints a public `https://....trycloudflare.com` URL. (Any tunnel that forwards to that local port works.)
+3. **Add the endpoint in your client.** For Arena Agent Mode: paste
+   ```
+   https://<your-tunnel-host>.trycloudflare.com/mcp/9f2ab3c1...
+   ```
+   (the tunnel host + the `/mcp/<token>` path printed in step 1) into the MCP server settings and connect.
+4. The client now sees the same tool set the extension uses - `get_studio_place_details`, `execute_code`, `add_server`, ... - and can drive Studio directly.
+
+Notes:
+
+- The endpoint is **read/write**: an external client can execute Luau and edit scripts, exactly like the extension. Only connect clients you trust.
+- The token changes every time the Bridge restarts, so a stale URL stops working (404) after a restart - that is intentional.
+- Kill the tunnel when you are done; nobody else can reach your Studio while the tunnel is up.
+
 ## Setup
 
 > 📺 **Lost? Watch the [setup tutorial on YouTube](https://youtu.be/kPKiZLZ9_Ps) it covers every step below.**

@@ -26,6 +26,7 @@
 #     Nothing ever hangs the agentic loop silently.
 # ──────────────────────────────────────────────────────────────────────────
 import asyncio
+import http.server
 import json
 import os
 import queue
@@ -33,6 +34,7 @@ import subprocess
 import sys
 import threading
 import time
+import uuid
 
 try:
     # Sibling script (same folder as bridge.py, which Python puts on sys.path
@@ -1820,6 +1822,193 @@ async def _supervised(name, coro_factory):
             await asyncio.sleep(5)
 
 
+# ══════════════════════════════════════════════════════════════════════════
+#  HTTP (Streamable HTTP) MCP FACE - for EXTERNAL MCP clients
+# ══════════════════════════════════════════════════════════════════════════
+#  The browser extension talks to this bridge over WebSocket. But other MCP
+#  clients - arena.ai's Agent Mode, Claude Desktop, Cursor, any MCP-capable
+#  app - speak MCP over HTTP (Streamable HTTP transport: JSON-RPC in a POST
+#  body, Mcp-Session-Id header, JSON back). This face exposes the SAME server
+#  catalogue and tool routing to them, so one local bridge serves every
+#  client:
+#
+#    Bridge (this) ──cloudflared tunnel──> https://xxx.trycloudflare.com/mcp/<token>
+#        └── paste that URL into arena.ai Agent Mode / any MCP client
+#
+#  Security model:
+#   - Binds 127.0.0.1 ONLY. Reaching it from another machine requires a
+#     tunnel the user starts on purpose - that act is what makes the URL
+#     "the" credential, so the path carries a per-launch random token.
+#   - The full URL is printed at boot AND written to mcp_http_url.txt next
+#     to bridge.py (0600) so the tunnel/client side can read it without
+#     mining console scrollback.
+#   - Every tools/call goes through the exact same per-server lock, timeout
+#     and error shaping as the WebSocket path, so the agentic-loop
+#     invariants (always a reply, never a hang) hold unchanged.
+MCP_HTTP_PORT = int(os.environ.get("ZS_MCP_HTTP_PORT", "17614"))
+MCP_HTTP_TOKEN = None          # set at boot; None = face disabled
+MCP_HTTP_URL_FILE = os.path.join(HERE, "mcp_http_url.txt")
+_http_sessions = set()
+MCP_PROTOCOL_VERSION = "2025-06-18"
+
+
+def _mcp_dispatch(method, params):
+    """One JSON-RPC method for the HTTP face. Returns (http_status, result,
+    is_new_session). Tool-level failures come back as MCP isError results
+    (a tool failing is NOT a protocol error); unknown methods raise."""
+    if method == "initialize":
+        # Echo the client's protocol version when it looks like one (versions
+        # only ever gain capabilities), else answer with ours.
+        client_v = str((params or {}).get("protocolVersion") or "")
+        version = client_v if (client_v and client_v[0].isdigit()) else MCP_PROTOCOL_VERSION
+        return 200, {
+            "protocolVersion": version,
+            "capabilities": {"tools": {"listChanged": False}},
+            "serverInfo": {"name": "zeroscript-bridge", "version": BRIDGE_VERSION},
+        }, True
+    if method == "tools/list":
+        # Same catalogue the WebSocket side advertises (per-server tools,
+        # collision-prefixed names). inputSchema is already MCP-shaped.
+        return 200, {"tools": mgr.list_tools()}, False
+    if method == "tools/call":
+        name = str((params or {}).get("name") or "")
+        args = (params or {}).get("arguments") or {}
+        try:
+            res = mgr.call(name, args, timeout=120)
+        except Exception as e:
+            return 200, {"content": [{"type": "text", "text": str(e)}],
+                         "isError": True}, False
+        content = [{"type": "text", "text": res.get("text") or "(empty result)"}]
+        content += [{"type": "image", "data": img["data"], "mimeType": img["mimeType"]}
+                    for img in (res.get("images") or [])]
+        return 200, {"content": content, "isError": False}, False
+    if method == "ping":
+        return 200, {}, False
+    raise KeyError(method)
+
+
+class _McpHttpHandler(http.server.BaseHTTPRequestHandler):
+    server_version = "ZeroScriptBridge/1"
+    protocol_version = "HTTP/1.1"
+
+    def log_message(self, *args):
+        pass  # per-request logging would drown the boot banner; failures are
+        # still visible in the bridge's own tool-call trace (run_tool_task).
+
+    def _authed(self):
+        parts = self.path.split("?", 1)[0].split("/")
+        # expect exactly /mcp/<token>
+        return (MCP_HTTP_TOKEN is not None and len(parts) == 3
+                and parts[0] == "" and parts[1] == "mcp"
+                and parts[2] == MCP_HTTP_TOKEN)
+
+    def _send_json(self, status, payload, extra_headers=None):
+        body = json.dumps(payload).encode("utf-8")
+        self.send_response(status)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        for k, v in (extra_headers or {}).items():
+            self.send_header(k, v)
+        self.end_headers()
+        self.wfile.write(body)
+
+    def do_POST(self):
+        if not self._authed():
+            # 404 (not 403) so a scanner doesn't learn the endpoint exists.
+            self._send_json(404, {"error": "not found"})
+            return
+        try:
+            length = int(self.headers.get("Content-Length") or 0)
+            msg = json.loads(self.rfile.read(length) or b"null")
+        except Exception:
+            self._send_json(400, {"jsonrpc": "2.0", "id": None,
+                                  "error": {"code": -32700, "message": "parse error"}})
+            return
+        if not isinstance(msg, dict):
+            self._send_json(400, {"jsonrpc": "2.0", "id": None,
+                                  "error": {"code": -32600, "message": "invalid request"}})
+            return
+        rid = msg.get("id")
+        method = msg.get("method")
+        # Notifications (no id) need no body.
+        if rid is None:
+            self.send_response(202)
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+            return
+        sid = self.headers.get("Mcp-Session-Id")
+        try:
+            status, result, new_session = _mcp_dispatch(method, msg.get("params"))
+        except KeyError:
+            self._send_json(200, {"jsonrpc": "2.0", "id": rid,
+                                  "error": {"code": -32601,
+                                            "message": "method not found: %s" % method}})
+            return
+        headers = None
+        if new_session:
+            new_sid = uuid.uuid4().hex
+            _http_sessions.add(new_sid)
+            headers = {"Mcp-Session-Id": new_sid}
+        elif sid:
+            # Spec clients echo the id back. Validate it so a stale/replayed
+            # session from a previous bridge launch is rejected (the client
+            # then re-initializes, per the spec's recovery flow). Lenient when
+            # the header is ABSENT - naive clients (hand-rolled curl) often
+            # omit it, and this is a local utility, not a multi-tenant API.
+            if sid not in _http_sessions:
+                self._send_json(400, {"jsonrpc": "2.0", "id": rid,
+                                      "error": {"code": -32600,
+                                                "message": "invalid or expired Mcp-Session-Id - send initialize again"}})
+                return
+        self._send_json(status, {"jsonrpc": "2.0", "id": rid, "result": result}, headers)
+
+    def do_GET(self):
+        # Streamable HTTP clients may open the SSE stream for server pushes.
+        # The bridge never pushes (clients poll via tools), so 405 with the
+        # allowed methods is a spec-permitted answer.
+        if self._authed():
+            self.send_response(405)
+            self.send_header("Allow", "POST, DELETE")
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+        else:
+            self._send_json(404, {"error": "not found"})
+
+    def do_DELETE(self):
+        if self._authed():
+            sid = self.headers.get("Mcp-Session-Id")
+            if sid:
+                _http_sessions.discard(sid)
+        self.send_response(200)
+        self.send_header("Content-Length", "0")
+        self.end_headers()
+
+
+def start_mcp_http():
+    """Start the HTTP MCP face. Returns the full URL, or None when disabled
+    (ZS_MCP_HTTP_PORT=0) or the port is already taken (the WebSocket face is
+    primary - the bridge must still boot without this)."""
+    global MCP_HTTP_TOKEN
+    if MCP_HTTP_PORT <= 0:
+        return None
+    try:
+        server = http.server.ThreadingHTTPServer(("127.0.0.1", MCP_HTTP_PORT), _McpHttpHandler)
+    except OSError as e:
+        log(f"HTTP MCP face not started: port {MCP_HTTP_PORT} unavailable ({e}) - "
+            "set ZS_MCP_HTTP_PORT to another value (0 disables it).", "yl")
+        return None
+    MCP_HTTP_TOKEN = uuid.uuid4().hex
+    threading.Thread(target=server.serve_forever, daemon=True, name="mcp-http").start()
+    url = f"http://127.0.0.1:{MCP_HTTP_PORT}/mcp/{MCP_HTTP_TOKEN}"
+    try:
+        fd = os.open(MCP_HTTP_URL_FILE, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(url + "\n")
+    except Exception:
+        pass  # the console line below is the source of truth
+    return url
+
+
 async def main():
     # Load the config FIRST: whether a 'roblox' server is configured decides
     # whether any of the Studio-specific machinery below runs at all.
@@ -2068,6 +2257,16 @@ async def main():
             log(f"    Or set a different port before start.bat:  set ZS_BRIDGE_PORT=17614", "yl")
             return
         raise
+
+    # External-MCP-client face (arena Agent Mode, Claude Desktop, Cursor...):
+    # an HTTP Streamable-HTTP endpoint mirroring the same tools, token-gated
+    # and localhost-only. Best-effort - a dead port never blocks the WS face.
+    mcp_http_url = await asyncio.to_thread(start_mcp_http)
+    if mcp_http_url:
+        log(f"HTTP MCP endpoint (external clients): {mcp_http_url}", "cy")
+        log(f"    for another machine: run a tunnel, e.g. `cloudflared tunnel --url "
+            f"http://127.0.0.1:{MCP_HTTP_PORT}` and paste the public URL + path. "
+            "Treat the URL as a secret.", "dim")
 
     async with server_ctx:
         log(f"listening on ws://{HOST}:{PORT}  - load the extension and open a supported AI chat", "cy")
