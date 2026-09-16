@@ -1055,11 +1055,21 @@ class MCPClient:
                 # fails with a "no Studio instance connected" style message
                 # even though Studio is genuinely open - confirmed live via
                 # start_stop_play. One short retry rides through it instead of
-                # surfacing a spurious error to the user.
+                # surfacing a spurious error to the user. Checked BEFORE the
+                # isError raise below so a transient drop reported as an
+                # isError result still gets its one retry.
                 if attempt == 1 and _looks_like_transient_studio_drop(text):
                     log(f"[{self.id}] {name}: transient Studio drop, retrying once...", "yl")
                     time.sleep(1.5)
                     continue
+                # MCP tool-level failure: the server answered, but the tool
+                # itself reported an error (isError). Standard reference servers
+                # (filesystem, git, ...) use this for bad paths, missing files,
+                # etc. Surface it as a real error - otherwise the extension
+                # shows a green chip and the model reads "Output of 'x':
+                # error: ..." as if it were tool output.
+                if msg.get("result", {}).get("isError"):
+                    raise RuntimeError(text or "the tool reported an error")
                 return {"text": text, "images": images}
 
 
