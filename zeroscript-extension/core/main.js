@@ -914,9 +914,9 @@
     const bareName = bareToolName(name);
     if (isBlockedTool(name)) {
       if (VISION_TOOLS.has(bareName)) {
-        return `ERROR: '${bareName}' is unavailable here - this assistant cannot see images. Do NOT call it again. Inspect the place programmatically instead (e.g. inspect_instance, get_studio_state, search_game_tree, script_read).`;
+        return `ERROR: '${bareName}' is unavailable here - this assistant cannot see images. Do NOT call it again. Inspect the target programmatically instead (see the read/search/inspect commands in list_commands).`;
       }
-      return `ERROR: the '${bareName}' command timed out and is unavailable in this environment. Do NOT call it again - complete the task yourself using the other commands (execute_luau, multi_edit, etc.).`;
+      return `ERROR: the '${bareName}' command timed out and is unavailable in this environment. Do NOT call it again - complete the task yourself using the other commands (see list_commands).`;
     }
     // Virtual command: list the MCP server(s) ZeroScript is currently connected
     // to, with each one's REAL per-server health (from the bridge, never the
@@ -926,29 +926,38 @@
       const servers = (A.bridge && A.bridge.servers) || [];
       const lines = servers.length
         ? servers.map((sv) => {
-            const label = sv.id === "roblox" ? "Roblox Studio (primary)" : `${sv.id} (addon)`;
+            const label = sv.id === "roblox" ? "Roblox Studio" : sv.id;
             return `- ${sv.id}: ${label} - ${sv.alive ? `${sv.tools || 0} commands available` : "offline (no tools)"}`;
           })
-        : ["- roblox: Roblox Studio (primary) - unknown (bridge did not report server health)"];
+        : ["- (the bridge did not report any servers - it has none configured, or it is too old to report health)"];
       return (
         `Output of 'list_mcp_servers':\n` +
         `Connected MCP servers (${lines.length}):\n${lines.join("\n")}\n` +
-        `Use list_commands with a "server" param (one of the ids above) to see that server's exact commands. Without "server", list_commands defaults to "roblox".`
+        `Use list_commands with a "server" param (one of the ids above) to see that server's exact commands. Without "server", list_commands defaults to "${defaultServerId()}".`
       );
     }
     // Virtual command: list available commands with full details. Defaults to
-    // the primary Roblox server - a DIFFERENT server's tools only ever show up
-    // if the model explicitly asks via {"server": "<id>"} (see list_mcp_servers).
+    // the default server (roblox when connected, else the single live server)
+    // - a DIFFERENT server's tools only ever show up if the model explicitly
+    // asks via {"server": "<id>"} (see list_mcp_servers).
     if (name === "list_commands" || name === "list_tools") {
       await ensureTools();
-      const requested = (args.server || "roblox").trim();
+      const requested = (args.server || defaultServerId()).trim();
+      const bridgeSrv = (A.bridge && A.bridge.servers) || [];
+      // Bridge connected but with NO servers configured at all: say so plainly
+      // instead of pretending a default server exists. (An OLD bridge that never
+      // sends the per-server list is not this case - it has a tool catalogue,
+      // so the A.toolList check below excludes it.)
+      if (!bridgeSrv.length && !A.toolList.length) {
+        return `Output of '${name}':\nNo MCP servers are connected - the bridge is running but has no servers configured. Ask the user to add one in the extension's MCP servers menu (or config.json), then restart the bridge.`;
+      }
       // The MCP proxy keeps advertising Roblox's catalogue even with no Studio
       // attached, so list_commands would hand back the full command list and read
       // as "Roblox is fine" - then every command silently fails. When Roblox is
       // actually unusable, short-circuit the DEFAULT (roblox) listing into a plain
       // "Roblox is down" note that points the model at the other server(s), so it
       // can keep working in degraded mode instead of firing dead Roblox commands.
-      if (requested === "roblox") {
+      if (requested === "roblox" && bridgeSrv.some((x) => x.id === "roblox")) {
         const s = A.bridge || {};
         const srv = s.servers || [];
         const rbx = srv.find((x) => x.id === "roblox");
@@ -964,12 +973,13 @@
       }
       const known = new Set(A.toolList.map((t) => t.server).filter(Boolean));
       // Tools from a bridge that doesn't tag "server" yet (old version) have no
-      // .server field at all - treat those as the primary server rather than
-      // hiding everything.
-      const scoped = A.toolList.filter((t) => (t.server || "roblox") === requested);
-      if (!A.toolList.length) return `Output of '${name}':\nNo commands available - the bridge or Roblox Studio may be offline.`;
+      // .server field at all - treat those as belonging to the default server
+      // rather than hiding everything.
+      const defId = defaultServerId();
+      const scoped = A.toolList.filter((t) => (t.server || defId) === requested);
+      if (!A.toolList.length) return `Output of '${name}':\nNo commands available - the bridge is offline or has no MCP servers configured.`;
       if (!scoped.length) {
-        return `Output of '${name}':\nERROR: no server named "${requested}" is connected. Connected servers: ${[...known].join(", ") || "roblox"}. Call list_mcp_servers to check.`;
+        return `Output of '${name}':\nERROR: no server named "${requested}" is connected. Connected servers: ${[...known].join(", ") || "none"}. Call list_mcp_servers to check.`;
       }
       const lines = scoped.map((t) => {
         const props = (t.inputSchema && t.inputSchema.properties) || {};
@@ -1103,13 +1113,13 @@
       ui.banner("warn", "Reload this page",
         "ZeroScript was updated or reloaded while this tab was open, so this page is running an " +
         "old copy of it and commands can no longer run. Reload the page (F5) to reconnect - your " +
-        "bridge and Roblox Studio are unaffected.");
+        "bridge and its MCP servers are unaffected.");
       diag("bridge.staleExtension", { name, error: r.error });
       return ZS.FEEDBACK.staleExtension;
     }
     if (r.kind === "disconnected") return ZS.FEEDBACK.bridgeOffline;
     if (r.kind === "timeout") {
-      return `ERROR: tool '${name}' timed out after ${name === "execute_luau" ? 20 : 120}s.\n${r.error}\nTry a shorter/simpler call or check that Roblox Studio is open and responsive.`;
+      return `ERROR: tool '${name}' timed out after ${name === "execute_luau" ? 20 : 120}s.\n${r.error}\nTry a shorter/simpler call or check that ${hasRobloxServer() ? "Roblox Studio is open" : "the MCP server is running"} and responsive.`;
     }
     if (name === "execute_luau") {
       const err = r.error || "";
@@ -1454,14 +1464,21 @@
             A.toolCallsSinceReminder++;
             if (A.toolCallsSinceReminder >= REMIND_TOOLS_EVERY) {
               A.toolCallsSinceReminder = 0;
-              // Scope the reminder to the primary Roblox server, exactly like
-              // list_commands: re-injecting EVERY connected server's tools (Blender
-              // etc.) merged flat would bloat the model's context - the opposite of
-              // what the model gets when it lists commands itself. Anti-drift only
-              // needs the primary Roblox set; addon commands were listed on demand
-              // and the bridge routes by name regardless.
-              const roblox = A.toolList.filter((t) => (t.server || "roblox") === "roblox");
-              toSend += ZS.toolsReminder(roblox) + "\n" + ZS.memoryNudge();
+              // Roblox mode: scope the reminder to the Roblox server, exactly like
+              // list_commands - re-injecting EVERY connected server's tools merged
+              // flat would bloat the model's context. Anti-drift only needs the
+              // Roblox set; other servers' commands were listed on demand and the
+              // bridge routes by name regardless. The memory nudge is Roblox-only
+              // (project memory lives in the place).
+              // No roblox server: there is no primary to scope to - remind the
+              // union of every connected tool (that IS the model's default view)
+              // in generic wording, and skip the memory nudge.
+              if (hasRobloxServer()) {
+                const roblox = A.toolList.filter((t) => (t.server || "roblox") === "roblox");
+                toSend += ZS.toolsReminder(roblox) + "\n" + ZS.memoryNudge();
+              } else {
+                toSend += ZS.toolsReminder(A.toolList, true);
+              }
               diag("tools.reminder", { after: REMIND_TOOLS_EVERY });
             }
           }
@@ -1631,14 +1648,39 @@
     ui.toast("Stopping…");
   }
 
-  // The full system prompt for the CURRENT provider and user settings. One
-  // definition, used both by the bootstrap and by the periodic re-injection, so
-  // the two can never drift apart.
+  // ── Server topology ───────────────────────────────────────────────────────
+  // ZeroScript is a generic "web AI chat -> local MCP bridge" client. Roblox
+  // Studio is the DEFAULT server, not a dependency: every Roblox-specific
+  // behaviour (wording, place-probe states, project memory) is gated on the
+  // bridge advertising a server with id "roblox". With any other server set -
+  // or none - the whole flow runs generic. A.bridge holds the LAST status
+  // snapshot from the bridge; before the first one arrives it has no `servers`
+  // key, and every helper below then falls back to the classic Roblox-only
+  // assumption (matching what an old bridge would report).
+  function bridgeServers() { return ((A.bridge && A.bridge.servers) || []); }
+  function hasRobloxServer() { return bridgeServers().some((x) => x.id === "roblox"); }
+  // A server that is actually usable right now (process alive + tools loaded).
+  function liveServers() { return bridgeServers().filter((x) => x.alive && (x.tools || 0) > 0); }
+  // Default target for list_commands: "roblox" when present (original
+  // behaviour), else the single live server, else the first configured id.
+  function defaultServerId() {
+    const srv = bridgeServers();
+    if (srv.some((x) => x.id === "roblox")) return "roblox";
+    const live = liveServers();
+    if (live.length) return live[0].id;
+    return srv[0] ? srv[0].id : "roblox";
+  }
+
+  // The full system prompt for the CURRENT provider, user settings and
+  // server topology. One definition, used both by the bootstrap and by the
+  // periodic re-injection, so the two can never drift apart.
   function systemPrompt() {
     return ZS.buildSystemPrompt({
       siteName: P.displayName,
       customPrompt: ui.getCustomPrompt(),
       providerNotes: P.promptExtra || "",
+      servers: A.bridge && A.bridge.servers || null,
+      toolNames: [...(A.toolNames || [])],
     });
   }
 
@@ -1836,8 +1878,10 @@
                                // the model makes seconds later)
       if (!alive()) return;
       if (!A.toolList.length) {
-        ui.banner("warn", "Bridge or Studio offline",
-          "Could not fetch Roblox tools. Run start.bat and make sure Roblox Studio is open, then try again.");
+        ui.banner("warn", "No MCP tools available",
+          hasRobloxServer()
+            ? "Could not fetch tools. Run start.bat and make sure Roblox Studio is open (with its MCP server enabled), then try again."
+            : "Could not fetch tools. Run start.bat, then check the MCP servers in the ⋯ menu (or config.json) - each needs a live command, then try again.");
         return;
       }
       const modeState = await P.ensureComposerReady("startup");
@@ -1875,12 +1919,14 @@
           decorate.toolBox(startRes.item, "Loading commands", "err", "Roblox offline", true);
         } else {
           // Count what the model ACTUALLY received: list_commands is scoped to the
-          // primary Roblox server (main.js ~629), so showing A.toolList.length (every
-          // connected server merged - Roblox + Blender + addons) overstated the boot
-          // count and made it look like all servers were loaded at once. Count the
-          // Roblox-scoped tools instead, matching the real result.
-          const robloxCount = A.toolList.filter((t) => (t.server || "roblox") === "roblox").length;
-          decorate.toolBox(startRes.item, "Loading commands", "done", `${robloxCount} commands`, true);
+          // default server (main.js, list_commands handler), so showing
+          // A.toolList.length (every connected server merged - Roblox + Blender +
+          // addons) overstated the boot count and made it look like all servers
+          // were loaded at once. Count the default-server-scoped tools instead,
+          // matching the real result.
+          const defId = defaultServerId();
+          const serverCount = A.toolList.filter((t) => (t.server || defId) === defId).length;
+          decorate.toolBox(startRes.item, "Loading commands", "done", `${serverCount} commands`, true);
         }
         const base2 = await submitAndGetBase(toolFeedback);
         const readyRes = await waitForResponse(base2); // wait for "I'm ready" reply
@@ -1890,7 +1936,9 @@
       A.started = true;
       rememberSession(P.conversationKey()); // survives virtualization AND reloads
       ui.setStarted(true);
-      ui.toast(`Agent ready. Ask ${P.displayName} to build something in Roblox.`);
+      ui.toast(hasRobloxServer()
+        ? `Agent ready. Ask ${P.displayName} to build something in Roblox.`
+        : `Agent ready. Ask ${P.displayName} to do something on your machine.`);
     } catch (e) {
       if (alive()) ui.banner("warn", "Startup failed", String((e && e.message) || e));
     } finally {
@@ -2525,7 +2573,7 @@
     let root, bar, dot, brandEl, stateEl, actionBtn, stopBtn, switchBtn, supportBtn, discordEl, menuEl, unstableEl;
     let cover, coverRaf, barRaf;
     let openMenuFn = null; // set by build(); lets the popup force the panel open via runtime message
-    let bridgeOk = false, studioDown = false, placeDown = false, appDown = false, addonOk = false, studioProcUp = false;
+    let bridgeOk = false, studioDown = false, placeDown = false, appDown = false, addonOk = false, studioProcUp = false, serverDown = false;
     let wasConnected = false, bridgeBannerEl = null;
 
     function build() {
@@ -2646,13 +2694,13 @@
       if (ta && document.activeElement !== ta) ta.value = customPrompt;
     }
 
-    // ── Custom MCP servers (addons) ─────────────────────────────────────────
-    // User-added MCP servers shown at the very bottom of the menu. These are
-    // ADDONS: the Roblox server stays primary and is never in this list. Each
-    // entry is { id, name, command } - `command` is the raw string the user
-    // typed (split into command+args when sent to the bridge). The bridge writes
-    // them to config.json and restarts to load them; this local list only drives
-    // the menu UI and is kept in sync with the bridge's server health.
+    // ── Custom MCP servers ──────────────────────────────────────────────────
+    // User-added MCP servers shown at the very bottom of the menu. Every server
+    // is first-class (roblox included - see mergedMcpServers). Each entry is
+    // { id, name, command } - `command` is the raw string the user typed (split
+    // into command+args when sent to the bridge). The bridge writes them to
+    // config.json and restarts to load them; this local list only drives the
+    // menu UI and is kept in sync with the bridge's server health.
     let customMcpServers = [];
     try {
       chrome.storage.local.get("zsCustomMcpServers", (r) => {
@@ -2673,12 +2721,18 @@
     // "disappears" from the menu while still running - and self-heals the local
     // cache the moment we see a server it didn't know about.
     function mergedMcpServers() {
-      const live = ((A.bridge && A.bridge.servers) || []).filter((sv) => sv.id !== "roblox");
+      // EVERY server the bridge reports, roblox included: since the bridge no
+      // longer protects the roblox entry, the menu is the one place the user
+      // can remove it (fully generic setup) - same row, same remove button as
+      // any other server.
+      const live = ((A.bridge && A.bridge.servers) || []);
       const byId = new Map(customMcpServers.map((s) => [s.id, s]));
       const merged = live.map((sv) => {
         const cached = byId.get(sv.id);
         return {
-          id: sv.id, name: (cached && cached.name) || sv.id, command: cached && cached.command,
+          id: sv.id,
+          name: (cached && cached.name) || (sv.id === "roblox" ? "Roblox Studio" : sv.id),
+          command: (cached && cached.command) || (sv.id === "roblox" ? "launch_studio_mcp.py" : null),
           alive: sv.alive, tools: sv.tools,
         };
       });
@@ -2748,11 +2802,10 @@
       }
       const esc = (s) => String(s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
       const mergedServers = mergedMcpServers();
-      // Roblox always heads the list - greyed out, no health dot (its own status
-      // is already the main ZeroScript dot elsewhere) and no remove button (it's
-      // the primary server, protected bridge-side too).
-      let mcpList =
-        `<div class="zs-mcp-item zs-mcp-item-primary"><div class="zs-mcp-info"><span class="zs-mcp-name">Roblox Studio</span><span class="zs-mcp-url">primary - always connected</span></div></div>`;
+      // One uniform list - every server, roblox first when present. Roblox
+      // Studio shows a human name and its launcher as the command; it carries
+      // the same health dot and remove button as any other server.
+      let mcpList = "";
       mergedServers.forEach((s, i) => {
         // alive === undefined -> the bridge hasn't reported this server's health
         // yet (just added/removed, still restarting) - shown neutral, not red.
@@ -2785,7 +2838,7 @@
          </section>
          <section class="zs-menu-sec">
            <div class="zs-sec-label"><span>MCP servers</span></div>
-           <div class="zs-menu-note">Roblox Studio is always connected (primary). Add another MCP server (e.g. Blender, Sketchfab) as an addon - the bridge restarts briefly to load it. Experimental.</div>
+           <div class="zs-menu-note">Every local MCP server the AI can use - Roblox Studio is preconfigured by default, but any server works (Blender, filesystem, git, ...). Add or remove any of them, including Roblox; the bridge restarts briefly to apply.</div>
            ${mcpList}
            <div class="zs-mcp-sep"></div>
            <input id="zs-mcp-name" class="zs-mcp-field" placeholder="Name, e.g. Blender" />
@@ -2884,11 +2937,11 @@
         : "";
       setupCard.innerHTML =
         `<div id="zs-setup-head"><span id="zs-setup-logo">ZeroScript</span><span id="zs-setup-tag">Setup</span></div>` +
-        `<div id="zs-setup-sub">The <b>Bridge</b> is what connects this chat to Roblox Studio. Three steps and you're running.</div>` +
+        `<div id="zs-setup-sub">The <b>Bridge</b> is what connects this chat to your local MCP servers (Roblox Studio by default). Three steps and you're running.</div>` +
         `<ol id="zs-setup-steps">` +
           `<li>Download the Bridge from GitHub</li>` +
           `<li>Run <code>start.bat</code></li>` +
-          `<li>Back here, click <b>Start Roblox agent</b></li>` +
+          `<li>Back here, click <b>Start agent</b></li>` +
         `</ol>` +
         `<div class="zs-setup-copy-row">` +
           `<input type="text" id="zs-setup-link" readonly value="${GITHUB_URL}">` +
@@ -2974,7 +3027,7 @@
       else if (A.starting) {
         toneClass = "starting";
         indicator = `<span class="zs-spin"></span>`;
-        msg = `Starting the Roblox agent…`;
+        msg = hasRobloxServer() ? `Starting the Roblox agent…` : `Starting the agent…`;
         label = "Starting…"; kind = "starting"; disabled = true;
       } else if (A.started) {
         // Prefer the ADVERTISED list length (A.toolList - the AGGREGATE catalogue
@@ -3017,6 +3070,14 @@
           msg = studioProcUp
             ? `<b>Agent active</b> · Studio is open but not connected - open <b>Assistant Settings &gt; MCP Servers</b> in Studio`
             : `<b>Agent active</b> · open Roblox Studio & enable its MCP server`;
+        } else if (serverDown) {
+          // Bridge is up but NO configured server is usable (the Roblox server
+          // died, or in a generic setup the MCP server went away). The agent
+          // keeps running, but every tool call will fail until it is back -
+          // show the honest state instead of a green "N tools" that would be
+          // a lie (the count is a stale cache, not live health).
+          toneClass = "warn"; warn = true;
+          msg = `<b>Agent active</b> · MCP server offline - check the bridge (⋯ menu → MCP servers)`;
         } else {
           toneClass = "active";
           // No inline dot here: the leading status dot already shows green, two
@@ -3035,7 +3096,7 @@
         if (bridgeOk) {
           toneClass = "standby";
           msg = `Standby. Start the agent, or just chat.`;
-          label = "▶︎ Start Roblox agent"; kind = "start";
+          label = hasRobloxServer() ? "▶︎ Start Roblox agent" : "▶︎ Start agent"; kind = "start";
         } else if (addonOk) {
           // Roblox is down but another MCP server is live: allow a DEGRADED start
           // (yellow). The agent runs on the other server(s); Roblox tools stay
@@ -3051,16 +3112,20 @@
           toneClass = "warn"; warn = true;
           msg = !A.bridge.connected
             ? `Run <b>start.bat</b> on your PC.`
-            : placeDown
-              ? `Open a <b>place</b> in Roblox Studio.`
-              : (appDown || studioDown) && studioProcUp
-                ? `Studio is open but not connected - open <b>Assistant Settings &gt; MCP Servers</b> in Studio.`
-                : appDown
-                  ? `Open <b>Roblox Studio</b> &amp; enable its MCP server.`
-                  : studioDown
+            : !hasRobloxServer()
+              ? (bridgeServers().length
+                  ? `<b>No MCP server is connected yet</b> - check ⋯ menu → MCP servers (its app must be running).`
+                  : `<b>No MCP servers configured</b> - add one in ⋯ menu → MCP servers (or config.json).`)
+              : placeDown
+                ? `Open a <b>place</b> in Roblox Studio.`
+                : (appDown || studioDown) && studioProcUp
+                  ? `Studio is open but not connected - open <b>Assistant Settings &gt; MCP Servers</b> in Studio.`
+                  : appDown
                     ? `Open <b>Roblox Studio</b> &amp; enable its MCP server.`
-                    : `Open <b>Roblox Studio</b> for the tools.`;
-          label = "▶︎ Start Roblox agent"; kind = "start";
+                    : studioDown
+                      ? `Open <b>Roblox Studio</b> &amp; enable its MCP server.`
+                      : `Open <b>Roblox Studio</b> for the tools.`;
+          label = hasRobloxServer() ? "▶︎ Start Roblox agent" : "▶︎ Start agent"; kind = "start";
         }
         disabled = !bridgeOk && !addonOk;
       } else {
@@ -3132,29 +3197,37 @@
       A.bridge = s;
       if (!dot) return;
       const servers = s.servers || [];
-      // ZeroScript status tracks ONLY the primary Roblox MCP server. Every other
-      // server is an addon and must NEVER make the dot/gate look connected while
-      // Roblox itself is down. Old bridges don't send per-server health, so fall
-      // back to the aggregate signals they do send (mcpAlive / total tools).
+      // ZeroScript is a generic local-MCP bridge: the dot tracks WHATEVER
+      // servers are configured, with Roblox Studio simply the most common one.
+      // When a "roblox" server is present its state drives the gate exactly as
+      // before (its process alive, plus the place-level studioOff sub-state
+      // below), and every other server may NEVER make the dot green while
+      // Roblox is down. Without a roblox server, the dot is green when any
+      // server is alive WITH tools (alive-but-0-tools = still starting). Old
+      // bridges don't send per-server health, so fall back to the aggregate
+      // signals they do send (mcpAlive / total tools).
       const roblox = servers.find((x) => x.id === "roblox");
-      const mcpUp = roblox ? !!roblox.alive : (!!s.mcpAlive || servers.some((x) => x.alive));
-      // Roblox-only count drives the connectivity gate (the dot must never look
-      // green off an addon while Roblox itself is down)...
-      const robloxTools = roblox ? (roblox.tools || 0) : (s.tools || 0);
-      const mcpOk = s.connected && (mcpUp || robloxTools > 0);
-      // ...but the DISPLAYED count is the aggregate across every server (Roblox +
-      // addons like Blender), so it stays consistent with the bar and doesn't
-      // under-report when addon servers are loaded.
-      const totalTools = servers.reduce((n, x) => n + (x.tools || 0), 0) || s.tools || robloxTools;
-      // studio === false means the MCP server answered but the Studio is not USABLE
-      // (no place loaded). studioApp tells the two sub-cases apart:
+      const hasRoblox = !!roblox;
+      const liveCount = servers.filter((x) => x.alive && (x.tools || 0) > 0).length;
+      const mcpUp = servers.length
+        ? (hasRoblox ? !!roblox.alive : liveCount > 0)
+        : (!!s.mcpAlive || (s.tools || 0) > 0);
+      const mcpOk = s.connected && mcpUp;
+      // The DISPLAYED count is the aggregate across every server (Roblox +
+      // any others), so it stays consistent with the bar and doesn't
+      // under-report when more than one server is loaded.
+      const totalTools = servers.reduce((n, x) => n + (x.tools || 0), 0) || s.tools || (roblox ? (roblox.tools || 0) : 0);
+      // Roblox-only usability sub-states (only meaningful when a roblox server
+      // is configured): studio === false means the MCP answered but the Studio
+      // is not USABLE (no place loaded). studioApp tells the two sub-cases
+      // apart:
       //   studioApp === false → no Studio connected at all (app closed OR its MCP
       //                         server option is disabled - indistinguishable).
-      //   studioApp === true  → Studio open but no place loaded (home screen / place
-      //                         closed mid-session). THIS is the case that used to
-      //                         wrongly read "Connected".
+      //   studioApp === true  → Studio open but no place loaded (home screen /
+      //                         place closed mid-session). THIS is the case that
+      //                         used to wrongly read "Connected".
       // null/undefined = unknown (old bridge / probe busy) → don't degrade.
-      const studioOff = mcpOk && s.studio === false;
+      const studioOff = hasRoblox && mcpOk && s.studio === false;
       const noApp = studioOff && s.studioApp === false;
       const noPlace = studioOff && s.studioApp === true;
       const ok = mcpOk && !studioOff;
@@ -3170,7 +3243,15 @@
       const procUp = s.studioProc === true;
       let txt;
       if (!s.connected) txt = "Bridge offline, run start.bat";
-      else if (!mcpOk) txt = "Bridge OK, open Roblox Studio";
+      else if (!mcpOk) txt = hasRoblox
+        ? (roblox && !roblox.alive && (roblox.tools || 0) > 0
+            // Dead process that HAD a catalogue: the bridge's auto-restart is
+            // almost certainly mid-flight - "open Studio" would mislead.
+            ? "Roblox MCP server is restarting - retry in a moment"
+            : "Bridge OK, open Roblox Studio")
+        : (servers.length
+            ? "Bridge OK, but no MCP server is connected yet"
+            : "Bridge OK, but no MCP servers are configured");
       else if (noPlace) txt = "Roblox Studio is open but no place is loaded - open a place";
       else if (noApp) txt = procUp
         ? "Studio is open but not connected - in Studio, open Assistant Settings > MCP Servers (or toggle its MCP server off/on)"
@@ -3183,6 +3264,9 @@
       placeDown = noPlace;
       appDown = noApp;
       studioProcUp = procUp;
+      // The generic "some server is actually usable" signal - drives the
+      // "Agent active · server offline" state (serverDown) for ANY topology.
+      serverDown = !!s.connected && !mcpOk;
       // A non-Roblox MCP (Blender, Sketchfab, ...) that is actually alive. When
       // Roblox itself is down but such a server is present, the session can still
       // start in a DEGRADED mode - the agent just can't touch Roblox until Studio
@@ -3219,7 +3303,7 @@
       const b = document.createElement("div");
       b.className = "zs-banner limit zs-stale";
       b.innerHTML = `<div class="zs-banner-t">⚠ Reload this page to reconnect ZeroScript</div>
-        <div class="zs-banner-m">ZeroScript was updated or reloaded while this tab was open, so this page is still running the old copy and commands can no longer run. Your bridge and Roblox Studio are fine - only this page needs refreshing.</div>
+        <div class="zs-banner-m">ZeroScript was updated or reloaded while this tab was open, so this page is still running the old copy and commands can no longer run. Your bridge and its MCP servers are fine - only this page needs refreshing.</div>
         <div class="zs-banner-acts"><button class="zs-banner-reload">Reload page</button></div>`;
       b.querySelector(".zs-banner-reload").addEventListener("click", () => location.reload());
       root.appendChild(b);
@@ -3241,7 +3325,7 @@
         ? `<a class="zs-banner-video" href="${VIDEO_URL}" target="_blank" rel="noopener">▶︎ Watch setup tutorial</a>`
         : "";
       b.innerHTML = `<div class="zs-banner-t">⚠ Lost connection to ZeroScript</div>
-        <div class="zs-banner-m">The ZeroScript bridge stopped on your PC. Restart it (run start.bat and keep Roblox Studio open): the agent will reconnect automatically as soon as it is detected again.</div>
+        <div class="zs-banner-m">The ZeroScript bridge stopped on your PC. Restart it (run start.bat): the agent will reconnect automatically as soon as it is detected again.</div>
         <div class="zs-banner-acts">${videoLink}<button class="zs-banner-x">Close</button></div>`;
       b.querySelector(".zs-banner-x").addEventListener("click", () => { b.remove(); if (bridgeBannerEl === b) bridgeBannerEl = null; });
       root.appendChild(b);
@@ -3290,7 +3374,9 @@
       if (A.started || !P.isFreshChat()) return;
       if (!nudged) {
         nudged = true;
-        toast("Tip: click “▶︎ Start Roblox agent” to let the AI control Roblox Studio.");
+        toast(hasRobloxServer()
+          ? "Tip: click “▶︎ Start Roblox agent” to let the AI control Roblox Studio."
+          : "Tip: click “▶︎ Start agent” to let the AI use your local MCP servers.");
       }
       if (!actionBtn) return;
       actionBtn.classList.add("zs-flash");

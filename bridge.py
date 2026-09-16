@@ -2,12 +2,19 @@
 # bridge.py
 # ──────────────────────────────────────────────────────────────────────────
 #  ZeroScript Bridge
-#  Local WebSocket <-> Roblox Studio MCP server.
+#  Local WebSocket <-> local MCP server(s). Roblox Studio is the DEFAULT
+#  server, not a requirement: any stdio MCP server declared in config.json
+#  (filesystem, git, Blender, ...) works the same way.
 #  The browser extension talks to this over ws://127.0.0.1:<PORT>.
 #
-#  What this bridge exposes to Kimi (aggregated into one tools/list):
+#  What this bridge exposes (aggregated into one tools/list):
 #    - Every MCP server declared in config.json (by default: roblox), each
 #      spawned as a stdio child and routed by tool name.
+#
+#  Roblox-specific behaviour (the Studio connectivity probe, the studio_watch
+#  recovery loop, StudioMCP port forensics) only runs when a server with id
+#  "roblox" is configured; with any other server set the bridge is fully
+#  generic.
 #
 #  Design goals (robustness first):
 #   - Each MCP stdio process is read by ONE dedicated thread; responses are
@@ -665,13 +672,12 @@ def _write_config(cfg):
 
 
 def config_add_server(server_id, command, args=None, env=None):
-    """Add/replace an addon server in config.json. Refuses to touch the primary
-    (roblox) server. Returns (ok, error)."""
+    """Add/replace a server in config.json. Every server id is first-class,
+    including the default 'roblox' one (re-adding it with a custom command is
+    allowed). Returns (ok, error)."""
     sid = (server_id or "").strip()
     if not sid:
         return False, "server id is required"
-    if sid == PRIMARY_SERVER_ID:
-        return False, f"'{PRIMARY_SERVER_ID}' is the primary server and cannot be edited"
     if not (command or "").strip():
         return False, "a command is required"
     cfg = _read_config()
@@ -687,10 +693,9 @@ def config_add_server(server_id, command, args=None, env=None):
 
 
 def config_remove_server(server_id):
-    """Remove an addon server from config.json. Refuses the primary server."""
+    """Remove a server from config.json. Every server is removable, including
+    'roblox' - the bridge runs fine on any other server set (or on none)."""
     sid = (server_id or "").strip()
-    if sid == PRIMARY_SERVER_ID:
-        return False, f"'{PRIMARY_SERVER_ID}' is the primary server and cannot be removed"
     cfg = _read_config()
     if sid not in cfg.get("mcpServers", {}):
         return False, f"server '{sid}' is not in the config"
@@ -1222,6 +1227,15 @@ def _probe_tool_text(tool):
         holder.call_lock.release()
 
 
+def _studio_proc_state():
+    """Studio WINDOW process state for status messages: definite False when no
+    roblox server is configured (there is no Roblox corrective step to word),
+    otherwise True/False/None from _roblox_studio_app_running()."""
+    if PRIMARY_SERVER_ID not in mgr.clients:
+        return False
+    return _roblox_studio_app_running()
+
+
 def probe_studio():
     """Two-level Studio connectivity. Returns {"app": x, "place": y} where each is
     True / False / None (None = unknown: probe tool missing or server busy).
@@ -1231,7 +1245,12 @@ def probe_studio():
               the home screen, or the active place was closed. Only meaningful when
               app is True (when app is False/None, place mirrors it)."""
     roblox = mgr.clients.get(PRIMARY_SERVER_ID)
-    if roblox is not None and roblox.is_alive() and not roblox.tools_cache:
+    if roblox is None:
+        # No roblox server configured - there is no Studio to probe. Report a
+        # definite "not applicable" (False) instead of None (unknown): the
+        # extension treats False as "not a Roblox setup", never "stuck".
+        return {"app": False, "place": False}
+    if roblox.is_alive() and not roblox.tools_cache:
         # StudioMCP advertises ZERO tools - including list_roblox_studios itself -
         # until Studio actually attaches. That makes _probe_tool_text() below
         # return None (tool missing) the same way it would for a genuinely
@@ -1316,7 +1335,7 @@ async def broadcast_status():
         return
     try:
         _st = await asyncio.to_thread(probe_studio)
-        _proc = await asyncio.to_thread(_roblox_studio_app_running)
+        _proc = await asyncio.to_thread(_studio_proc_state)
         payload = json.dumps({
             "type": "connected",
             "mcp_alive": mgr.any_alive(),
@@ -1344,11 +1363,12 @@ async def handler(ws):
     log(f"extension connected  ({peer})  [{len(clients)} client(s)]", "gr")
     try:
         _st = await asyncio.to_thread(probe_studio)
+        _proc = await asyncio.to_thread(_studio_proc_state)
         await ws.send(json.dumps({
             "type": "connected",
             "mcp_alive": mgr.any_alive(),
             "studio": _st["place"], "studio_app": _st["app"],
-            "studio_proc": await asyncio.to_thread(_roblox_studio_app_running),
+            "studio_proc": _proc,
             "servers": mgr.health(),
             "tools": mgr.list_tools(),
             "port": PORT,
@@ -1369,7 +1389,7 @@ async def handler(ws):
                 await ws.send(json.dumps({
                     "type": "studio_status", "id": rid,
                     "studio": studio["place"], "studio_app": studio["app"],
-                    "studio_proc": await asyncio.to_thread(_roblox_studio_app_running),
+                    "studio_proc": await asyncio.to_thread(_studio_proc_state),
                     "mcp_alive": mgr.any_alive(),
                 }))
 
@@ -1384,7 +1404,7 @@ async def handler(ws):
                     "type": "tools", "id": rid,
                     "tools": tools, "mcp_alive": mgr.any_alive(),
                     "studio": _st["place"], "studio_app": _st["app"],
-                    "studio_proc": await asyncio.to_thread(_roblox_studio_app_running),
+                    "studio_proc": await asyncio.to_thread(_studio_proc_state),
                     "servers": mgr.health(),
                 }))
 
@@ -1406,10 +1426,9 @@ async def handler(ws):
                 asyncio.create_task(run_tool_task(ws, name, args, timeout, rid))
 
             elif mtype in ("add_server", "remove_server"):
-                # Adding/removing an addon MCP server rewrites config.json, which
-                # the bridge only reads at launch - so we ack, then restart the
-                # whole process to pick it up cleanly. The primary Roblox server
-                # is protected inside config_add/remove_server.
+                # Adding/removing an MCP server rewrites config.json, which the
+                # bridge only reads at launch - so we ack, then restart the
+                # whole process to pick it up cleanly.
                 if mtype == "add_server":
                     ok, err = await asyncio.to_thread(
                         config_add_server,
@@ -1792,11 +1811,21 @@ async def _supervised(name, coro_factory):
 
 
 async def main():
-    print(f"\n{C['cy']}  ZeroScript Bridge v{BRIDGE_VERSION}{C['reset']}  {C['dim']}- Roblox Studio - ws://{HOST}:{PORT}{C['reset']}\n")
-    log(f"===== BRIDGE START  v{BRIDGE_VERSION}  pid={os.getpid()}  log={LOG_PATH} =====", "cy")
-    await asyncio.to_thread(_kill_orphan_studio_mcp)
-    killed_squatter = await asyncio.to_thread(check_studio_port)
+    # Load the config FIRST: whether a 'roblox' server is configured decides
+    # whether any of the Studio-specific machinery below runs at all.
     mgr.load_config()
+    has_roblox = PRIMARY_SERVER_ID in mgr.clients
+    log(f"===== BRIDGE START  v{BRIDGE_VERSION}  pid={os.getpid()}  log={LOG_PATH} =====", "cy")
+    print(f"\n{C['cy']}  ZeroScript Bridge v{BRIDGE_VERSION}{C['reset']}  {C['dim']}- "
+          f"{'Roblox Studio + ' if has_roblox else ''}local MCP bridge - ws://{HOST}:{PORT}{C['reset']}\n")
+    if has_roblox:
+        # Studio-only boot forensics: kill a leftover StudioMCP.exe from a prior
+        # bridge and free Studio's MCP port from a squatter. Skipped entirely on
+        # machines whose config has no roblox server (no Studio to recover).
+        await asyncio.to_thread(_kill_orphan_studio_mcp)
+        killed_squatter = await asyncio.to_thread(check_studio_port)
+    else:
+        killed_squatter = False
 
     # Shared "we already told the user the corrective step" flag. Two producers
     # can print the 'toggle Studio's MCP server' action banner: the early
@@ -1923,7 +1952,7 @@ async def main():
         # (studio_watch would catch it, but only after printing a scary yellow
         # "not connected" block first). Give it the same grace period the tools
         # probe already gets before deciding it is a real problem.
-        if _st["app"] is False:
+        if roblox_client is not None and _st["app"] is False:
             with _Spinner("    waiting for Roblox Studio to attach..."):
                 for _ in range(8):
                     await asyncio.sleep(1)
@@ -1938,7 +1967,7 @@ async def main():
         # already distrusts a single reading for PLACE transitions the same way -
         # apply the identical confirm-before-trusting step here for APP, so the
         # boot banner can't announce a connection that isn't really there.
-        if _st["app"] is True:
+        if roblox_client is not None and _st["app"] is True:
             await asyncio.sleep(1.5)
             confirm = await asyncio.to_thread(probe_studio)
             if confirm["app"] is not True:
@@ -1971,12 +2000,21 @@ async def main():
                     "       > 'Enable Studio as MCP server'",
                     "It can take up to ~10s; this window will turn green.",
                 ])
-        elif _st["app"] is True:
+        elif roblox_client is not None and _st["app"] is True:
             log(f"ready {total} tools available - Roblox Studio connected", "gr")
+        elif roblox_client is None and total == 0:
+            # Fully generic install with no servers yet: nothing to wait for,
+            # just point the user at where servers come from.
+            log("ready - no MCP servers are configured yet.", "yl")
+            log("    Add one in the extension's MCP servers menu (or edit config.json) -", "yl")
+            log("    the bridge picks it up on its next restart.", "yl")
         else:
             log(f"ready {total} tools available ({len(mgr.clients)} MCP server(s))", "gr")
-        asyncio.create_task(_supervised(
-            "studio_watch", lambda: studio_watch(_st["app"], _st["place"])))
+        # The studio recovery watcher only exists for the roblox server; on a
+        # generic server set there is nothing Studio-specific to watch.
+        if roblox_client is not None:
+            asyncio.create_task(_supervised(
+                "studio_watch", lambda: studio_watch(_st["app"], _st["place"])))
 
     async def _early_status_pushes():
         """A few follow-up status broadcasts shortly after boot.

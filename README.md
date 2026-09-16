@@ -24,10 +24,29 @@ If you come across a site or extension using the ZeroScript name that asks for p
 ## How it works
 
 ```
-AI chat (ChatGPT / DeepSeek / Gemini / Kimi / GLM / Qwen / Arena / Meta AI, in your browser) -> ZeroScript Extension -> Bridge (your PC) -> Roblox Studio
+AI chat (ChatGPT / DeepSeek / Gemini / Kimi / GLM / Qwen / Arena / Meta AI, in your browser) -> ZeroScript Extension -> Bridge (your PC) -> MCP server(s) (Roblox Studio by default)
 ```
 
 The extension runs inside the chat page (ChatGPT, DeepSeek, Gemini, Kimi, GLM, Qwen, Arena or Meta AI). When you type a request, it sends commands to the Bridge running on your PC, which drives Roblox Studio through the built-in MCP server.
+
+### Any MCP server works, not just Roblox
+
+Roblox Studio is the **default** MCP server, not a requirement. The Bridge speaks the standard [Model Context Protocol](https://modelcontextprotocol.io) over stdio, so any local MCP server can be added alongside or instead of Roblox - the same servers you would configure in an MCP-capable editor (filesystem, git, GitHub, Blender, ...).
+
+- **Add one:** ⋯ menu in the ZeroScript bar (on any supported AI page) → **MCP servers** → type a name and a start command (e.g. `npx -y @modelcontextprotocol/server-filesystem /path/to/dir`) → **Add server**. The bridge restarts briefly to load it.
+- **Remove one:** the ✕ on its row - including Roblox Studio, if you don't use it. The agent then runs on the remaining server(s) only.
+- **Or edit `config.json`** next to `bridge.py` and restart the bridge:
+  ```json
+  {
+    "mcpServers": {
+      "roblox":   { "command": "launch_studio_mcp.py", "args": [] },
+      "files":    { "command": "npx", "args": ["-y", "@modelcontextprotocol/server-filesystem", "/home/me/projects"] }
+    }
+  }
+  ```
+- **Using it:** in the AI chat, the agent discovers servers with `list_mcp_servers` and lists a server's exact commands with `list_commands` (passing `"server": "<id>"`). Everything else - the command format, the chips, the stop button - is identical to the Roblox flow.
+
+When no Roblox server is configured, the Roblox-only bits (the place-loaded status, project memory) are simply skipped, and the status dot goes green when any connected server has tools.
 
 ## Setup
 
