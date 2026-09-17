@@ -12,6 +12,23 @@ const ZSParse = (() => {
   const START_M = "###MCP_TOOL###";
   const END_M = "###END_MCP_TOOL###";
 
+  // ── Marker vocabulary ────────────────────────────────────────────────────
+  // The ONE place the wrapper's spelling is defined. Every consumer (this
+  // parser, core/main.js's classify ladder, a provider's camouflage sweep) asks
+  // these predicates instead of re-deriving the strings or reaching for a regex
+  // that may no longer exist: the 2.0.0 Roblox strip deleted LUA_START_RE from
+  // the exports while deepseek.js still called `.test()` on it, so every
+  // DeepSeek tool call died with "Cannot read properties of undefined (reading
+  // 'test')" BEFORE runTool() and the model never got a result.
+  // Tolerant on purpose: markdown spaces the hashes (`### MCP_TOOL ###`) and the
+  // closer is written with an underscore OR a dash. Detection and extraction
+  // must agree on what a marker is, or a block gets registered as a command and
+  // then not found by the extractor (a dead turn).
+  const START_RE = /###\s*mcp[_\- ]?tool\s*###/i;
+  const END_RE = /###\s*end[_\- ]?mcp[_\- ]?tool\s*###/i;
+  const hasStartMarker = (t) => !!t && START_RE.test(t);
+  const hasEndMarker = (t) => !!t && END_RE.test(t);
+
   // A command is `{"command":"name", ...}` (or "tool"). The params/arguments
   // object is OPTIONAL: paramless commands like list_commands are written as
   // `{"command":"list_commands"}`, so requiring "params" too would MISS them
@@ -37,9 +54,13 @@ const ZSParse = (() => {
   const DSML_RE = /<[\s\/]*[|｜][\s|｜]*DSML[\s|｜]*[|｜]/i;
 
   function hasToolSignature(r) {
+    // A CLOSER with no opener counts too: that is the model having written a
+    // command and mis-written the opening marker. Handing it to the parse path
+    // makes the classify ladder nudge a rewrite instead of silently treating the
+    // turn as a final answer (a dead turn with nothing on screen).
     return (
-      r.includes(START_M) ||
-      r.includes("MCP_TOOL") ||
+      hasStartMarker(r) ||
+      hasEndMarker(r) ||
       CMD_KEY_RE.test(r)
     );
   }
@@ -49,11 +70,7 @@ const ZSParse = (() => {
   // response watcher to avoid finalizing a command that is still being streamed.
   function hasOpenToolBlock(r) {
     if (!r) return false;
-    const sm = r.indexOf(START_M);
-    if (sm !== -1) {
-      const low = r.toLowerCase();
-      if (low.indexOf("###end_mcp_tool###", sm) === -1 && low.indexOf("###end-mcp_tool###", sm) === -1) return true;
-    }
+    if (hasStartMarker(r) && !hasEndMarker(r)) return true;
     // An inline JSON command ({"command"/"tool": …}) whose object has NOT closed yet
     // is still being streamed (a big command with many parameters can take many
     // seconds). Treat it as open so the watcher keeps waiting instead of
@@ -164,33 +181,35 @@ const ZSParse = (() => {
     return null;
   }
 
+  // Locate a marker's POSITION at or after `from`. The extractor needs offsets,
+  // not just a yes/no, so these mirror the predicates above off the same two
+  // regexes - a marker the predicates recognise is always one these can slice.
+  function findStartMarker(text, from = 0) {
+    const m = START_RE.exec(text.slice(from));
+    return m ? { pos: from + m.index, len: m[0].length } : { pos: -1, len: 0 };
+  }
+
+  function findEndMarker(text, from = 0) {
+    const m = END_RE.exec(text.slice(from));
+    return m ? { pos: from + m.index, len: m[0].length } : { pos: -1, len: 0 };
+  }
+
   function parseToolCalls(r) {
-    // Lowercase for case-insensitive end-marker search. Models write
-    // ###end_mcp_tool### (underscore) or ###end-mcp_tool### (dash).
-    const rLow = r.toLowerCase();
-    const findEndM = (from) => {
-      const a = rLow.indexOf("###end_mcp_tool###", from);
-      const b = rLow.indexOf("###end-mcp_tool###", from);
-      if (a === -1 && b === -1) return -1;
-      if (a === -1) return b;
-      if (b === -1) return a;
-      return Math.min(a, b);
-    };
     const out = [];
     let from = 0;
     while (true) {
-      const sm = r.indexOf(START_M, from);
-      if (sm === -1) break;
-      const em = findEndM(sm);
-      if (em === -1) break;
-      const body = r.slice(sm + START_M.length, em);
+      const sm = findStartMarker(r, from);
+      if (sm.pos === -1) break;
+      const em = findEndMarker(r, sm.pos + sm.len);
+      if (em.pos === -1) break;
+      const body = r.slice(sm.pos + sm.len, em.pos);
       for (const sub of body.split(START_M)) {
         const cleaned = sub.trim().replace(/^(?:json|JSON|Copy|copy)\s*/i, "").trim();
         if (!cleaned) continue;
         const p = normalizeCall(extractJson(cleaned));
         if (p) out.push(p);
       }
-      from = em + END_M.length;
+      from = em.pos + em.len;
     }
     // Prefer a JSON command envelope when one is present anywhere in the turn.
     if (out.length === 0) {
@@ -285,13 +304,14 @@ const ZSParse = (() => {
   // ladder so it fires the "dsml" parse_error rather than being handed to
   // parseToolCalls, which cannot read it.
   function hasCommandShape(txt) {
-    return txt.includes(START_M) ||
+    return hasStartMarker(txt) ||
            DSML_RE.test(txt) ||
            CMD_KEY_RE.test(txt); // command/tool with OR without params (e.g. list_commands)
   }
 
   return {
-    START_M, END_M, CMD_KEY_RE, DSML_RE,
+    START_M, END_M, START_RE, END_RE, CMD_KEY_RE, DSML_RE,
+    hasStartMarker, hasEndMarker, findStartMarker, findEndMarker,
     matchBrace, extractJson, normalizeCall,
     hasToolSignature, hasOpenToolBlock, parseToolCalls, salvageCutOff, toolNameFromText,
     isInjectedFeedback, hasCommandShape,

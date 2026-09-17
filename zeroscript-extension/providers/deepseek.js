@@ -897,8 +897,14 @@ const ZSProvider = (() => {
   // insert the chip: {parent, ref} - or null if no tool block was found.
   function findToolBlockSpot(item, chip) {
     const P = ZSParse;
-    const hasStart = (t) => P.LUA_START_RE.test(t) || t.includes("###mcp_tool###");
-    const hasEnd = (t) => P.LUA_END_RE.test(t) || t.includes("###end_mcp_tool###") || t.includes("###end-mcp_tool###");
+    // Block boundaries come from the parser, the single owner of the marker
+    // vocabulary - never re-derived here. Re-deriving is exactly what broke
+    // DeepSeek in 2.0.0: this function kept calling P.LUA_START_RE.test() after
+    // the Roblox strip deleted that regex, so findToolBlockSpot threw a TypeError
+    // on EVERY turn, which aborted the loop before runTool() and left the model's
+    // command unanswered (it just re-sent {"command":"list_mcp_servers"}).
+    const hasStart = P.hasStartMarker;
+    const hasEnd = P.hasEndMarker;
     const isJson = (t) => /\{\s*"(?:command|tool)"\s*:/.test(t);
     // DeepSeek's own DSML tool-call markup (see ZSParse.DSML_RE). It is NOT a
     // fenced block and NOT JSON - it renders as ordinary prose paragraphs - so

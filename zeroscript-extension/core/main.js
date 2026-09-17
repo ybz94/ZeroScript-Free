@@ -647,8 +647,11 @@
         // A half-written command + the site's "Continue" button means the command
         // was truncated mid-stream → resume it rather than reporting bad JSON.
         if (P.findContinueBtn()) return { kind: "truncated", text: r, item: d.item };
-        // Only fire parse_error if explicit markers were present.
-        if (r.includes(ZSParse.START_M) || ZSParse.LUA_START_RE.test(r)) return { kind: "parse_error", reason: "malformed", raw: r, item: d.item };
+        // Only fire parse_error if explicit markers were present. The closer
+        // counts on its own: that is the model having written the block and
+        // mis-written the opener, which must nudge a rewrite rather than end the
+        // turn as a plain-text answer with the command dropped.
+        if (ZSParse.hasStartMarker(r) || ZSParse.hasEndMarker(r)) return { kind: "parse_error", reason: "malformed", raw: r, item: d.item };
         // A command opener with no closer (a JSON object that never closed -
         // the model was halted mid-write and there is no Continue affordance):
         // ask the model to rewrite it instead of silently ending the turn.
