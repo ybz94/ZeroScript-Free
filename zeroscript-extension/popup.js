@@ -15,29 +15,22 @@ function render(s) {
   const tools = document.getElementById("tools");
   const servers = document.getElementById("servers");
   const list = s.servers || [];
-  // Generic: the popup tracks whatever servers are configured, with Roblox
-  // Studio simply the most common one. The place-level "Studio attached"
-  // sub-state only applies when a roblox server is present (same rule as the
-  // in-page bar in core/main.js).
-  const roblox = list.find((x) => x.id === "roblox");
-  const up = list.filter((x) => x.alive).length;
+  // Generic: the popup tracks whatever servers are configured. Same rule as
+  // the in-page bar in core/main.js - green when a server is alive WITH tools.
   const upWithTools = list.filter((x) => x.alive && (x.tools || 0) > 0).length;
   const mcpOk = s.connected && (list.length
-    ? (roblox ? !!roblox.alive : upWithTools > 0)
-    : (s.mcpAlive || up > 0 || s.tools > 0));
-  const studioOff = !!roblox && mcpOk && s.studio === false; // MCP up but no place loaded
-  const ok = mcpOk && !studioOff;
+    ? upWithTools > 0
+    : (s.mcpAlive || s.tools > 0));
+  const ok = mcpOk;
   dot.className = "dot " + (s.connected ? (ok ? "on" : "warn") : "");
   state.textContent = s.connected
-    ? (ok ? (roblox ? "Connected · Roblox Studio ready" : "Connected · MCP ready")
-        : studioOff ? "Studio not connected · enable the MCP server in Studio"
-        : (roblox ? "Bridge OK · open Roblox Studio"
-          : (list.length ? "Bridge OK · no MCP server connected yet"
-            : "Bridge OK · no MCP servers configured")))
+    ? (ok ? "Connected · MCP ready"
+        : (list.length ? "Bridge OK · no MCP server connected yet"
+          : "Bridge OK · no MCP servers configured"))
     : "Bridge offline";
   tools.textContent = s.connected ? `${s.tools || 0} tools available` : "Run bridge.py";
   servers.textContent = s.connected
-    ? list.map((x) => `${x.alive ? "●" : "○"} ${x.id === "roblox" ? "Roblox Studio" : x.id} (${x.alive ? x.tools + " tools" : "down"})`).join("\n")
+    ? list.map((x) => `${x.alive ? "●" : "○"} ${x.id} (${x.alive ? x.tools + " tools" : "down"})`).join("\n")
     : "";
 }
 

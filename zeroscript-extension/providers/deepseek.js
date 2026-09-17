@@ -658,7 +658,7 @@ const ZSProvider = (() => {
   // but a JS guard blocks the SEND past 163840 characters (= 160 KiB, validated
   // live 2026-07-22): the send button is swallowed and a toast "Content is too
   // long (N%)" appears (N = excess percentage, NOT a char count). A large tool
-  // result (big http_get / get_page_text / luau dump) would then silently wedge
+  // result (big http_get / get_page_text / code dump) would then silently wedge
   // the loop in the input box. Truncate outgoing text to a prudent margin below
   // the cap, keeping the head AND tail so neither the start nor the end of a
   // result is lost, and mark the gap so the model knows content was dropped and
@@ -745,7 +745,7 @@ const ZSProvider = (() => {
   const isTooLongMsg = (text) => RE.tooLong.test(text);
   const isBusyMsg = (text) => RE.busy.test(text);
 
-  // ── Image attachment (Studio captures → composer) ────────────────────────
+  // ── Image attachment (tool captures → composer) ─────────────────────────
   function fileFromImage(img, i) {
     const mime = img.mimeType || "image/jpeg";
     const bin = atob(img.data);

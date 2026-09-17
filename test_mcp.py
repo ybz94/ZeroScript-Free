@@ -1,10 +1,10 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # test_mcp.py
 # ──────────────────────────────────────────────────────────────────────────
-#  A minimal FILESYSTEM MCP server for testing ZeroScript in GENERIC (non
-#  Roblox) mode. No dependencies - it runs on the same Python the bridge
-#  uses. NOT part of the product; it exists so you can verify the generic
-#  MCP flow end-to-end without installing any external MCP server.
+#  A minimal FILESYSTEM MCP server for testing ZeroScript end-to-end. No
+#  dependencies - it runs on the same Python the bridge uses. NOT part of the
+#  product; it exists so you can verify the MCP flow without installing any
+#  external MCP server.
 #
 #  Usage: in config.json next to bridge.py (Windows example):
 #
@@ -14,9 +14,7 @@
 #      }
 #    }
 #
-#  Remove the "roblox" entry (or delete it from the extension's ⋯ menu →
-#  MCP servers) to test fully generic mode, then run start.bat /
-#  MacOS_Start.command as usual.
+#  Then run start.bat / MacOS_Start.command as usual.
 #
 #  Exposed tools (rooted at the directory you pass, no escapes):
 #    list_files(path?)  - list a directory inside the root

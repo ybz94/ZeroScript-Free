@@ -35,22 +35,6 @@ const pending = new Map(); // id -> {resolve, timer}
 let toolsCache = [];
 let mcpAlive = false;
 let serversCache = [];
-// true/false = a PLACE is loaded and usable in Roblox Studio; null = unknown.
-// The MCP process stays alive when Studio is closed or its MCP option is off,
-// so this is probed separately (bridge "studio_status").
-let studioConnected = null;
-// true/false = a Roblox Studio app is connected to the MCP server at all; null =
-// unknown. studioApp=true with studioConnected=false means "Studio open but no
-// place"; studioApp=false means "Studio closed OR its MCP option disabled".
-let studioApp = null;
-// true/false = a Roblox Studio WINDOW/PROCESS exists on this machine (checked
-// bridge-side via tasklist); null = unknown/old bridge. Distinguishes the two
-// studioApp=false sub-cases the UI must word differently: Studio genuinely not
-// launched ("open Roblox Studio") vs Studio OPEN but its MCP plugin never
-// registered with the bridge - the documented fix for the latter is opening
-// Assistant Settings > MCP Servers inside Studio (validated live 3x), which
-// "open Roblox Studio" wording completely fails to convey.
-let studioProc = null;
 
 function log(...a) {
   console.log("[zs-bg]", ...a);
@@ -93,9 +77,6 @@ function connect() {
   ws.onclose = () => {
     connected = false;
     mcpAlive = false;
-    studioConnected = null;
-    studioApp = null;
-    studioProc = null;
     serversCache = [];
     stopHeartbeat();
     failAllPending("bridge connection closed");
@@ -129,7 +110,6 @@ function startHeartbeat() {
       }
       // Keeps the MV3 service worker alive AND detects a half-open socket.
       send({ type: "ping" }).catch(() => {});
-      refreshStudioStatus();
     }
   }, HEARTBEAT_MS);
 }
@@ -189,39 +169,7 @@ async function send(obj, timeout = REQUEST_TIMEOUT_DEFAULT) {
   });
 }
 
-// Ask the bridge whether a Roblox Studio instance is actually connected to the
-// MCP server. Broadcasts only on change so the UI updates promptly but quietly.
-let studioProbing = false;
-async function refreshStudioStatus() {
-  if (studioProbing || !connected) return;
-  studioProbing = true;
-  try {
-    const r = await send({ type: "studio_status" }, 12000);
-    const v = r && r.ok && typeof r.studio === "boolean" ? r.studio : null;
-    if (v !== studioConnected) {
-      studioConnected = v;
-      broadcastStatus();
-    }
-  } finally {
-    studioProbing = false;
-  }
-}
-
 function handleBridgeMessage(msg) {
-  if ("studio" in msg && (typeof msg.studio === "boolean" || msg.studio === null)) {
-    studioConnected = msg.studio;
-  }
-  if ("studio_app" in msg && (typeof msg.studio_app === "boolean" || msg.studio_app === null)) {
-    studioApp = msg.studio_app;
-  }
-  if ("studio_proc" in msg && (typeof msg.studio_proc === "boolean" || msg.studio_proc === null)) {
-    studioProc = msg.studio_proc;
-  }
-  if (msg.type === "studio_status") {
-    resolvePending(msg.id, { ok: true, studio: studioConnected });
-    broadcastStatus();
-    return;
-  }
   if (msg.type === "connected") {
     mcpAlive = !!msg.mcp_alive;
     if (Array.isArray(msg.tools)) toolsCache = msg.tools;
@@ -286,7 +234,7 @@ function failAllPending(reason) {
 
 // ── status push to any open DeepSeek tab + popup ─────────────────────────
 function statusObj() {
-  return { type: "zs-status", connected, mcpAlive, studio: studioConnected, studioApp, studioProc, tools: toolsCache.length, servers: serversCache };
+  return { type: "zs-status", connected, mcpAlive, tools: toolsCache.length, servers: serversCache };
 }
 
 function broadcastStatus() {
@@ -307,9 +255,9 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
       case "list_tools": {
         // Prefer a live refresh; fall back to cache so the loop never stalls.
         // 10s, not 25s: a catalogue request only blocks this long when one of the
-        // MCP servers is dead (typically Roblox in a degraded, Blender-only
-        // session), and in that exact case we already hold a perfectly good cached
-        // catalogue. Waiting the full 25s just froze the boot for no new data.
+        // MCP servers is dead, and in that exact case we already hold a perfectly
+        // good cached catalogue. Waiting the full 25s just froze the boot for no
+        // new data.
         const r = await send({ type: "list_tools" }, 10000);
         if (r.ok) sendResponse({ ok: true, tools: r.tools });
         else sendResponse({ ok: toolsCache.length > 0, tools: toolsCache, error: r.error });

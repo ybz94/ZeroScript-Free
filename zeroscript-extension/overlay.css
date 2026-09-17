@@ -225,8 +225,8 @@ html.zs-light #zs-unstable {
   box-shadow: 0 2px 12px rgba(99, 102, 241, 0.45);
 }
 #zs-action[data-kind="start"]:hover { filter: brightness(1.08); }
-/* Degraded start: Roblox is down but another MCP server is live. Amber to signal
-   "startable, but not the full setup" - distinct from the blue full-ready start. */
+/* Reserved: no degraded variant anymore - the single start style below covers
+   every startable state. */
 #zs-action[data-kind="start-degraded"] {
   background: linear-gradient(135deg, #d97706, #f59e0b); color: #fff; border-color: transparent;
   box-shadow: 0 2px 12px rgba(217, 119, 6, 0.45);
@@ -379,15 +379,6 @@ button.zs-site-opt:hover .zs-site-go { opacity: 1; transform: translateX(0); }
 }
 .zs-tip-opt:hover { background: rgba(255, 255, 255, 0.09); }
 .zs-tip-sub { font-size: 10px; font-weight: 400; color: #7a7a82; white-space: nowrap; }
-.zs-rbx-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
-.zs-tip-rbx {
-  justify-content: center; gap: 3px; margin: 0; padding: 8px 6px;
-  font-size: 12px; font-weight: 500; color: #c8c8ce;
-}
-.zs-rbx-cur { color: #7a7a82; font-weight: 400; }
-.zs-tip-sep {
-  font-size: 10px; color: #6b6b73; margin: 11px 0 8px; text-align: center;
-}
 
 /* ── custom MCP servers list (add-your-own, same shell as Custom prompt) ── */
 .zs-mcp-item {
@@ -402,10 +393,6 @@ button.zs-site-opt:hover .zs-site-go { opacity: 1; transform: translateX(0); }
 .zs-mcp-health-on { background: #34d399; box-shadow: 0 0 5px rgba(52, 211, 153, 0.5); }
 .zs-mcp-health-off { background: #f87171; }
 .zs-mcp-health-unknown { background: #6b7280; }
-/* Roblox: always first, greyed out - no health dot (own status lives in the
-   main ZeroScript dot) and no remove button (protected bridge-side too). */
-.zs-mcp-item-primary { opacity: 0.55; background: rgba(255, 255, 255, 0.02); }
-.zs-mcp-item-primary .zs-mcp-name { font-weight: 500; }
 .zs-mcp-info { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 1px; }
 .zs-mcp-sep { height: 1px; background: rgba(255, 255, 255, 0.07); margin: 4px 0 10px; }
 .zs-mcp-name { font-size: 12px; font-weight: 600; color: #e5e5e8; }
@@ -585,7 +572,7 @@ html.zs-site-meta .zs-hidden > .zs-chip {
 /* Qwen's model list has an "Expand more models" fly-out submenu (the Qwen3.6
    family etc.) rendered as a SEPARATE body-portalled `.ant-dropdown` at z-index
    1050 - NOT the `.qwen-select-dropdown` above - so the ZeroScript bar drew on
-   top of it (reported live: the bar's "Start Roblox agent" row covered the
+   top of it (reported live: the bar's "Start agent" row covered the
    Qwen3.6-Max-Preview description). Scoped with :has() to the dropdown that
    actually holds model rows, so unrelated Ant dropdowns/tooltips are untouched. */
 .ant-dropdown:has([class*="model-item"]) { z-index: 2147483646 !important; }
@@ -1015,7 +1002,4 @@ html.zs-light #zs-mcp-add:hover,
 html.zs-light .zs-tip-opt:hover { background: rgba(0, 0, 0, 0.09); }
 html.zs-light #zs-set-status,
 html.zs-light #zs-mcp-status,
-html.zs-light .zs-tip-sub,
-html.zs-light .zs-rbx-cur,
-html.zs-light .zs-tip-sep { color: #6b7280; }
-html.zs-light .zs-tip-rbx { color: #374151; }
+html.zs-light .zs-tip-sub { color: #6b7280; }

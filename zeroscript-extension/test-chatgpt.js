@@ -70,19 +70,19 @@ const ok = (name, cond) => { console.log((cond ? "PASS" : "FAIL") + "  " + name)
 // ── The CodeMirror line collapse (the 1.5.1 headline bug) ───────────────────
 // A code block is <div class="cm-content"> with one <div class="cm-line"> per
 // source line and no newline text nodes anywhere. Reading it with textContent
-// returns `###LUA###return 1+1###END_LUA###` - one line, unparseable. Every
+// returns `firstline-secondline-thirdline` - one line, unparseable. Every
 // cm-line must terminate.
 const cmBlock = (lines, attrs) =>
   el("div", { class: "cm-content", attrs: attrs || {} },
      lines.map((l) => el("div", { class: "cm-line" }, l === "" ? [] : [l])));
 
-const collapsed = P.textWithout(cmBlock(["###LUA###", "return 1+1", "###END_LUA###"]));
-ok("cm-lines are newline-terminated", collapsed.includes("###LUA###\nreturn 1+1\n###END_LUA###"));
+const collapsed = P.textWithout(cmBlock(["first line", "second line", "third line"]));
+ok("cm-lines are newline-terminated", collapsed.includes("first line\nsecond line\nthird line"));
 
-// A blank source line is an EMPTY cm-line. Swallowing it shifts every Luau
-// error line number reported afterwards, so it must survive as "\n".
-const blanks = P.textWithout(cmBlock(["local a = 1", "", "return a"]));
-ok("empty cm-line survives as a blank line", /local a = 1\n\nreturn a/.test(blanks));
+// A blank source line is an EMPTY cm-line. Swallowing it shifts every line
+// number reported afterwards, so it must survive as "\n".
+const blanks = P.textWithout(cmBlock(["first = 1", "", "return second"]));
+ok("empty cm-line survives as a blank line", /first = 1\n\nreturn second/.test(blanks));
 
 // ── The MAIN-world tap wins over the rendered lines ─────────────────────────
 // Past ~2000-4000 chars CodeMirror renders only PART of a long line, so the
@@ -90,12 +90,12 @@ ok("empty cm-line survives as a blank line", /local a = 1\n\nreturn a/.test(blan
 // editor's true document on data-zs-cm; when present it must be used verbatim
 // and the (short) rendered subtree ignored - this is what made a 21k-character
 // command stop executing cut off.
-const full = '{"command":"multi_edit","params":{"edits":[{"old_string":"a","new_string":"' + "x".repeat(5000) + '"}]}}';
-const tapped = P.textWithout(cmBlock(['{"command":"multi_edit","params":{"edits":[{"old_str'], { "data-zs-cm": full }));
+const full = '{"command":"write_file","params":{"path":"big.txt","content":"' + "x".repeat(5000) + '"}}';
+const tapped = P.textWithout(cmBlock(['{"command":"write_file","params":{"path":"big.txt","conte'], { "data-zs-cm": full }));
 ok("data-zs-cm tap is preferred over rendered lines", tapped.includes(full));
 ok("tapped block parses as JSON", (() => {
   const s = tapped.slice(tapped.indexOf("{"), tapped.lastIndexOf("}") + 1);
-  try { return JSON.parse(s).params.edits[0].new_string.length === 5000; } catch { return false; }
+  try { return JSON.parse(s).params.content.length === 5000; } catch { return false; }
 })());
 // An EMPTY tap value is still a real document (an empty editor), not a missing
 // attribute: getAttribute must be checked against null, never falsiness.
@@ -119,7 +119,7 @@ ok("a <br> is a newline", /^a\nb\n?$/.test(P.textWithout(el("p", {}, ["a", el("b
 // The core passes ".zs-chip" so its own injected chip never counts as model
 // output (a chip echoing a tool name would otherwise re-trigger the call).
 const withChip = P.textWithout(
-  el("div", {}, [el("p", {}, ["real reply"]), el("div", { class: "zs-chip" }, ["execute_luau · 2s"])]),
+  el("div", {}, [el("p", {}, ["real reply"]), el("div", { class: "zs-chip" }, ["list_files · 2s"])]),
   ".zs-chip"
 );
-ok("excluded subtree is skipped", withChip.includes("real reply") && !withChip.includes("execute_luau"));
+ok("excluded subtree is skipped", withChip.includes("real reply") && !withChip.includes("list_files"));

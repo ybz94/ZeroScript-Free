@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
-  "name": "ZeroScript Free × Roblox Studio Agent",
-  "version": "1.5.5",
-  "description": "Turn ChatGPT, DeepSeek, Gemini, Kimi, GLM, Qwen, Arena or Meta AI into a Roblox Studio agent that drives Studio through a local bridge.",
+  "name": "ZeroScript Free",
+  "version": "2.0.0",
+  "description": "Turn ChatGPT, DeepSeek, Gemini, Kimi, GLM, Qwen, Arena or Meta AI into a local MCP agent: any MCP server on your PC, driven from a normal AI chat.",
   "permissions": ["storage"],
   "host_permissions": [
     "https://chat.deepseek.com/*",

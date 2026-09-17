@@ -2,19 +2,13 @@
 # bridge.py
 # ──────────────────────────────────────────────────────────────────────────
 #  ZeroScript Bridge
-#  Local WebSocket <-> local MCP server(s). Roblox Studio is the DEFAULT
-#  server, not a requirement: any stdio MCP server declared in config.json
-#  (filesystem, git, Blender, ...) works the same way.
+#  Local WebSocket <-> local MCP server(s). Every stdio MCP server declared
+#  in config.json (filesystem, git, GitHub, Blender, ...) works the same way.
 #  The browser extension talks to this over ws://127.0.0.1:<PORT>.
 #
 #  What this bridge exposes (aggregated into one tools/list):
-#    - Every MCP server declared in config.json (by default: roblox), each
-#      spawned as a stdio child and routed by tool name.
-#
-#  Roblox-specific behaviour (the Studio connectivity probe, the studio_watch
-#  recovery loop, StudioMCP port forensics) only runs when a server with id
-#  "roblox" is configured; with any other server set the bridge is fully
-#  generic.
+#    - Every MCP server declared in config.json, each spawned as a stdio
+#      child and routed by tool name.
 #
 #  Design goals (robustness first):
 #   - Each MCP stdio process is read by ONE dedicated thread; responses are
@@ -35,14 +29,6 @@ import sys
 import threading
 import time
 import uuid
-
-try:
-    # Sibling script (same folder as bridge.py, which Python puts on sys.path
-    # automatically) - reused here purely to detect a Studio version bump
-    # (see _current_studio_exe below), not to launch anything.
-    import launch_studio_mcp as _studio_scan
-except Exception:
-    _studio_scan = None
 
 try:
     import websockets
@@ -83,31 +69,18 @@ def _enable_ansi_colors():
 HOST = "127.0.0.1"
 # Keep in sync with zeroscript-extension/manifest.json "version" - printed at
 # startup so a user's terminal output alone tells us which build they're on.
-BRIDGE_VERSION = "1.5.5"
+BRIDGE_VERSION = "2.0.0"
 PORT = int(os.environ.get("ZS_BRIDGE_PORT", "17613"))
 HERE = os.path.dirname(os.path.abspath(__file__))
 CONFIG_PATH = os.path.join(HERE, "config.json")
-
-# The primary server. It is always present, added by the installer, and can
-# never be edited/removed through the extension (it is what ZeroScript is FOR).
-PRIMARY_SERVER_ID = "roblox"
 
 if _enable_ansi_colors():
     C = {
         "reset": "\033[0m", "dim": "\033[2m", "gr": "\033[92m",
         "yl": "\033[93m", "rd": "\033[91m", "cy": "\033[96m",
-        # Bold white-on-red: for a non-technical user, an "ACTION NEEDED" step
-        # must look nothing like the routine cyan/yellow status noise around
-        # it, or it gets scrolled past unread (seen live 2026-07-13 - the
-        # toggle instruction and the boot banner's own yellow re-explanation
-        # of the SAME step were visually indistinguishable). Bright-yellow-bg
-        # with black text was tried first but reads as low-contrast/washed
-        # out on several real terminal color schemes (also seen live) - white
-        # on red is the universal high-contrast "act now" pairing.
-        "act": "\033[1m\033[97m\033[41m",
     }
 else:
-    C = {k: "" for k in ("reset", "dim", "gr", "yl", "rd", "cy", "act")}
+    C = {k: "" for k in ("reset", "dim", "gr", "yl", "rd", "cy")}
 
 # Every run appends here (never truncated), so a whole test session - across
 # multiple restarts - stays in one file the user can just send us. Each
@@ -123,7 +96,7 @@ except Exception:
 
 class _Spinner:
     """Terminal-only progress indicator for waits that can run several seconds
-    (server launch/handshake, Studio attach grace period) so the console never
+    (server launch/handshake) so the console never
     just sits there looking dead - the #1 thing that makes a user assume the
     bridge hung and close the window. Purely cosmetic: writes over its own line
     with \\r, never touches bridge_debug.log, and is skipped entirely when
@@ -172,7 +145,7 @@ def _clear_spinner_line():
     """Wipe whatever a live _Spinner (running on its own thread, mid-frame) left
     on the current console line via bare \\r writes, so the next print() below
     doesn't get glued onto its trailing characters - seen live 2026-07-14: an
-    action_banner() fired while '[roblox] starting... -' was still mid-line and
+    a banner fired while '[server] starting... -' was still mid-line and
     the red box rendered smashed onto it instead of starting on a fresh line.
     \\033[K (clear to end of line) doesn't depend on knowing the spinner's label
     length the way Spinner.__exit__'s own wipe does."""
@@ -195,41 +168,6 @@ def log(msg, color="dim", terminal=True):
             _log_file.flush()
         except Exception:
             pass
-
-
-def action_banner(lines):
-    """Print a step the USER must physically go do, styled so it cannot be
-    mistaken for routine status/warning noise (see the 'act' color above).
-    Framed with blank lines so it visually stands alone in a scrolling
-    terminal - a non-technical user should be able to glance at the window
-    and immediately spot this without reading everything above it.
-
-    Every line (header, content, footer) is padded to the SAME width so the
-    yellow block renders as one clean rectangle - an earlier version padded
-    each line to a fixed guess independently, which produced a ragged block
-    with mismatched edges on a real console (seen live 2026-07-13)."""
-    header = "ACTION NEEDED"
-    width = max([len(header) + 8] + [len(ln) for ln in lines]) + 2
-    top = f">>> {header} " + ">" * max(0, width - len(header) - 5)
-    _clear_spinner_line()
-    print()
-    print(f"{C['act']}  {top.ljust(width)}{C['reset']}")
-    for ln in lines:
-        print(f"{C['act']}  {ln.ljust(width)}{C['reset']}")
-    print(f"{C['act']}  {'>' * width}{C['reset']}")
-    print()
-    if _log_file:
-        try:
-            _log_file.write(f"{time.strftime('%Y-%m-%d %H:%M:%S')} ACTION NEEDED: "
-                             f"{' | '.join(lines)}\n")
-            _log_file.flush()
-        except Exception:
-            pass
-
-
-# Roblox Studio exposes its built-in MCP server on this loopback port. StudioMCP
-# (and our bridge, via it) reaches Studio through it.
-STUDIO_MCP_PORT = 13469
 
 
 def _port_owner(port):
@@ -281,149 +219,6 @@ def _port_owner(port):
     except Exception:
         pass
     return (pid, name, path)
-
-
-def _roblox_studio_app_running():
-    """True/False whether a real Roblox Studio window process exists, or None
-    if this can't be determined (non-Windows, or the check itself failed)."""
-    if sys.platform != "win32":
-        return None
-    try:
-        out = subprocess.run(
-            ["tasklist", "/FI", "IMAGENAME eq RobloxStudioBeta.exe"],
-            capture_output=True, text=True, encoding="utf-8", errors="replace",
-            timeout=8,
-        ).stdout
-    except Exception:
-        return None
-    return "RobloxStudioBeta.exe" in out
-
-
-def _kill_orphan_studio_mcp():
-    """Kill leftover StudioMCP.exe processes from a PREVIOUS session/crash.
-
-    StudioMCP.exe is Roblox's own MCP proxy; launch_studio_mcp.py spawns one
-    as a direct child every time the bridge starts. If an earlier restart's
-    tree-kill missed the grandchild (a reparenting race), or Studio itself
-    crashed and left its own StudioMCP.exe running (seen live 2026-07-11:
-    RobloxStudioBeta.exe zombied after two RobloxCrashHandler.exe events),
-    the orphan keeps LISTENING on Studio's MCP port. Every StudioMCP.exe we
-    launch afterward - even a freshly restarted one - just connects to that
-    zombie instead of a real Studio, so the bridge reports "Studio connected"
-    forever even with Studio fully closed. studio_watch's auto-restart cannot
-    fix this on its own: restarting our proxy still lands on the same zombie.
-
-    Only acts when NO real Studio app is running at all - in that state any
-    existing StudioMCP.exe is unambiguously orphaned (a legitimate one only
-    exists to serve a live Studio), so it is safe to auto-kill without asking.
-    If Studio IS running (or this can't be determined), this is a no-op: a
-    live StudioMCP.exe might be legitimately serving it, so nothing is
-    touched - this must never risk killing a working connection.
-    """
-    if sys.platform != "win32":
-        return
-    if _roblox_studio_app_running() is not False:
-        return
-    try:
-        out = subprocess.run(
-            ["tasklist", "/FI", "IMAGENAME eq StudioMCP.exe"],
-            capture_output=True, text=True, encoding="utf-8", errors="replace",
-            timeout=8,
-        ).stdout
-    except Exception:
-        return
-    if "StudioMCP.exe" not in out:
-        return
-    log("Found leftover StudioMCP.exe process(es) with no Roblox Studio running - "
-        "cleaning them up (known cause of a phantom 'Studio connected' state).", "yl")
-    try:
-        subprocess.run(["taskkill", "/F", "/IM", "StudioMCP.exe"],
-                       capture_output=True, text=True, timeout=8)
-    except Exception as e:
-        log(f"could not clean up orphaned StudioMCP.exe: {e}", "rd")
-
-
-def _descendant_pids(root_pid):
-    """Set of PIDs = root_pid + every descendant, or None if the process tree
-    could not be read (in which case callers must NOT make kill decisions)."""
-    if sys.platform != "win32":
-        return None
-    try:
-        out = subprocess.run(
-            ["powershell", "-NoProfile", "-Command",
-             "Get-CimInstance Win32_Process | ForEach-Object "
-             "{ \"$($_.ProcessId) $($_.ParentProcessId)\" }"],
-            capture_output=True, text=True, encoding="utf-8", errors="replace",
-            timeout=10,
-        ).stdout
-    except Exception:
-        return None
-    children = {}
-    for line in out.splitlines():
-        parts = line.split()
-        if len(parts) == 2 and parts[0].isdigit() and parts[1].isdigit():
-            children.setdefault(int(parts[1]), []).append(int(parts[0]))
-    if not children:
-        return None
-    pids = {int(root_pid)}
-    stack = [int(root_pid)]
-    while stack:
-        for c in children.get(stack.pop(), []):
-            if c not in pids:
-                pids.add(c)
-                stack.append(c)
-    return pids
-
-
-def _reclaim_studio_port(client):
-    """Kill a StudioMCP.exe that owns Studio's MCP port but is NOT our own child.
-
-    The deadlock this breaks (reported live, survives every restart combo):
-    a zombie StudioMCP.exe from a crashed session keeps LISTENING on 13469.
-    The user reopens Studio -> its MCP plugin does its ONE-SHOT registration
-    against the ZOMBIE (wasted). The user restarts the bridge -> Studio is now
-    running, so _kill_orphan_studio_mcp's safety guard skips the cleanup, and
-    check_studio_port waves the zombie through too (its path IS under Roblox).
-    Our fresh StudioMCP can't own the port, Studio never re-registers on its
-    own -> 0 tools forever, no restart order can fix it by hand.
-
-    Ownership is decided by PID, not heuristics: we know the PID of the
-    launcher we spawned (client.proc), so a StudioMCP.exe holding the port
-    outside that process tree is a leftover by definition - Studio open or
-    not. If the process tree can't be read, we do nothing (never risk killing
-    our own healthy child on bad data). Returns True if a zombie was killed;
-    the caller must then restart the roblox proxy (safe here even with Studio
-    open: the plugin's single registration already went to the zombie, so
-    there is no attempt left for a restart to collide with) AND tell the user
-    to open Assistant Settings > MCP Servers so the plugin re-registers.
-    """
-    owner = _port_owner(STUDIO_MCP_PORT)
-    if not owner:
-        return False
-    pid, name, path = owner
-    # Only ever kill a StudioMCP.exe. Studio itself holding the port is fine;
-    # a non-Roblox squatter is check_studio_port's (interactive) job.
-    if "studiomcp" not in (name or "").lower():
-        return False
-    try:
-        pid_i = int(pid)
-    except (TypeError, ValueError):
-        return False
-    if client is not None and client.proc is not None and client.is_alive():
-        tree = _descendant_pids(client.proc.pid)
-        if tree is None or pid_i in tree:
-            return False  # ours, or unknowable - leave it alone
-    log(f"port {STUDIO_MCP_PORT} is held by a StudioMCP.exe (pid {pid_i}) that this "
-        "bridge did NOT launch - a leftover from a previous session. Studio "
-        "registered to it, so our proxy sees 0 tools.", "yl")
-    try:
-        subprocess.run(["taskkill", "/F", "/PID", str(pid_i)],
-                       capture_output=True, text=True, timeout=8)
-    except Exception as e:
-        log(f"could not kill the leftover StudioMCP.exe: {e}", "rd")
-        return False
-    log(f"killed the leftover StudioMCP.exe (pid {pid_i}) to free Studio's MCP port.", "cy")
-    return True
 
 
 def _process_cmdline(pid):
@@ -496,161 +291,6 @@ def _reclaim_bridge_port():
     return True
 
 
-def _kill_port_squatter():
-    """Kill a NON-Roblox process holding Studio's MCP port, no questions asked.
-
-    Called only when the child's stderr has PROVEN the port is hijacked (see
-    MCPClient.saw_foreign_ws_host - StudioMCP connected to a foreign host and
-    could not parse its protocol; the ropilot case). At that point there is no
-    ambiguity left to justify check_studio_port's interactive prompt, and the
-    prompt was itself a trap: many users never answer it, and the one-shot boot
-    check often runs a beat before a background helper (ropilot) grabs the
-    port. Here we have hard evidence, so kill the squatter outright. Returns
-    (killed, name) so the caller can tell the user which app to uninstall /
-    remove from startup, since it will otherwise reclaim the port on next boot.
-    """
-    owner = _port_owner(STUDIO_MCP_PORT)
-    if owner:
-        pid, name, path = owner
-        if "roblox" in (path or "").lower() or "studiomcp" in (name or "").lower():
-            return False, None  # legitimate Studio-side owner; not a squatter
-        log(f"port {STUDIO_MCP_PORT} is hijacked by '{name}' (pid {pid}, {path}).", "yl")
-        log("    StudioMCP connected to it instead of Roblox Studio - that is why "
-            "there are 0 tools.", "yl")
-        try:
-            subprocess.run(["taskkill", "/F", "/PID", str(pid)],
-                           capture_output=True, text=True, timeout=8)
-        except Exception as e:
-            log(f"could not kill '{name}': {e}", "rd")
-            return False, name
-        log(f"killed '{name}' so Studio can use the port.", "cy")
-        return True, name
-    # We could NOT resolve who owns the port, yet StudioMCP's stderr proved the
-    # port is hijacked (this function is only called under that proof). This is
-    # the state that used to fail SILENTLY: _port_owner returning None (e.g. a
-    # squatter listening on IPv6 loopback that an IPv4-only netstat missed, or
-    # any netstat quirk) left the user staring at 0 tools with no explanation.
-    # Never be silent here. Try a name-based fallback for the known offender
-    # (ropilot ships a background helper that squats this port), then always
-    # tell the user what we know.
-    log(f"port {STUDIO_MCP_PORT} is hijacked (StudioMCP could not talk to Roblox "
-        "Studio on it) but the owning process could not be identified by port.", "yl")
-    # ropilot is a multi-process app (validated live 2026-07-13): the port is
-    # held by ropilot-infra-helper.exe, supervised by ropilot-infra.exe. Kill
-    # both so the supervisor can't just respawn the helper and re-grab the port.
-    killed_name = None
-    for img in ("ropilot-infra-helper.exe", "ropilot-infra.exe", "ropilot.exe"):
-        try:
-            res = subprocess.run(["taskkill", "/F", "/IM", img],
-                                 capture_output=True, text=True, timeout=8)
-        except Exception:
-            continue
-        if res.returncode == 0:
-            killed_name = img
-            log(f"killed '{img}' (known port squatter) so Studio can use the port.", "cy")
-    if killed_name:
-        return True, killed_name
-    log("    Could not auto-kill it. Find it manually: run  netstat -ano | "
-        f"findstr {STUDIO_MCP_PORT}  then end that PID in Task Manager.", "yl")
-    return False, None
-
-
-def _print_squatter_hint(name):
-    """After killing a port squatter (e.g. ropilot), tell the user how to stop
-    it coming back - it is a background helper that respawns on the next boot
-    and re-grabs the port before Studio, which is why a PC reboot never fixed
-    this class of 0-tools report."""
-    app = name or "the other app"
-    action_banner([
-        f"'{app}' fights Roblox Studio for its connection - it will keep",
-        "coming back after every restart until you remove it.",
-        f"1. Uninstall '{app}' (or remove it from Windows startup).",
-        "2. In Roblox Studio: Assistant Settings > MCP Servers,",
-        "   turn OFF then back ON 'Enable Studio as MCP server'.",
-    ])
-
-
-def _print_reregister_hint():
-    """The one user action that completes a zombie-kill recovery: Studio's MCP
-    plugin registers only once per boot and that attempt went to the zombie,
-    so after the kill + proxy restart the user must make it register again."""
-    # Opening the panel alone is technically enough to re-register, but we tell
-    # the user to toggle OFF/ON to be sure - a toggle strictly implies opening
-    # the panel, so it can never do less, and it removes any ambiguity about
-    # whether "just looking at it" counted. Same wording as the squatter/no-place
-    # banners so all three read as one identical instruction, not three variants.
-    action_banner([
-        "Go to Roblox Studio now.",
-        "Turn OFF then back ON: Assistant Settings > MCP Servers",
-        "         > 'Enable Studio as MCP server'",
-        "Wait about 10 seconds - this window will turn green.",
-    ])
-
-
-def check_studio_port():
-    """Warn (and optionally kill) a NON-Roblox process squatting Studio's MCP port.
-
-    A third-party tool (e.g. "ropilot") that binds 13469 before Studio does
-    hijacks the MCP channel: StudioMCP connects to IT instead of Studio, the
-    handshake succeeds but tools/list never answers -> the bridge sees 0 tools.
-    This is silent and brutal to diagnose, so we surface it up front.
-    """
-    owner = _port_owner(STUDIO_MCP_PORT)
-    if not owner:
-        return False
-    pid, name, path = owner
-    # The legitimate holder is Studio itself / a Roblox helper: its path lives
-    # under a "...\Roblox\..." folder. Anything else is an intruder.
-    if "roblox" in (path or "").lower():
-        return False
-    where = path or name
-    log(f"port {STUDIO_MCP_PORT} (Studio's MCP port) is held by a non-Roblox process:", "yl")
-    log(f"    {name} (pid {pid})  {where}", "yl")
-    log("    This will block Studio's tools (the bridge will see 0 tools).", "yl")
-    try:
-        ans = input("    Kill this process so Studio can use the port? [y/N] ").strip().lower()
-    except (EOFError, KeyboardInterrupt):
-        ans = ""
-    if ans in ("y", "yes", "o", "oui"):
-        try:
-            subprocess.run(["taskkill", "/F", "/PID", str(pid)],
-                           capture_output=True, text=True, timeout=8)
-            log(f"killed {name} (pid {pid}). Studio can use the port now.", "cy")
-            # Tell the user the finishing step IMMEDIATELY, here, instead of only
-            # after the ~48s server-launch grace loop that follows: killing the
-            # squatter frees the port, but Studio's MCP plugin registers only
-            # once per boot and that attempt already went to the squatter, so it
-            # will NOT re-attach on its own - a toggle is needed. Printing this
-            # now (not 48s later, after start_all's grace loop) is what turns a
-            # ~1-minute "why is nothing happening" wait into an act-right-away
-            # instruction. Uses action_banner (not log) so a non-technical user
-            # visually cannot miss it among the surrounding status lines - seen
-            # live indistinguishable when both used the same plain color.
-            action_banner([
-                "Go to Roblox Studio now.",
-                "Turn OFF then back ON: Assistant Settings > MCP Servers",
-                "         > 'Enable Studio as MCP server'",
-                "Wait about 10 seconds - this window will turn green.",
-            ])
-            return True  # a squatter WAS killed -> Studio must reclaim the port
-        except Exception as e:
-            log(f"could not kill it: {e}", "rd")
-    else:
-        log("left it running. Close it yourself, then restart the bridge.", "yl")
-    return False
-
-
-_TRANSIENT_STUDIO_MARKERS = (
-    "no roblox studio instance", "no active studio", "studio instance is connect",
-    "studio instance connected", "not connected to", "no studio instance",
-)
-
-
-def _looks_like_transient_studio_drop(text):
-    low = (text or "").lower()
-    return any(m in low for m in _TRANSIENT_STUDIO_MARKERS)
-
-
 # ── config.json read / write (for extension-driven add/remove) ──────────────
 def _read_config():
     if os.path.exists(CONFIG_PATH):
@@ -662,7 +302,7 @@ def _read_config():
                 return cfg
         except Exception as e:
             log(f"config.json unreadable ({e}) - starting from a fresh one", "yl")
-    return {"mcpServers": {PRIMARY_SERVER_ID: {"command": "launch_studio_mcp.py", "args": []}}}
+    return {"mcpServers": {}}
 
 
 def _write_config(cfg):
@@ -674,9 +314,7 @@ def _write_config(cfg):
 
 
 def config_add_server(server_id, command, args=None, env=None):
-    """Add/replace a server in config.json. Every server id is first-class,
-    including the default 'roblox' one (re-adding it with a custom command is
-    allowed). Returns (ok, error)."""
+    """Add/replace a server in config.json. Returns (ok, error)."""
     sid = (server_id or "").strip()
     if not sid:
         return False, "server id is required"
@@ -695,8 +333,7 @@ def config_add_server(server_id, command, args=None, env=None):
 
 
 def config_remove_server(server_id):
-    """Remove a server from config.json. Every server is removable, including
-    'roblox' - the bridge runs fine on any other server set (or on none)."""
+    """Remove a server from config.json. Returns (ok, error)."""
     sid = (server_id or "").strip()
     cfg = _read_config()
     if sid not in cfg.get("mcpServers", {}):
@@ -782,16 +419,6 @@ class MCPClient:
         # user can fix in seconds. Kept across restarts so the banner can name
         # the real cause instead.
         self.start_error = None
-        # Set when StudioMCP's stderr shows it connected to a FOREIGN WS host on
-        # Studio's MCP port (not Studio). The unmistakable signature is a parse
-        # error on the host's messages ("missing field `type`") - Studio speaks
-        # the expected protocol, a squatter like ropilot speaks its own. This is
-        # a timing-independent proof that the port is hijacked, unlike the
-        # one-shot check_studio_port() boot probe which can miss a squatter that
-        # grabs the port a moment after boot (seen live 2026-07-13: ropilot took
-        # the port ~1s after the boot check ran, so nothing was flagged).
-        self.saw_foreign_ws_host = False
-
     # ── lifecycle ─────────────────────────────────────────────────────────
     def _resolve(self, s):
         return os.path.expandvars(os.path.expanduser(str(s)))
@@ -804,7 +431,7 @@ class MCPClient:
             # A bare .py command (relative paths resolve against the bridge dir)
             # is run with the SAME interpreter the bridge itself uses, so it works
             # even on installs where only the `py` launcher exists (no `python`
-            # on PATH). This is how the Studio MCP launcher is wired by default.
+            # on PATH). This is how local .py MCP servers are wired.
             if cmd[0].lower().endswith(".py"):
                 script = cmd[0]
                 if not os.path.isabs(script):
@@ -855,7 +482,6 @@ class MCPClient:
                     self.start_error = None
                 with self.pend_lock:
                     self.pending.clear()
-                self.saw_foreign_ws_host = False  # fresh process, fresh verdict
                 self._reader_thread = threading.Thread(target=self._reader, args=(self.proc,), daemon=True)
                 self._reader_thread.start()
                 threading.Thread(target=self._stderr_drain, args=(self.proc,), daemon=True).start()
@@ -867,13 +493,13 @@ class MCPClient:
                     "clientInfo": {"name": "zeroscript-bridge", "version": "1.0"},
                 }, timeout=30)
                 self._notify("notifications/initialized")
-                # Some MCP servers (notably Roblox's StudioMCP) advertise 0 tools at
-                # the instant initialize returns, because they connect to their
-                # backend (the running Studio) a moment AFTER the stdio handshake.
-                # A single tools/list then caches an empty list forever. So if we
-                # get nothing, retry for a few seconds to let the backend attach.
-                # Short per-attempt timeout so the bridge never looks frozen if the
-                # server stays silent (e.g. Studio not open yet); ~12s total budget.
+                # Some MCP servers advertise 0 tools at the instant initialize
+                # returns, because they connect to their backend a moment AFTER
+                # the stdio handshake. A single tools/list then caches an empty
+                # list forever. So if we get nothing, retry for a few seconds to
+                # let the backend attach. Short per-attempt timeout so the bridge
+                # never looks frozen if the server stays silent (e.g. its app not
+                # open yet); ~12s total budget.
                 for _ in range(12):
                     if self.refresh_tools(timeout=3):
                         break
@@ -901,11 +527,10 @@ class MCPClient:
             self.pending.clear()
         if self.proc:
             # proc.terminate() (TerminateProcess on Windows) only kills THIS
-            # pid. Our command is often a wrapper (e.g. launch_studio_mcp.py)
-            # that Popen()s a real child (StudioMCP.exe) to own the stdio
-            # pipes - terminate() would leave that child orphaned, still bound
-            # to Studio's MCP port, fighting the next restart's fresh instance.
-            # taskkill /T kills the whole tree.
+            # pid. Our command is often a wrapper that Popen()s a real child to
+            # own the stdio pipes - terminate() would leave that child orphaned,
+            # fighting the next restart's fresh instance. taskkill /T kills the
+            # whole tree.
             try:
                 if sys.platform == "win32":
                     subprocess.run(
@@ -958,7 +583,7 @@ class MCPClient:
     def _stderr_drain(self, proc):
         # Surface the child's stderr instead of silently discarding it - this
         # is often the ONLY clue why a server died (crash trace, port bind
-        # failure, missing Studio, etc).
+        # failure, missing app, etc).
         try:
             for line in iter(proc.stderr.readline, ""):
                 line = line.rstrip()
@@ -970,12 +595,6 @@ class MCPClient:
                     self.stderr_tail.append(line)
                     if len(self.stderr_tail) > 8:
                         self.stderr_tail.pop(0)
-                    # Squatter signature: StudioMCP connected to a non-Studio host
-                    # on the MCP port and can't parse its protocol. This is the
-                    # ropilot hijack, timing-independent (see saw_foreign_ws_host).
-                    low = line.lower()
-                    if "failed to parse message from ws host" in low or "missing field `type`" in low:
-                        self.saw_foreign_ws_host = True
                     log(f"[{self.id}] stderr: {line}", "yl", terminal=False)
         except Exception:
             pass
@@ -1039,10 +658,6 @@ class MCPClient:
                 if msg.get("error"):
                     err = msg["error"]
                     err_text = err.get("message", json.dumps(err))
-                    if attempt == 1 and _looks_like_transient_studio_drop(err_text):
-                        log(f"[{self.id}] {name}: transient Studio drop, retrying once...", "yl")
-                        time.sleep(1.5)
-                        continue
                     raise RuntimeError(err_text)
                 content = msg.get("result", {}).get("content", [])
                 text = "\n".join(it.get("text", "") for it in content if it.get("type") == "text")
@@ -1050,20 +665,6 @@ class MCPClient:
                           for it in content if it.get("type") == "image" and it.get("data")]
                 if not text and not images and content:
                     text = json.dumps(content)[:4000]
-                # Studio's own MCP proxy briefly loses its binding to the Studio
-                # app every few seconds on some machines (seen live: repeated
-                # "Bound studio ... disconnected for proxy ..." stderr, self-
-                # healing within ~1-4s). A tool call landing in that window
-                # fails with a "no Studio instance connected" style message
-                # even though Studio is genuinely open - confirmed live via
-                # start_stop_play. One short retry rides through it instead of
-                # surfacing a spurious error to the user. Checked BEFORE the
-                # isError raise below so a transient drop reported as an
-                # isError result still gets its one retry.
-                if attempt == 1 and _looks_like_transient_studio_drop(text):
-                    log(f"[{self.id}] {name}: transient Studio drop, retrying once...", "yl")
-                    time.sleep(1.5)
-                    continue
                 # MCP tool-level failure: the server answered, but the tool
                 # itself reported an error (isError). Standard reference servers
                 # (filesystem, git, ...) use this for bad paths, missing files,
@@ -1093,14 +694,10 @@ class MCPManager:
 
     def start_all(self):
         # Launch every configured server IN PARALLEL, not one after another.
-        # client.start() can block for up to ~12s (its own "wait for Studio's
-        # tools to appear" grace loop) - with a sequential for-loop, Roblox
-        # being first in config.json meant every OTHER server (Blender, any
-        # addon) didn't even begin launching until Roblox's grace loop gave
-        # up, even though that addon has nothing to do with Roblox and could
-        # have been ready in 1-2s. A thread per client removes that
-        # dependency entirely: a slow/absent Roblox Studio no longer holds up
-        # an addon server the user actually wants right now.
+        # client.start() can block for up to ~12s (its own "wait for tools to
+        # appear" grace loop) - with a sequential for-loop, a slow first server
+        # would hold up every other one even though they have nothing to do with
+        # each other. A thread per client removes that dependency entirely.
         threads = []
         for sid, client in self.clients.items():
             def _run(sid=sid, client=client):
@@ -1191,108 +788,6 @@ class MCPManager:
 mgr = MCPManager()
 clients = set()
 
-# ── Studio connectivity probe ──────────────────────────────────────────────
-# The MCP server process stays alive even when Roblox Studio is closed or its
-# MCP option is disabled - tool calls then return instantly with an "Unable to
-# find an active Studio instance" text. So "mcp_alive" alone is misleading.
-#
-# TWO LEVELS (validated live 2026-06):
-#  - list_roblox_studios: instant, side-effect-free. studios == [] means NO Studio
-#    is connected to the MCP (app closed, OR its "Studio as MCP Server" option is
-#    disabled - the two are indistinguishable at this layer). A non-empty list
-#    means a Studio app IS connected, BUT note its entry stays present (active:true)
-#    even when no place is open - only its "name" goes null. So presence != usable.
-#  - get_studio_state: tells whether a PLACE is actually loaded. With a place open
-#    it returns "Available DataModels: ..."; with the Studio on the home screen (or
-#    the active place closed) it returns "...doesn't have a place opened / previously
-#    active Studio has disconnected". That is the authoritative "place loaded" signal
-#    (same phrase the call path already recognises in core/main.js).
-STUDIO_PROBE_TOOL = "list_roblox_studios"
-STUDIO_STATE_TOOL = "get_studio_state"
-# Substrings get_studio_state emits when a Studio is connected but no place is open.
-NO_PLACE_MARKERS = ("doesn't have a place", "no place opened", "place opened",
-                    "has disconnected", "no active studio")
-
-
-def _probe_tool_text(tool):
-    """Call a side-effect-free probe tool with no args; return its text, or None if
-    the tool is unavailable / the server is busy / it errored (best-effort)."""
-    with mgr.index_lock:
-        entry = mgr.index.get(tool)
-    if entry is None:
-        return None
-    holder, real_name = entry
-    # Never queue behind a long-running tool call (the probe is best-effort).
-    if not holder.call_lock.acquire(blocking=False):
-        return None
-    try:
-        if not holder.is_alive():
-            return None
-        msg = holder._request("tools/call", {"name": real_name, "arguments": {}}, timeout=8)
-        if not msg or msg.get("error"):
-            return None
-        content = msg.get("result", {}).get("content", [])
-        return "\n".join(it.get("text", "") for it in content if it.get("type") == "text")
-    except Exception:
-        return None
-    finally:
-        holder.call_lock.release()
-
-
-def _studio_proc_state():
-    """Studio WINDOW process state for status messages: definite False when no
-    roblox server is configured (there is no Roblox corrective step to word),
-    otherwise True/False/None from _roblox_studio_app_running()."""
-    if PRIMARY_SERVER_ID not in mgr.clients:
-        return False
-    return _roblox_studio_app_running()
-
-
-def probe_studio():
-    """Two-level Studio connectivity. Returns {"app": x, "place": y} where each is
-    True / False / None (None = unknown: probe tool missing or server busy).
-      app   - a Roblox Studio instance is connected to the MCP server. False = Studio
-              closed OR its MCP-server option disabled (indistinguishable here).
-      place - a place/datamodel is actually loaded and usable. False = Studio open on
-              the home screen, or the active place was closed. Only meaningful when
-              app is True (when app is False/None, place mirrors it)."""
-    roblox = mgr.clients.get(PRIMARY_SERVER_ID)
-    if roblox is None:
-        # No roblox server configured - there is no Studio to probe. Report a
-        # definite "not applicable" (False) instead of None (unknown): the
-        # extension treats False as "not a Roblox setup", never "stuck".
-        return {"app": False, "place": False}
-    if roblox.is_alive() and not roblox.tools_cache:
-        # StudioMCP advertises ZERO tools - including list_roblox_studios itself -
-        # until Studio actually attaches. That makes _probe_tool_text() below
-        # return None (tool missing) the same way it would for a genuinely
-        # transient "probe busy" blip, even though "Studio is simply closed" is
-        # the common, SUSTAINED case here, not a blip. Left unhandled, the
-        # extension's "unknown = don't degrade" rule (by design, for real
-        # transient blips) then leaves the status dot stuck GREEN forever with
-        # Studio fully closed (seen live 2026-07-11: dot stayed "on", tooltip
-        # showing only an addon server's tool count). An alive client with an
-        # empty catalogue is an unambiguous "not connected", so short-circuit
-        # straight to that verdict instead of falling through to "unknown".
-        return {"app": False, "place": False}
-    text = _probe_tool_text(STUDIO_PROBE_TOOL)
-    if text is None:
-        return {"app": None, "place": None}
-    try:
-        studios = json.loads(text).get("studios") or []
-    except Exception:
-        return {"app": None, "place": None}
-    if not studios:
-        return {"app": False, "place": False}
-    # A Studio app is connected - now check whether a place is actually open.
-    state = _probe_tool_text(STUDIO_STATE_TOOL)
-    if state is None:
-        return {"app": True, "place": None}
-    low = state.lower()
-    place = not any(m in low for m in NO_PLACE_MARKERS)
-    return {"app": True, "place": place}
-
-
 def safe_call(name, arguments, timeout):
     """Never raises. Always returns a dict the extension can feed back to DeepSeek."""
     try:
@@ -1336,9 +831,9 @@ async def broadcast_status():
     The extension's own periodic poll only reads a passively cached copy of
     the LAST message it received (background.js never re-probes on its own),
     so without a follow-up push that stale snapshot can persist forever (seen
-    live 2026-07-11: Blender not yet alive at connect-time froze the "Start
-    Roblox agent" button in its fully-disabled, non-degraded state even long
-    after Blender was actually up). background.js already handles a second
+    live 2026-07-11: a server not yet alive at connect-time froze the Start
+    button in its fully-disabled, non-degraded state even long after the
+    server was actually up). background.js already handles a second
     "connected" message arriving at any time (updates its cache and re-renders
     the bar), so re-sending this exact shape once startup truly settles is
     enough to self-correct with zero extension-side changes needed.
@@ -1346,16 +841,9 @@ async def broadcast_status():
     if not clients:
         return
     try:
-        _st = await asyncio.to_thread(probe_studio)
-        _proc = await asyncio.to_thread(_studio_proc_state)
         payload = json.dumps({
             "type": "connected",
             "mcp_alive": mgr.any_alive(),
-            "studio": _st["place"], "studio_app": _st["app"],
-            # Whether a Roblox Studio WINDOW process exists at all - lets the
-            # extension word the corrective step correctly ("open the MCP
-            # panel in your already-open Studio" vs "launch Studio").
-            "studio_proc": _proc,
             "servers": mgr.health(),
             "tools": mgr.list_tools(),
             "port": PORT,
@@ -1374,13 +862,9 @@ async def handler(ws):
     clients.add(ws)
     log(f"extension connected  ({peer})  [{len(clients)} client(s)]", "gr")
     try:
-        _st = await asyncio.to_thread(probe_studio)
-        _proc = await asyncio.to_thread(_studio_proc_state)
         await ws.send(json.dumps({
             "type": "connected",
             "mcp_alive": mgr.any_alive(),
-            "studio": _st["place"], "studio_app": _st["app"],
-            "studio_proc": _proc,
             "servers": mgr.health(),
             "tools": mgr.list_tools(),
             "port": PORT,
@@ -1396,27 +880,15 @@ async def handler(ws):
             if mtype == "ping":
                 await ws.send(json.dumps({"type": "pong", "id": rid}))
 
-            elif mtype == "studio_status":
-                studio = await asyncio.to_thread(probe_studio)
-                await ws.send(json.dumps({
-                    "type": "studio_status", "id": rid,
-                    "studio": studio["place"], "studio_app": studio["app"],
-                    "studio_proc": await asyncio.to_thread(_studio_proc_state),
-                    "mcp_alive": mgr.any_alive(),
-                }))
-
             elif mtype == "list_tools":
                 try:
                     tools = await asyncio.to_thread(mgr.list_tools, True)
                 except Exception as e:
                     tools = mgr.list_tools()
                     log(f"list_tools error: {e}", "yl")
-                _st = await asyncio.to_thread(probe_studio)
                 await ws.send(json.dumps({
                     "type": "tools", "id": rid,
                     "tools": tools, "mcp_alive": mgr.any_alive(),
-                    "studio": _st["place"], "studio_app": _st["app"],
-                    "studio_proc": await asyncio.to_thread(_studio_proc_state),
                     "servers": mgr.health(),
                 }))
 
@@ -1488,11 +960,11 @@ async def handler(ws):
 
 
 async def server_watch():
-    """Poll every MCP server and restart any that died unexpectedly (e.g. the
-    StudioMCP proxy crashing on its own - see stop()'s taskkill /T fix and the
+    """Poll every MCP server and restart any that died unexpectedly (e.g. a
+    wrapper proxy crashing on its own - see stop()'s taskkill /T fix and the
     stderr logging above for why this used to happen silently). Without this,
     a dead server only got noticed on the NEXT real tool call, which is what
-    made "Studio looks connected but nothing responds" possible."""
+    made "a server looks connected but nothing responds" possible."""
     # Crash-LOOP detection thresholds: LOOP_N deaths within LOOP_WINDOW seconds
     # means something is killing (or instantly crashing) the server every time
     # we bring it back - the silent restart cycle the auto-restart otherwise
@@ -1529,17 +1001,6 @@ async def server_watch():
                                 log(f"[{sid}]   {ln}", "yl")
                         else:
                             log(f"[{sid}] the server printed no error output before dying.", "yl")
-                        # Port forensics: name the process squatting a port this
-                        # server needs. For the primary Roblox proxy that is
-                        # Studio's MCP port; a squatter there (seen live: a
-                        # 'ropilot' app) makes the proxy die/misbehave forever.
-                        if sid == "roblox":
-                            owner = _port_owner(STUDIO_MCP_PORT)
-                            if owner:
-                                pid, name, path = owner
-                                if "roblox" not in (name or "").lower() and "studio" not in (path or "").lower():
-                                    log(f"[{sid}] port {STUDIO_MCP_PORT} is held by '{name}' (pid {pid}, {path}) - "
-                                        f"close that program, it is squatting Studio's MCP port.", "rd")
                         log(f"[{sid}] common causes: its app is not running (e.g. Blender + addon), a port "
                             f"conflict, an antivirus killing it, or a bad command in config.json. "
                             f"Auto-restart continues in the background.", "yl")
@@ -1558,259 +1019,15 @@ async def server_watch():
                 log(f"[{sid}] auto-restart failed: {e}", "rd")
 
 
-def _current_studio_exe():
-    """The StudioMCP.exe our launcher would currently pick (newest version
-    folder paired with a real RobloxStudioBeta.exe), or None. Reused here only
-    to detect a Studio update happening mid-session: Roblox's own bug report
-    ("Studio MCP turning off after update") says the toggle resets to OFF
-    whenever Studio auto-updates - restarting our proxy can't fix that (Studio
-    itself refuses the connection while its toggle is off), so the terminal
-    should say "re-enable the toggle" instead of "wait for auto-recovery"
-    when a version bump coincides with the disconnect."""
-    if _studio_scan is None:
-        return None
-    try:
-        return _studio_scan.find_studio_mcp()
-    except Exception:
-        return None
-
-
-async def studio_watch(initial_app, initial_place=None):
-    """Poll Studio attachment and log transitions, so the terminal confirms in
-    GREEN the moment Studio attaches (e.g. after the user toggles its MCP server)
-    and warns again if it later drops. Best-effort; never raises.
-
-    Also auto-recovers from a real disconnect: two bugs reported on the Roblox
-    devforum leave StudioMCP.exe alive (our client stays "alive" - the process
-    never dies, so server_watch's dead-process restart never fires) but stuck
-    talking to nothing - (1) StudioMCP keeps a stale named-pipe handle keyed by
-    Studio's old PID after Studio is closed and reopened, and never rediscovers
-    the new one; (2) MCP silently disconnects every 5-15 minutes on some
-    machines. The documented user workaround for both is "toggle Studio's MCP
-    server off/on" / "reopen the MCP panel" - which just forces StudioMCP to
-    redo its handshake. Restarting OUR proxy process is the equivalent from
-    this side (taskkill + fresh launch_studio_mcp.py), so do it automatically
-    once a drop looks real (sustained, not a momentary blip) instead of leaving
-    the user to notice and toggle it themselves."""
-    prev_app = initial_app
-    prev_place = initial_place
-    disconnected_since = None
-    last_auto_restart = 0.0
-    empty_since = None       # when the roblox catalogue was first seen empty
-    last_reclaim = 0.0       # cooldown for the zombie-StudioMCP port reclaim
-    place_transitions = []
-    known_studio_exe = await asyncio.to_thread(_current_studio_exe)
-    update_suspected = False
-    # Only auto-restart a disconnect that follows a real connection (matches
-    # the two known bugs above) - never spam-restart while Studio simply isn't
-    # open yet at all (prev_app starting False/None is the common cold-start
-    # case and restarting there would just be noise every cooldown).
-    ever_connected = initial_app is True
-    while True:
-        await asyncio.sleep(4)
-        # If StudioMCP launched while Studio was closed, its catalogue is EMPTY
-        # and stays that way: start()'s 12s retry loop has long given up, and
-        # nothing else ever re-asks for tools/list (probe_studio can't - the
-        # probe tools themselves are part of the missing catalogue, which is
-        # why it short-circuits to "not connected" on an empty cache). So a
-        # Studio opened AFTER that window was never detected until the user
-        # restarted the whole bridge (seen live 2026-07-11). Re-ask here on
-        # every poll while the catalogue is empty; the moment Studio attaches,
-        # tools appear, the index rebuilds, and the normal probe below flips
-        # the state to connected on this same iteration.
-        rc0 = mgr.clients.get("roblox")
-        if rc0 is not None and rc0.is_alive() and not rc0.tools_cache:
-            got = False
-            try:
-                got = bool(await asyncio.to_thread(rc0.refresh_tools, 3))
-            except Exception:
-                got = False
-            if got:
-                mgr.rebuild_index()
-                log(f"Roblox Studio's tools appeared ({len(rc0.tools_cache)}) - Studio attached.", "gr")
-                empty_since = None
-            else:
-                now0 = time.time()
-                if empty_since is None:
-                    empty_since = now0
-                # First: a PROVEN port hijack (stderr showed StudioMCP talking to
-                # a foreign host, e.g. ropilot). Hard evidence, so recover fast
-                # and unconditionally - no need to wait out the sustained-empty
-                # window the ambiguous zombie case below uses.
-                if (rc0.saw_foreign_ws_host and now0 - last_reclaim > 180):
-                    last_reclaim = now0
-                    killed, sname = await asyncio.to_thread(_kill_port_squatter)
-                    if killed:
-                        try:
-                            await asyncio.to_thread(mgr.restart, "roblox")
-                        except Exception as e:
-                            log(f"roblox proxy restart after squatter kill failed: {e}", "rd")
-                        _print_squatter_hint(sname)
-                        await broadcast_status()
-                # Otherwise: catalogue stuck empty WITH a Studio window open often
-                # means a zombie StudioMCP.exe (not ours) still owns port 13469 and
-                # swallowed Studio's one-shot registration - a state no manual
-                # restart combination can escape (see _reclaim_studio_port).
-                # Sustained-empty threshold + cooldown so a Studio that is
-                # merely slow to boot never triggers a spurious kill.
-                elif (now0 - empty_since > 20 and now0 - last_reclaim > 180
-                        and await asyncio.to_thread(_roblox_studio_app_running) is True):
-                    last_reclaim = now0
-                    if await asyncio.to_thread(_reclaim_studio_port, rc0):
-                        try:
-                            await asyncio.to_thread(mgr.restart, "roblox")
-                        except Exception as e:
-                            log(f"roblox proxy restart after zombie kill failed: {e}", "rd")
-                        _print_reregister_hint()
-                        await broadcast_status()
-        else:
-            empty_since = None
-        try:
-            st = await asyncio.to_thread(probe_studio)
-        except Exception:
-            continue
-        app, place = st["app"], st["place"]
-        if app is not None and app != prev_app:
-            if app is True:
-                # Roblox-only count, not mgr.list_tools() (sums every server,
-                # e.g. + Blender) - this message is specifically about Roblox
-                # attaching, so it must not borrow addon tool counts (same
-                # class of bug as the startup banner, see roblox_total above).
-                rc = mgr.clients.get("roblox")
-                roblox_now = len(rc.tools_cache) if rc else 0
-                log(f"Roblox Studio connected - {roblox_now} tools ready.", "gr")
-                ever_connected = True
-                disconnected_since = None
-                update_suspected = False
-            else:
-                cur_exe = await asyncio.to_thread(_current_studio_exe)
-                if cur_exe and known_studio_exe and cur_exe != known_studio_exe:
-                    # A newer Studio version folder appeared since we last saw
-                    # one - restarting the proxy will NOT fix this (Studio
-                    # itself refuses the MCP connection while its own toggle
-                    # is off), so tell the user the actual fix instead of
-                    # letting the generic auto-recovery below spin uselessly.
-                    ver = os.path.basename(os.path.dirname(cur_exe))
-                    log(f"Roblox Studio appears to have UPDATED (new version: {ver}). "
-                        "Studio often turns its MCP toggle back OFF after an update - open "
-                        "Roblox Studio > Assistant Settings > MCP Servers and re-enable "
-                        "'Enable Studio as MCP server'.", "yl")
-                    update_suspected = True
-                else:
-                    log("Roblox Studio disconnected - re-enable its MCP server (toggle off/on).", "yl")
-                    update_suspected = False
-                known_studio_exe = cur_exe or known_studio_exe
-                if ever_connected and disconnected_since is None:
-                    disconnected_since = time.time()
-            prev_app = app
-            # studio_watch only used to LOG transitions - an extension sitting
-            # on the pre-start standby screen (no tool calls happening, so
-            # nothing else round-trips to the bridge) never saw Studio connect
-            # or disconnect mid-session until it happened to poll for an
-            # unrelated reason. Push it immediately instead of leaving that
-            # extension staring at a stale snapshot indefinitely.
-            await broadcast_status()
-        # Set once per iteration: BOTH the app-drop branch and the place-churn
-        # block below use it. It used to be assigned only inside the app-drop
-        # branch, so any iteration that skipped that branch crashed the whole
-        # watcher with UnboundLocalError on the churn line (seen live: the task
-        # died right after a successful reconnect, silently ending ALL Studio
-        # monitoring and status broadcasts until the bridge was restarted).
-        now = time.time()
-        if app is False and ever_connected and disconnected_since is not None and not update_suspected:
-            # ~20s sustained (5 polls) before treating it as a real drop, not a
-            # momentary blip; 90s cooldown between recovery attempts so a
-            # Studio that is genuinely closed for a while doesn't get hammered.
-            # Skipped entirely when a version bump was the likely cause (see
-            # above) - restarting our proxy cannot flip Studio's own toggle
-            # back on, so retrying would just be noise every 90s.
-            if now - disconnected_since > 20 and now - last_auto_restart > 90:
-                last_auto_restart = now
-                # Which recovery applies depends on whether a Studio WINDOW is
-                # actually running (validated live 2026-07-11, both directions):
-                #  - Studio RUNNING but not attached: Studio's MCP plugin only
-                #    registers ONCE, at Studio boot or on a toggle flip. It
-                #    never retries by itself, and restarting OUR proxy cannot
-                #    reach into Studio to re-register it - worse, a restart
-                #    that lands while Studio is booting kills the listener at
-                #    the exact moment the plugin makes its single attempt,
-                #    which is precisely how this state got created. So: do NOT
-                #    touch the proxy; tell the user the one action that works.
-                #  - No Studio running: a restart is safe (nothing to collide
-                #    with) and clears genuinely stuck/stale proxy state.
-                if await asyncio.to_thread(_roblox_studio_app_running) is True:
-                    log("Roblox Studio is RUNNING but its MCP plugin has not registered with the "
-                        "bridge yet.", "yl")
-                    log("If Studio is still STARTING UP, give it a minute (its plugin registers "
-                        "late in boot).", "yl")
-                    log("If Studio is fully loaded and this stays yellow: in Roblox Studio, simply "
-                        "OPEN Assistant Settings > MCP Servers - opening that panel makes the "
-                        "plugin re-register (validated twice live). If that's not enough, toggle "
-                        "'Enable Studio as MCP server' OFF then ON there.", "yl")
-                else:
-                    log("Roblox Studio proxy looks stuck (known StudioMCP disconnect bug) - "
-                        "restarting it to recover.", "yl")
-                    try:
-                        await asyncio.to_thread(mgr.restart, "roblox")
-                        await broadcast_status()
-                    except Exception as e:
-                        log(f"auto-restart of roblox proxy failed: {e}", "rd")
-        # PLACE-level churn: `app` can stay stuck reporting True the whole time
-        # (seen live 2026-07-11 - Studio fully closed, list_roblox_studios kept
-        # answering with a leftover studio entry for 4+ minutes, so the app-drop
-        # trigger above never fires) while `place` flip-flops "loaded"/"closed"
-        # every ~10-20s forever. That is not a user opening/closing places that
-        # fast - it is the same class of stuck-proxy bug, just visible at the
-        # place layer instead of the app layer. A fresh StudioMCP.exe process
-        # cannot carry over stale cached state, so the same restart applies.
-        place_transitions[:] = [t for t in place_transitions if now - t < 90]
-        if len(place_transitions) >= 4 and now - last_auto_restart > 90:
-            # Same running-Studio guard as the app-drop recovery above: with a
-            # real Studio window up, a proxy restart can only collide with the
-            # plugin's one-shot registration; the churn is Studio-side state.
-            if await asyncio.to_thread(_roblox_studio_app_running) is not True:
-                last_auto_restart = now
-                log(f"Roblox Studio's place status flipped {len(place_transitions)} times in the last "
-                    "90s (known StudioMCP stuck-proxy bug) - restarting the proxy to recover.", "yl")
-                try:
-                    await asyncio.to_thread(mgr.restart, "roblox")
-                    await broadcast_status()
-                except Exception as e:
-                    log(f"auto-restart of roblox proxy failed: {e}", "rd")
-                place_transitions.clear()
-        if place is not None and place != prev_place:
-            # Debounce: StudioMCP's binding to Studio blips every few seconds
-            # on some machines (self-healing in ~1-4s - seen live as "Bound
-            # studio ... disconnected" stderr). A probe landing in that window
-            # can misread EITHER direction - most confusingly, reporting
-            # "place loaded" from a stale cached response while the place is
-            # actually still closed (seen live). Recheck once before trusting
-            # a transition, in either direction.
-            await asyncio.sleep(1.2)
-            try:
-                confirm = (await asyncio.to_thread(probe_studio))["place"]
-            except Exception:
-                confirm = None
-            if confirm is None or confirm != place:
-                continue  # didn't hold up on recheck - treat as noise, not a real change
-            if place is True:
-                log("Place loaded in Studio.", "gr")
-            else:
-                log("Place closed (Studio app still connected).", "yl")
-            prev_place = place
-            place_transitions.append(time.time())
-            await broadcast_status()
-
-
 async def _supervised(name, coro_factory):
     """Run a watcher coroutine forever, restarting it if it ever raises.
 
-    Both watchers are designed to never raise, but one line proved that wrong
-    in practice (an UnboundLocalError killed studio_watch SILENTLY - asyncio
-    only prints 'Task exception was never retrieved' at shutdown, so all
-    Studio monitoring and status broadcasts just stopped until the user
-    restarted the bridge). A crash in a watcher must never be silent or
-    permanent: log it loudly, wait a beat, start a fresh instance.
+    Watchers are designed to never raise, but one line proved that wrong in
+    practice (an UnboundLocalError killed one watcher SILENTLY - asyncio only
+    prints 'Task exception was never retrieved' at shutdown, so all monitoring
+    and status broadcasts just stopped until the user restarted the bridge).
+    A crash in a watcher must never be silent or permanent: log it loudly,
+    wait a beat, start a fresh instance.
     """
     while True:
         try:
@@ -2010,220 +1227,44 @@ def start_mcp_http():
 
 
 async def main():
-    # Load the config FIRST: whether a 'roblox' server is configured decides
-    # whether any of the Studio-specific machinery below runs at all.
     mgr.load_config()
-    has_roblox = PRIMARY_SERVER_ID in mgr.clients
     log(f"===== BRIDGE START  v{BRIDGE_VERSION}  pid={os.getpid()}  log={LOG_PATH} =====", "cy")
     print(f"\n{C['cy']}  ZeroScript Bridge v{BRIDGE_VERSION}{C['reset']}  {C['dim']}- "
-          f"{'Roblox Studio + ' if has_roblox else ''}local MCP bridge - ws://{HOST}:{PORT}{C['reset']}\n")
-    if has_roblox:
-        # Studio-only boot forensics: kill a leftover StudioMCP.exe from a prior
-        # bridge and free Studio's MCP port from a squatter. Skipped entirely on
-        # machines whose config has no roblox server (no Studio to recover).
-        await asyncio.to_thread(_kill_orphan_studio_mcp)
-        killed_squatter = await asyncio.to_thread(check_studio_port)
-    else:
-        killed_squatter = False
-
-    # Shared "we already told the user the corrective step" flag. Two producers
-    # can print the 'toggle Studio's MCP server' action banner: the early
-    # _early_studio_guidance task (fast, doesn't wait for start_all's ~48s grace
-    # loop) and the post-start_all diagnostic block in _boot_and_diagnose. This
-    # flag lets whichever fires first suppress the other, so the user never sees
-    # the same instruction twice. Mutable dict so both nested coroutines share it.
-    _guidance_shown = {"v": False}
-
-    async def _early_studio_guidance():
-        """Print the corrective action banner WITHOUT waiting for start_all()'s
-        full ~48s grace loop.
-
-        RobloxClient.start() retries tools/list for up to ~48s to catch a Studio
-        that attaches a little late - correct for a Studio that IS coming, but it
-        also means a user whose Studio is simply closed or whose MCP toggle is off
-        waits ~48s before the terminal tells them what to do (the extension, which
-        reads status over the socket, already says it immediately). So after a
-        short grace we check independently and, if still not connected, show the
-        step now. If Studio then attaches, studio_watch prints the green
-        'connected' line - so an early banner is at worst redundant, never wrong
-        (the user confirmed a premature toggle hint during boot is harmless).
-
-        Deliberately does NOT try to distinguish 'Studio closed' from 'MCP toggle
-        off': probe_studio can't tell them apart (both read app=False, see its
-        docstring), and the banner wording already covers both, so there is no
-        finer detection to preserve here. A proven port-squatter case is left to
-        _boot_and_diagnose / studio_watch, which print their own, more specific
-        hint."""
-        if PRIMARY_SERVER_ID not in mgr.clients:
-            return
-        await asyncio.sleep(12)  # give a fast, normal attach the chance to win
-        if _guidance_shown["v"]:
-            return
-        rc = mgr.clients.get(PRIMARY_SERVER_ID)
-        if rc is None or getattr(rc, "saw_foreign_ws_host", False):
-            return
-        if rc.tools_cache:
-            # Tools present - either connected, or an attach is mid-flight; defer
-            # to the authoritative probe / studio_watch rather than second-guess.
-            st = await asyncio.to_thread(probe_studio)
-            if st["app"] is not False:
-                return
-        _guidance_shown["v"] = True
-        action_banner([
-            "Open your place in Roblox Studio.",
-            "Go to: Assistant Settings > MCP Servers",
-            "       > 'Enable Studio as MCP server'",
-            "It can take up to ~10s; this window will turn green.",
-        ])
+          f"local MCP bridge - ws://{HOST}:{PORT}{C['reset']}\n")
 
     async def _boot_and_diagnose():
         """Launch every configured MCP server and print the boot diagnostic
         banner. Runs as a background task AFTER the socket below is already
-        listening, so a slow or absent Roblox Studio never delays the
-        extension's ability to connect and use OTHER MCP servers (e.g.
-        Blender) right away - only the terminal banner and Roblox's own
-        auto-recovery loop wait on this. (mgr.start_all() itself also
-        launches every server in parallel now, for the same reason.)"""
+        listening, so a slow server never delays the extension's ability to
+        connect right away - only the terminal banner waits on this.
+        (mgr.start_all() itself also launches every server in parallel.)"""
         try:
             await asyncio.to_thread(mgr.start_all)
         except Exception as e:
             log(f"server startup error: {e}", "rd")
             log("The bridge will keep running; it retries on the first tool call.", "yl")
         total = len(mgr.list_tools())
-        # Roblox-only count for the corrective message below: list_tools() sums
-        # every configured server (Roblox + addons like Blender), so printing
-        # `total` there falsely blamed addon tools on "NO Roblox Studio connected"
-        # (seen live: 49 = 27 Roblox + 22 Blender, message only about Roblox).
-        roblox_client = mgr.clients.get("roblox")
-        roblox_total = len(roblox_client.tools_cache) if roblox_client else 0
-
-        # Port-hijack check (ropilot etc.), done at boot: the child's stderr has
-        # by now had its ~12s grace loop to reveal it connected to a foreign host
-        # on the MCP port. This is proof the port is squatted even when the
-        # one-shot check_studio_port() at startup missed it (a background helper
-        # grabbing the port a beat after that check ran - seen live 2026-07-13).
-        if (roblox_client is not None and roblox_total == 0
-                and roblox_client.saw_foreign_ws_host):
-            killed, sname = await asyncio.to_thread(_kill_port_squatter)
-            if killed:
-                try:
-                    await asyncio.to_thread(mgr.restart, "roblox")
-                    roblox_total = len(roblox_client.tools_cache)
-                    total = len(mgr.list_tools())
-                except Exception as e:
-                    log(f"roblox proxy restart after squatter kill failed: {e}", "rd")
-                _print_squatter_hint(sname)
-
-        # Set True if we kill a leftover StudioMCP zombie below and print the
-        # re-register hint - so the diagnostic block further down doesn't ALSO
-        # print its own near-identical action banner (the same de-duplication
-        # killed_squatter already does for the ropilot-squatter path).
-        reclaimed_zombie = False
-        # Zombie-port deadlock check, done at boot too (not just studio_watch):
-        # with Studio ALREADY open, _kill_orphan_studio_mcp was skipped by its
-        # safety guard, so a leftover StudioMCP.exe may still own the port and
-        # our fresh proxy just spent its 12s grace loop talking to nothing.
-        if (roblox_client is not None and roblox_total == 0
-                and await asyncio.to_thread(_roblox_studio_app_running) is True
-                and await asyncio.to_thread(_reclaim_studio_port, roblox_client)):
-            try:
-                await asyncio.to_thread(mgr.restart, "roblox")
-                roblox_total = len(roblox_client.tools_cache)
-                total = len(mgr.list_tools())
-            except Exception as e:
-                log(f"roblox proxy restart after zombie kill failed: {e}", "rd")
-            reclaimed_zombie = True
-            _print_reregister_hint()
-
-        # A tool count alone only proves StudioMCP (the proxy) is up - it advertises
-        # its catalogue even with NO Studio attached. The authoritative "a Studio is
-        # actually connected" signal is the list_roblox_studios probe. So we probe
-        # FIRST and only show the green "ready" line when Studio is really attached;
-        # otherwise we show just the corrective step (no misleading green success).
-        # Probe even when total == 0: StudioMCP advertises an EMPTY catalogue when
-        # Studio's MCP server toggle is off (or no place is open), so 0 tools is the
-        # most common "needs a corrective step" state, not a success.
-        _st = await asyncio.to_thread(probe_studio)
-        # Even when Studio (and its place) were ALREADY open before the bridge
-        # started, the freshly-launched StudioMCP proxy needs a moment to (re)bind
-        # to Studio's own MCP port - so an instant probe right after launch often
-        # reads app=False for a beat before flipping True a few seconds later
-        # (studio_watch would catch it, but only after printing a scary yellow
-        # "not connected" block first). Give it the same grace period the tools
-        # probe already gets before deciding it is a real problem.
-        if roblox_client is not None and _st["app"] is False:
-            with _Spinner("    waiting for Roblox Studio to attach..."):
-                for _ in range(8):
-                    await asyncio.sleep(1)
-                    _st = await asyncio.to_thread(probe_studio)
-                    if _st["app"] is not False:
-                        break
-        # A single app=True reading can be a STALE positive: StudioMCP.exe can
-        # answer list_roblox_studios with a leftover studio entry from a PREVIOUS
-        # session even though no Studio window is actually open right now (seen
-        # live 2026-07-11: bridge booted with Studio fully closed, still printed
-        # "Roblox Studio connected" from the very first probe). studio_watch
-        # already distrusts a single reading for PLACE transitions the same way -
-        # apply the identical confirm-before-trusting step here for APP, so the
-        # boot banner can't announce a connection that isn't really there.
-        if roblox_client is not None and _st["app"] is True:
-            await asyncio.sleep(1.5)
-            confirm = await asyncio.to_thread(probe_studio)
-            if confirm["app"] is not True:
-                _st = confirm
-        if roblox_client is not None and (roblox_total == 0 or _st["app"] is False):
-            if killed_squatter or reclaimed_zombie or _guidance_shown["v"]:
-                # The action banner was ALREADY shown - either right after a kill
-                # (check_studio_port / _print_reregister_hint for a zombie) or by
-                # the early _early_studio_guidance task. Repeating the full
-                # explanation here in a different color, seconds later, reads as a
-                # second unrelated problem to a non-technical user (seen live
-                # 2026-07-13: the toggle instruction and this block blurred
-                # together). Just confirm we're still waiting, no new instructions.
-                log("    still waiting for you to toggle Studio's MCP server "
-                    "(see the action box above)...", "yl")
+        if total == 0:
+            if mgr.clients:
+                log("ready - 0 tools available.", "yl")
+                log("    Check each server's command in the extension's menu (MCP servers)", "yl")
+                log("    (or config.json). A dead server is auto-restarted, so an app that", "yl")
+                log("    starts up later will connect on its own.", "yl")
             else:
-                _guidance_shown["v"] = True
-                # No squatter: Studio is simply closed, or its MCP option is off.
-                # Match the exact steps the extension itself tells the user
-                # (Assistant Settings > MCP Servers), not a paraphrase - a
-                # differently-worded instruction here reads as a second,
-                # unrelated problem instead of the same one step.
-                if roblox_total > 0:
-                    log(f"    {roblox_total} Roblox tools loaded, but NO Roblox Studio is connected yet.", "yl")
-                    log("    (This can be a slow attach that clears itself within ~10-15s -", "yl")
-                    log("    watch for a green 'Roblox Studio connected' line right after.)", "yl")
-                action_banner([
-                    "Open your place in Roblox Studio.",
-                    "Go to: Assistant Settings > MCP Servers",
-                    "       > 'Enable Studio as MCP server'",
-                    "It can take up to ~10s; this window will turn green.",
-                ])
-        elif roblox_client is not None and _st["app"] is True:
-            log(f"ready {total} tools available - Roblox Studio connected", "gr")
-        elif roblox_client is None and total == 0:
-            # Fully generic install with no servers yet: nothing to wait for,
-            # just point the user at where servers come from.
-            log("ready - no MCP servers are configured yet.", "yl")
-            log("    Add one in the extension's MCP servers menu (or edit config.json) -", "yl")
-            log("    the bridge picks it up on its next restart.", "yl")
+                log("ready - no MCP servers are configured yet.", "yl")
+                log("    Add one in the extension's MCP servers menu (or edit config.json) -", "yl")
+                log("    the bridge picks it up on its next restart.", "yl")
         else:
             log(f"ready {total} tools available ({len(mgr.clients)} MCP server(s))", "gr")
-        # The studio recovery watcher only exists for the roblox server; on a
-        # generic server set there is nothing Studio-specific to watch.
-        if roblox_client is not None:
-            asyncio.create_task(_supervised(
-                "studio_watch", lambda: studio_watch(_st["app"], _st["place"])))
 
     async def _early_status_pushes():
         """A few follow-up status broadcasts shortly after boot.
 
         mgr.start_all() still doesn't RETURN until every server's thread has
-        joined - including Roblox's, which can take up to ~48s (StudioMCP's
-        own internal "waiting for tools" retry loop, seen live). So a single
-        broadcast placed after start_all() would be just as slow as the old
-        blocking behavior for the exact case this is meant to fix: an addon
-        server (e.g. Blender) that's ready in 1-13s while Roblox is still
+        joined - including a slow one (its own "waiting for tools" retry loop,
+        seen live). So a single broadcast placed after start_all() would be
+        just as slow as the old blocking behavior for the exact case this is
+        meant to fix: a server that's ready in 1-13s while another is still
         slowly timing out. Poll-and-broadcast a few times instead, cheaply,
         so any extension that connected during that window self-corrects
         quickly instead of staying stuck on its first, incomplete snapshot.
@@ -2272,7 +1313,6 @@ async def main():
         log(f"listening on ws://{HOST}:{PORT}  - load the extension and open a supported AI chat", "cy")
         asyncio.create_task(_supervised("server_watch", server_watch))
         asyncio.create_task(_boot_and_diagnose())
-        asyncio.create_task(_early_studio_guidance())
         asyncio.create_task(_early_status_pushes())
         await asyncio.Future()  # run forever
 

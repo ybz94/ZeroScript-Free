@@ -2,7 +2,7 @@
 // core/main.js - the provider-agnostic agentic loop, UI and session state.
 // Drives any AI chat site through the ZSProvider interface (providers/*.js):
 // waits for the model's reply, parses ZeroScript commands (ZSParse), asks the
-// background worker to execute them on the Roblox MCP bridge, and feeds the
+// background worker to execute them on the local MCP bridge, and feeds the
 // result back. Camouflages the system prompt ("Starting Up") and tool JSON
 // behind animated chips, masks injected input, and exposes a Stop button.
 // The model ALWAYS receives an output.
@@ -88,17 +88,6 @@
   const EXT_VERSION = chrome.runtime.getManifest().version;
   // YouTube tutorial - how to set up the Bridge.
   const VIDEO_URL = "https://youtu.be/kPKiZLZ9_Ps";
-  // Work.ink locked link - free "watch an ad" support option. Set once the
-  // locker is created at https://work.ink; the button is hidden until then.
-  const WORKINK_URL = "https://work.ink/2JXi/zeroscript-free-roblox-ai-coding-tool";
-  // Roblox "tip" Game Passes - the native currency for the audience.
-  const ROBUX_PASSES = [
-    { robux: 30, id: 1865342947 },
-    { robux: 100, id: 1866782815 },
-    { robux: 300, id: 1869176990 },
-    { robux: 1000, id: 1865192973 },
-  ];
-  const passUrl = (id) => `https://www.roblox.com/game-pass/${id}`;
   // AI chat sites ZeroScript works on. Keep in sync with manifest.json
   // content_scripts and background.js PROVIDER_URLS when adding a provider.
   const AI_SITES = [
@@ -142,8 +131,8 @@
     // fresh chat shows "Start", not a stale "Agent active".
     loopKey: null,
     // Identity of the assistant turn ALREADY present when the current session
-    // started. A page reload can RESTORE an in-progress generation (e.g. an
-    // execute_luau that was mid-stream in an A/B turn); that restored turn looks
+    // started. A page reload can RESTORE an in-progress generation (e.g. a tool
+    // call that was mid-stream in an A/B turn); that restored turn looks
     // like a fresh live tool finish to the auto-resume watchdog, which then ran it
     // into the NEW conversation the user had just opened (validated live, 2026-06).
     // autoResume never resumes the turn whose id matches this baseline.
@@ -173,9 +162,9 @@
     // before sending (see the comment in runTool's r.images branch).
     pendingImages: null,
     // BARE names of tools observed to return images at least once this session.
-    // For the KNOWN Roblox vision tool (screen_capture) toolCategory already
-    // gives the "screen" chip optimistically at run time; a custom MCP tool's
-    // name tells us nothing, so we can't predict it - but once we've SEEN it
+    // For a KNOWN vision tool (screen_capture) toolCategory already gives the
+    // "screen" chip optimistically at run time; an arbitrary MCP tool's name
+    // tells us nothing, so we can't predict it - but once we've SEEN it
     // return an image we can be optimistic on its NEXT call. Populated in the
     // agent loop's result branch when A.pendingImages lands.
     imageTools: new Set(),
@@ -235,7 +224,7 @@
   // can slide their timers forward by that amount. Without this, every deadline
   // inside waitForResponse (inactivity timeout, warm-up, text-stability) keeps
   // ticking while nothing can be read - which is what turned "user switched to
-  // Studio for 5 minutes" into "No response from <site>, the loop has stopped"
+  // their other app for 5 minutes" into "No response from <site>, the loop has stopped"
   // and left the pending command showing a grey "not run".
   async function parkHidden() {
     if (!document.hidden || A.stop) return 0;
@@ -419,10 +408,10 @@
       // tab has no layout (innerText reads come back "", getBoundingClientRect is
       // 0x0) and Chrome throttles its timers, so every read here is unreliable -
       // and the site may legitimately keep streaming for as long as the user is
-      // away in Studio. Park until the tab is foreground again, then slide EVERY
-      // deadline forward by the time we were parked so nothing that was mid-flight
-      // when the user switched away expires the moment they come back. This is the
-      // fix for "I switched to Studio, came back and the command says 'not run'":
+      // away in another app. Park until the tab is foreground again, then slide
+      // EVERY deadline forward by the time we were parked so nothing that was
+      // mid-flight when the user switched away expires the moment they come back.
+      // This is the fix for "I switched away, came back and the command says 'not run'":
       // the loop used to burn its 5-minute inactivity budget off-screen, end with
       // "No response from <site>", and orphan the pending command.
       if (document.hidden && !A.stop) {
@@ -534,7 +523,7 @@
       // doneSince every iteration, so the watcher never finalized at all.
       // ...but NEVER treat a still-OPEN command block as "done" while the site is
       // genuinely still generating. A model writing a big command (a 3799-char
-      // execute_luau seen live on GLM) can pause >STABLE_MS between tokens - that
+      // code payload seen live on GLM) can pause >STABLE_MS between tokens - that
       // is a mid-write gap, NOT a wedged stop button on a COMPLETE reply. Firing
       // here parsed the half-written JSON and stamped a false "bad JSON" error
       // while GLM was still typing. RESPONSE_TIMEOUT still bounds a truly stuck one.
@@ -625,8 +614,7 @@
       // don't implement replyUnsettled (DeepSeek/Gemini/GLM/Kimi/Arena).
       const cmdShaped = P.replyUnsettled && (
         ZSParse.hasToolSignature(r) ||
-        (ZSParse.LUA_END_RE.test(r) && !ZSParse.LUA_START_RE.test(r)) ||
-        (/"(?:datamodel_type|edits|old_string|new_string|file_path|target_file)"\s*:/.test(r) &&
+        (/"(?:edits|old_string|new_string|file_path|target_file)"\s*:/.test(r) &&
           !/"command"\s*:/.test(r))
       );
       if (cmdShaped && P.replyUnsettled(d.item)) {
@@ -684,9 +672,9 @@
         // A closed-looking JSON command envelope that NAMES A REAL TOOL but failed
         // to parse - typically an unescaped " inside a code/string param broke the
         // JSON (seen live on Kimi's execute_blender_code: `name = "Camera_System"`
-        // mid-code). Unlike execute_luau there is NO ###LUA### fallback, so the
-        // command silently dropped and the loop finalized the turn as a plain-text
-        // answer with no result and no error - a dead turn. Fire a parse_error so
+        // mid-code). There is no fallback format, so the command silently dropped
+        // and the loop would finalize the turn as a plain-text answer with no
+        // result and no error - a dead turn. Fire a parse_error so
         // the model can fix its JSON. GATED on a known command name so prose that
         // merely quotes {"command":"..."} (a DeepSeek-style explanation, or a
         // placeholder like "command_name") is NOT misread as a broken command and
@@ -710,24 +698,17 @@
         diag("cmd.dsml", { len: r.length });
         return { kind: "parse_error", reason: "dsml", raw: r, item: d.item };
       }
-      // Malformed execute_luau: the model wrote the ###END_LUA### closer but
-      // FORGOT the ###LUA### opener, so hasToolSignature missed it and the block
-      // never ran (seen on Gemini). Don't silently treat it as a final answer -
-      // nudge a rewrite instead of leaving the user stuck on a dead turn.
-      if (ZSParse.LUA_END_RE.test(r) && !ZSParse.LUA_START_RE.test(r) && !r.includes(ZSParse.START_M)) {
-        return { kind: "parse_error", reason: "luaOpener", raw: r, item: d.item };
-      }
       // Malformed command: the model emitted a tool's RAW ARGUMENTS as a bare JSON
-      // object (e.g. {"datamodel_type":...,"edits":[...],"file_path":...}) instead of
+      // object (e.g. {"file_path":...,"edits":[...],"old_string":...}) instead of
       // the required {"command":...,"params":...} envelope - it treated the tool as a
       // real callable function (seen on Gemini). Those argument keys never appear in a
       // normal prose answer, so nudge a rewrite rather than ending the turn silently.
-      if (/"(?:datamodel_type|edits|old_string|new_string|file_path|target_file)"\s*:/.test(r) &&
+      if (/"(?:edits|old_string|new_string|file_path|target_file)"\s*:/.test(r) &&
           !/"command"\s*:/.test(r)) {
         return { kind: "parse_error", reason: "envelope", raw: r, item: d.item };
       }
       // Malformed command, function-calling flavour: the model named a REAL tool
-      // but under the WRONG KEY - {"toolName": "get_studio_state", "studio_id": …}
+      // but under the WRONG KEY - {"toolName": "some_tool", "arg1": …}
       // instead of {"command": …, "params": {…}}. It reads as a deliberate call,
       // yet hasToolSignature never fires (no "command" key, no markers) and the
       // argument keys are the tool's own, so neither guard above catches it: the
@@ -836,9 +817,9 @@
   };
 
   // ── Learned image tools (reload-proof "screen" chip) ──────────────────────
-  // The known Roblox vision tool (screen_capture) is themed "screen" by name via
-  // ZS.toolCategory. A custom MCP tool's NAME reveals nothing, so we learn which
-  // ones return images and persist that across reloads: with it, a revisited or
+  // A known vision tool (screen_capture) is themed "screen" by name via
+  // ZS.toolCategory. An arbitrary MCP tool's NAME reveals nothing, so we learn
+  // which ones return images and persist that across reloads: with it, a revisited or
   // reloaded conversation still shows the image-capture chip (not the generic
   // wrench), and the NEXT call of a known image tool is optimistic from the start.
   // The marker below is the exact tail runTool appends to a feedback that carries
@@ -864,10 +845,9 @@
 
   // Refresh the tool catalogue - but never pay for it twice in a row.
   //
-  // DEGRADED MODE (Roblox Studio closed, running on an addon server like Blender)
-  // is where this used to hurt: a list_tools whose Roblox half is dead blocks the
-  // bridge until it gives up, and the extension waited the FULL background timeout
-  // for it. The boot sequence calls this three times in a row - startSession(),
+  // A SLOW OR DEAD server is where this used to hurt: a list_tools whose slow
+  // half blocks the bridge until it gives up, and the extension waited the FULL
+  // background timeout for it. The boot sequence calls this three times in a row - startSession(),
   // then the model's list_commands, then list_mcp_servers - so the user watched
   // ~a minute of dead air with the model's reply already finished on screen
   // ("the first commands take forever even though the model clearly stopped
@@ -899,8 +879,8 @@
     // list_commands), so it closes the hole the loop-entry gate alone left open:
     // the tab is foreground when a cycle starts, the model then generates for
     // 30-120s, the user minimizes MID-generation, and waitForResponse returns a
-    // tool call that fired into Studio off-screen (observed live: GLM minimized
-    // still ran execute_luau). Parking here (no time cap) means the call runs the
+    // tool call that fired off-screen (observed live: GLM minimized still ran
+    // its call). Parking here (no time cap) means the call runs the
     // moment the tab is foreground again, instead of being lost or run blind.
     if (document.hidden && !A.stop) {
       diag("tool.waitVisible", { name });
@@ -925,10 +905,8 @@
       await ensureTools();
       const servers = (A.bridge && A.bridge.servers) || [];
       const lines = servers.length
-        ? servers.map((sv) => {
-            const label = sv.id === "roblox" ? "Roblox Studio" : sv.id;
-            return `- ${sv.id}: ${label} - ${sv.alive ? `${sv.tools || 0} commands available` : "offline (no tools)"}`;
-          })
+        ? servers.map((sv) =>
+            `- ${sv.id} - ${sv.alive ? `${sv.tools || 0} commands available` : "offline (no tools)"}`)
         : ["- (the bridge did not report any servers - it has none configured, or it is too old to report health)"];
       return (
         `Output of 'list_mcp_servers':\n` +
@@ -937,7 +915,7 @@
       );
     }
     // Virtual command: list available commands with full details. Defaults to
-    // the default server (roblox when connected, else the single live server)
+    // the default server (the single live server, else the first configured)
     // - a DIFFERENT server's tools only ever show up if the model explicitly
     // asks via {"server": "<id>"} (see list_mcp_servers).
     if (name === "list_commands" || name === "list_tools") {
@@ -950,26 +928,6 @@
       // so the A.toolList check below excludes it.)
       if (!bridgeSrv.length && !A.toolList.length) {
         return `Output of '${name}':\nNo MCP servers are connected - the bridge is running but has no servers configured. Ask the user to add one in the extension's MCP servers menu (or config.json), then restart the bridge.`;
-      }
-      // The MCP proxy keeps advertising Roblox's catalogue even with no Studio
-      // attached, so list_commands would hand back the full command list and read
-      // as "Roblox is fine" - then every command silently fails. When Roblox is
-      // actually unusable, short-circuit the DEFAULT (roblox) listing into a plain
-      // "Roblox is down" note that points the model at the other server(s), so it
-      // can keep working in degraded mode instead of firing dead Roblox commands.
-      if (requested === "roblox" && bridgeSrv.some((x) => x.id === "roblox")) {
-        const s = A.bridge || {};
-        const srv = s.servers || [];
-        const rbx = srv.find((x) => x.id === "roblox");
-        const rbxAlive = rbx ? !!rbx.alive : (!!s.mcpAlive || srv.some((x) => x.alive));
-        const rbxUsable = !!s.connected && rbxAlive && s.studio !== false;
-        if (!rbxUsable) {
-          const others = srv.filter((x) => x.id !== "roblox" && x.alive && (x.tools || 0) > 0);
-          const otherStr = others.length
-            ? `Other connected MCP server(s): ${others.map((x) => x.id).join(", ")}. Call list_mcp_servers, then list_commands with a "server" param to use them for anything that does not need Roblox.`
-            : `No other MCP server is connected right now.`;
-          return `Output of '${name}':\nRoblox Studio is currently OFFLINE (closed, no place open, or its MCP server disabled), so its commands cannot run. This is an environment problem on the user's machine, not your mistake. Tell the user in one short sentence to open their place in Roblox Studio and enable its MCP server. ${otherStr}`;
-        }
       }
       const known = new Set(A.toolList.map((t) => t.server).filter(Boolean));
       // Tools from a bridge that doesn't tag "server" yet (old version) have no
@@ -1021,17 +979,7 @@
     if (A.toolNames.size && !A.toolNames.has(name)) {
       return ZS.FEEDBACK.unknownTool(name, [...A.toolNames]);
     }
-    // The Roblox MCP REQUIRES datamodel_type on execute_luau (enum Edit/Client/
-    // Server). The ###LUA### parser already fills it in, but the model may also
-    // write the JSON form without it - default to "Edit" so the call never
-    // soft-fails with "datamodel_type is required".
-    if (bareName === "execute_luau" && !args.datamodel_type) args.datamodel_type = "Edit";
-    // The player-input tools only run against the Client datamodel (play mode) and
-    // "Client" is the sole allowed value, so default it when the model omits it -
-    // it can only be right. (It still needs the game RUNNING; that's documented.)
-    if ((bareName === "user_keyboard_input" || bareName === "user_mouse_input") && !args.datamodel_type)
-      args.datamodel_type = "Client";
-    const timeout = name === "execute_luau" ? 20000 : 120000;
+    const timeout = 120000;
     // Hard watchdog: even if the background worker never answers, the loop
     // gets a definitive result and continues.
     const hardCap = new Promise((res) =>
@@ -1049,31 +997,12 @@
     clearInterval(stopTimer);
     if (r && r.kind === "stopped") return "(stopped by user)";
     if (!r) return ZS.FEEDBACK.bridgeOffline;
-    // The MCP server answers SUCCESSFULLY (ok:true) when no Studio is attached
-    // (Studio closed / no place / MCP option disabled) - with an explanatory
-    // text instead of a result. Surface it as a proper environment ERROR so the
-    // model stops and tells the user, instead of treating it as tool output.
-    if (r.ok && /Unable to find an active Studio instance|previously active Studio has disconnected/i.test(r.text || "")) {
-      ui.banner("warn", "Roblox Studio is not connected",
-        "Open your place in Roblox Studio and enable the MCP server (Assistant AI → … → Manage MCP Servers → Enable Studio as MCP Server), then try again.");
-      return ZS.FEEDBACK.studioOffline;
-    }
-    // The Roblox MCP reports missing/invalid required parameters as a SUCCESS
-    // whose text is just the complaint (e.g. "datamodel_type is required").
+    // Some MCP servers report missing/invalid required parameters as a SUCCESS
+    // whose text is just the complaint (e.g. "path is required").
     // Re-shape those into a real ERROR so the model corrects the call instead
     // of misreading it as tool output.
     if (r.ok && r.text && /^[\w .'"-]{0,60}\bis (required|not available|invalid)\b[\w .'"-]{0,80}$/i.test(r.text.trim())) {
       return `ERROR calling '${name}': ${r.text.trim()}.\nA required or invalid parameter - check the command's parameters with list_commands, fix the call and retry.`;
-    }
-    // The Roblox MCP also reports Luau PARSE/RUNTIME errors as a SUCCESS whose
-    // text is the executor's own stack trace ("…ExecuteLuauTool:139: …
-    // CommandExecution:54: <real error>" - validated live). Genuine script
-    // output never contains those internal paths. Re-shape into a real ERROR so
-    // the model gets the fix-it hints below and the chip settles red, not ✓
-    // green - and strip the internal frames so only the useful part remains.
-    if (r.ok && bareName === "execute_luau" && r.text &&
-        /\b(?:ExecuteLuauTool|CommandExecution):\d+:/.test(r.text)) {
-      r = { ok: false, error: r.text.replace(/^(?:\S*(?:ExecuteLuauTool|CommandExecution):\d+:\s*)+/, "").trim() || r.text };
     }
     if (r.ok) {
       if (r.images && r.images.length && !P.supportsVision) {
@@ -1119,39 +1048,13 @@
     }
     if (r.kind === "disconnected") return ZS.FEEDBACK.bridgeOffline;
     if (r.kind === "timeout") {
-      return `ERROR: tool '${name}' timed out after ${name === "execute_luau" ? 20 : 120}s.\n${r.error}\nTry a shorter/simpler call or check that ${hasRobloxServer() ? "Roblox Studio is open" : "the MCP server is running"} and responsive.`;
-    }
-    if (name === "execute_luau") {
-      const err = r.error || "";
-      // "Failed to parse command code" is StudioMCP's GENERIC parse rejection: an
-      // empty/mis-marked block is only ONE of its causes. The others are ordinary
-      // Luau syntax errors and - seen live on Meta AI 2026-08-13 - code that is
-      // syntactically fine but too big for the parser: a `return 1+1+1+…` chain
-      // ran at ~500 terms (1006 chars) and was rejected at ~1000 (2006 chars).
-      // Telling the model its block was empty when we DID send it a full code
-      // string sends it to fix something that isn't broken; it retries the same
-      // payload and fails again (the reported spam of parse errors). Only give the
-      // marker advice when the code we actually sent really was empty.
-      const luaCode = args.code || "";
-      const hint = err.includes("Failed to parse command code")
-        ? !luaCode.trim()
-          ? "Your code block was empty or the marker was wrong. Use exactly ###LUA### (three hashes) - never ###LUA---. The code must be between ###LUA### and ###END_LUA###."
-          : `Roblox refused to PARSE the code (${luaCode.length} chars sent, so it was not empty). Either the Luau syntax is invalid, or the code is too large/complex for the parser - a single huge expression or a very long script can be rejected outright. Check the syntax first; if it looks correct, split the work into several smaller calls.`
-        : err.includes("attempt to") || err.includes("nil value")
-          ? "Lua runtime error. Check that the API you are calling exists (use game:GetService() to access services). Make sure you use 'return' to output values, not 'print()'."
-          : "Check your Lua syntax, make sure you use 'return' to output values (not 'print()'), and that all APIs you call exist in the current Roblox Studio context.";
-      return `ERROR in execute_luau: ${err}\n\n${hint}\n\nFix the code and retry.`;
+      return `ERROR: tool '${name}' timed out after 120s.\n${r.error}\nTry a shorter/simpler call or check that the MCP server is running and responsive.`;
     }
     return `ERROR calling '${name}': ${r.error}\nRead the error carefully, fix the call or try a different approach.`;
   }
 
   function argSummary(call) {
     if (!call) return "";
-    if (call.tool === "execute_luau") {
-      const code = (call.arguments && call.arguments.code) || "";
-      const first = code.split("\n").map((s) => s.trim()).filter(Boolean)[0] || "";
-      return first.slice(0, 46);
-    }
     const a = call.arguments || {};
     const k = Object.keys(a)[0];
     if (!k) return "";
@@ -1180,8 +1083,8 @@
   const feedbackIsError = (feedback) => feedback.startsWith("ERROR") || bodyLooksFailed(feedback);
 
   // Some tools answer with raw JSON on one line, and a 44-char slice of it makes
-  // a chip that says nothing: list_roblox_studios read
-  // `{"studios":[{"id":"8521cfad-f8d9-46f4-8cbe-2`. Summarise the SHAPE instead,
+  // a chip that says nothing (a list tool read
+  // `{"items":[{"id":"8521cfad-f8d9-46f4-8cbe-2`). Summarise the SHAPE instead,
   // in the same spirit as the boot chip's "25 commands". Returns null when the
   // body isn't JSON, so plain-text outputs keep their first line unchanged.
   function jsonSummary(body) {
@@ -1192,8 +1095,8 @@
     if (!v || typeof v !== "object") return null;
     const keys = Object.keys(v);
     // The common MCP shape: one wrapper key holding the list. Its name is already
-    // plural ("studios", "scripts"), so it reads correctly as-is - just drop the
-    // trailing "s" when there is exactly one, so it says "1 studio".
+    // plural ("items", "files"), so it reads correctly as-is - just drop the
+    // trailing "s" when there is exactly one, so it says "1 item".
     if (keys.length === 1 && Array.isArray(v[keys[0]])) {
       const n = v[keys[0]].length;
       const word = n === 1 ? keys[0].replace(/s$/, "") : keys[0];
@@ -1230,7 +1133,6 @@
   // Full args / code, shown in a tool chip's expandable body.
   function callBody(call) {
     const a = call.arguments || {};
-    if (call.tool === "execute_luau") return (a.code || "").trim();
     try { return JSON.stringify(a, null, 2); } catch { return String(a); }
   }
 
@@ -1261,7 +1163,7 @@
         // is the FOREGROUND tab of its Edge window. document.visibilityState
         // (mirrored by document.hidden) is the right signal, NOT window focus:
         //  - Edge loses OS focus but the AI tab stays the active tab (user is
-        //    working in Roblox Studio) -> still "visible" -> the agent keeps
+        //    working in another app) -> still "visible" -> the agent keeps
         //    running, exactly as wanted.
         //  - The AI tab is backgrounded (another tab in front) or the window is
         //    minimized -> "hidden" -> pause here. Background tabs throttle
@@ -1350,9 +1252,8 @@
               : "bad JSON";
             decorate.toolBox(res.item, failName, "err", detail, true, "", ZS.toolCategory(failName));
           }
-          // Pass the detected command name so the feedback only offers the
-          // ###LUA### block when it actually applies (execute_luau) - never for a
-          // truncated/broken execute_blender_code or other JSON-only command.
+          // Pass the detected command name so the feedback can name the specific
+          // command that failed instead of a generic "a command".
           base = await submitAndGetBase(ZS.FEEDBACK.parseError(res.reason, failName));
           continue;
         }
@@ -1427,7 +1328,7 @@
               summary: outSummary(feedback), lineCount: lns.length,
               firstLine: (lns[0] || "").slice(0, 90), lastLine: (lns[lns.length - 1] || "").slice(0, 90) });
           }
-          // A tool (Roblox OR any custom MCP server) that actually RETURNED an
+          // A tool (any MCP server) that actually RETURNED an
           // image becomes a "screen" chip - even if its name never let us guess.
           // Reactive, not predictive: A.pendingImages is set by runTool before it
           // returns. Remember the name so its next call is optimistic (see above).
@@ -1464,21 +1365,9 @@
             A.toolCallsSinceReminder++;
             if (A.toolCallsSinceReminder >= REMIND_TOOLS_EVERY) {
               A.toolCallsSinceReminder = 0;
-              // Roblox mode: scope the reminder to the Roblox server, exactly like
-              // list_commands - re-injecting EVERY connected server's tools merged
-              // flat would bloat the model's context. Anti-drift only needs the
-              // Roblox set; other servers' commands were listed on demand and the
-              // bridge routes by name regardless. The memory nudge is Roblox-only
-              // (project memory lives in the place).
-              // No roblox server: there is no primary to scope to - remind the
-              // union of every connected tool (that IS the model's default view)
-              // in generic wording, and skip the memory nudge.
-              if (hasRobloxServer()) {
-                const roblox = A.toolList.filter((t) => (t.server || "roblox") === "roblox");
-                toSend += ZS.toolsReminder(roblox) + "\n" + ZS.memoryNudge();
-              } else {
-                toSend += ZS.toolsReminder(A.toolList, true);
-              }
+              // Remind the union of every connected tool (that IS the model's
+              // default view). The bridge routes by name regardless of server.
+              toSend += ZS.toolsReminder(A.toolList);
               diag("tools.reminder", { after: REMIND_TOOLS_EVERY });
             }
           }
@@ -1649,26 +1538,20 @@
   }
 
   // ── Server topology ───────────────────────────────────────────────────────
-  // ZeroScript is a generic "web AI chat -> local MCP bridge" client. Roblox
-  // Studio is the DEFAULT server, not a dependency: every Roblox-specific
-  // behaviour (wording, place-probe states, project memory) is gated on the
-  // bridge advertising a server with id "roblox". With any other server set -
-  // or none - the whole flow runs generic. A.bridge holds the LAST status
-  // snapshot from the bridge; before the first one arrives it has no `servers`
-  // key, and every helper below then falls back to the classic Roblox-only
-  // assumption (matching what an old bridge would report).
+  // ZeroScript is a generic "web AI chat -> local MCP bridge" client. A.bridge
+  // holds the LAST status snapshot from the bridge; before the first one
+  // arrives it has no `servers` key, and every helper below then falls back
+  // to "no servers yet".
   function bridgeServers() { return ((A.bridge && A.bridge.servers) || []); }
-  function hasRobloxServer() { return bridgeServers().some((x) => x.id === "roblox"); }
   // A server that is actually usable right now (process alive + tools loaded).
   function liveServers() { return bridgeServers().filter((x) => x.alive && (x.tools || 0) > 0); }
-  // Default target for list_commands: "roblox" when present (original
-  // behaviour), else the single live server, else the first configured id.
+  // Default target for list_commands: the single live server, else the first
+  // configured id, else "" (the caller handles the empty case).
   function defaultServerId() {
     const srv = bridgeServers();
-    if (srv.some((x) => x.id === "roblox")) return "roblox";
     const live = liveServers();
     if (live.length) return live[0].id;
-    return srv[0] ? srv[0].id : "roblox";
+    return srv[0] ? srv[0].id : "";
   }
 
   // The full system prompt for the CURRENT provider, user settings and
@@ -1866,7 +1749,7 @@
     // Snapshot any turn already on screen at session start (normally none on a
     // clean new chat; on a reload-restored generation it's the stray turn). The
     // auto-resume watchdog refuses to run a tool from this baseline turn so a
-    // restored execute_luau can't leak into the freshly started conversation.
+    // restored tool call can't leak into the freshly started conversation.
     A.bootBaselineId = P.lastAssistantId ? P.lastAssistantId() : null;
     A.starting = true;
     const myGen = ++A.startGen;   // identity of THIS bootstrap
@@ -1884,9 +1767,7 @@
       if (!alive()) return;
       if (!A.toolList.length) {
         ui.banner("warn", "No MCP tools available",
-          hasRobloxServer()
-            ? "Could not fetch tools. Run start.bat and make sure Roblox Studio is open (with its MCP server enabled), then try again."
-            : "Could not fetch tools. Run start.bat, then check the MCP servers in the ⋯ menu (or config.json) - each needs a live command, then try again.");
+          "Could not fetch tools. Run start.bat, then check the MCP servers in the ⋯ menu (or config.json) - each needs a live command, then try again.");
         return;
       }
       const modeState = await P.ensureComposerReady("startup");
@@ -1914,21 +1795,12 @@
           (firstName === "list_commands" || firstName === "list_tools")) {
         decorate.toolBox(startRes.item, "Loading commands", "run", "", true);
         const toolFeedback = await runTool(startRes.calls[0]);
-        // Roblox down short-circuits list_commands into a plain "offline" note
-        // (main.js, list_commands handler) instead of the real catalogue - detect
-        // that and show it as such, rather than the STALE cached tool count below
-        // (the bridge keeps advertising Roblox's catalogue even with no Studio
-        // attached, so A.toolList still has 25+ entries that were never actually
-        // usable this boot).
-        if (/Roblox Studio is currently OFFLINE/.test(toolFeedback)) {
-          decorate.toolBox(startRes.item, "Loading commands", "err", "Roblox offline", true);
-        } else {
+        {
           // Count what the model ACTUALLY received: list_commands is scoped to the
           // default server (main.js, list_commands handler), so showing
-          // A.toolList.length (every connected server merged - Roblox + Blender +
-          // addons) overstated the boot count and made it look like all servers
-          // were loaded at once. Count the default-server-scoped tools instead,
-          // matching the real result.
+          // A.toolList.length (every connected server merged) overstated the boot
+          // count and made it look like all servers were loaded at once. Count
+          // the default-server-scoped tools instead, matching the real result.
           const defId = defaultServerId();
           const serverCount = A.toolList.filter((t) => (t.server || defId) === defId).length;
           decorate.toolBox(startRes.item, "Loading commands", "done", `${serverCount} commands`, true);
@@ -1941,9 +1813,7 @@
       A.started = true;
       rememberSession(P.conversationKey()); // survives virtualization AND reloads
       ui.setStarted(true);
-      ui.toast(hasRobloxServer()
-        ? `Agent ready. Ask ${P.displayName} to build something in Roblox.`
-        : `Agent ready. Ask ${P.displayName} to do something on your machine.`);
+      ui.toast(`Agent ready. Ask ${P.displayName} to do something on your machine.`);
     } catch (e) {
       if (alive()) ui.banner("warn", "Startup failed", String((e && e.message) || e));
     } finally {
@@ -1966,7 +1836,6 @@
   const SVG = (p) => `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${p}</svg>`;
   const ICONS = {
     screen:  SVG('<rect x="3" y="4" width="18" height="13" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/>'),
-    roblox:  SVG('<path d="M12 2 3 7v10l9 5 9-5V7z"/><path d="M3 7l9 5 9-5M12 12v10"/>'),
     read:    SVG('<circle cx="11" cy="11" r="7"/><line x1="21" y1="21" x2="16.65" y2="16.65"/>'),
     edit:    SVG('<path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4z"/>'),
     generate: SVG('<path d="M12 2v4M12 18v4M4.9 4.9l2.8 2.8M16.3 16.3l2.8 2.8M2 12h4M18 12h4M4.9 19.1l2.8-2.8M16.3 7.7l2.8-2.8"/>'),
@@ -2371,7 +2240,7 @@
         // NO result below it, not live and not loop-owned, whose generation is now
         // stale (typically the page/extension was reloaded while this command sat
         // un-executed). The auto-resume watchdog deliberately refuses to run a
-        // reload-restored generation (the "execute_luau leaked into the new chat"
+        // reload-restored generation (the "a tool call leaked into the new chat"
         // leak guard - same lastGenAt staleness test used here), so it will NEVER
         // execute. Painting it a green ✓ "done" falsely implies the tool ran and
         // succeeded; show a neutral, greyed "not run" state instead (cosmetic only -
@@ -2462,7 +2331,7 @@
                  !e.querySelector(".zs-tool-hide") &&
                  ZSParse.hasCommandShape(e.textContent || ""));
         // A tool learned to return images gets the "screen" chip even though its
-        // name alone wouldn't reveal it (parity with Roblox screen_capture). The
+        // name alone wouldn't reveal it (parity with screen_capture). The
         // fact can land AFTER this turn first settled (imageTools loads from
         // storage async, or the result turn below is classified later the same
         // pass), so repaint when the current chip's category is stale too - the
@@ -2578,7 +2447,7 @@
     let root, bar, dot, brandEl, stateEl, actionBtn, stopBtn, switchBtn, supportBtn, discordEl, menuEl, unstableEl;
     let cover, coverRaf, barRaf;
     let openMenuFn = null; // set by build(); lets the popup force the panel open via runtime message
-    let bridgeOk = false, studioDown = false, placeDown = false, appDown = false, addonOk = false, studioProcUp = false, serverDown = false;
+    let bridgeOk = false, serverDown = false;
     let wasConnected = false, bridgeBannerEl = null;
 
     function build() {
@@ -2699,9 +2568,9 @@
       if (ta && document.activeElement !== ta) ta.value = customPrompt;
     }
 
-    // ── Custom MCP servers ──────────────────────────────────────────────────
-    // User-added MCP servers shown at the very bottom of the menu. Every server
-    // is first-class (roblox included - see mergedMcpServers). Each entry is
+    // ── MCP servers ─────────────────────────────────────────────────────────
+    // The MCP servers shown at the bottom of the menu. Every server is
+    // first-class (see mergedMcpServers). Each entry is
     // { id, name, command } - `command` is the raw string the user typed (split
     // into command+args when sent to the bridge). The bridge writes them to
     // config.json and restarts to load them; this local list only drives the
@@ -2726,18 +2595,16 @@
     // "disappears" from the menu while still running - and self-heals the local
     // cache the moment we see a server it didn't know about.
     function mergedMcpServers() {
-      // EVERY server the bridge reports, roblox included: since the bridge no
-      // longer protects the roblox entry, the menu is the one place the user
-      // can remove it (fully generic setup) - same row, same remove button as
-      // any other server.
+      // EVERY server the bridge reports: the menu is the single place the user
+      // manages the server set - same row, same remove button for every one.
       const live = ((A.bridge && A.bridge.servers) || []);
       const byId = new Map(customMcpServers.map((s) => [s.id, s]));
       const merged = live.map((sv) => {
         const cached = byId.get(sv.id);
         return {
           id: sv.id,
-          name: (cached && cached.name) || (sv.id === "roblox" ? "Roblox Studio" : sv.id),
-          command: (cached && cached.command) || (sv.id === "roblox" ? "launch_studio_mcp.py" : null),
+          name: (cached && cached.name) || sv.id,
+          command: (cached && cached.command) || null,
           alive: sv.alive, tools: sv.tools,
         };
       });
@@ -2755,10 +2622,10 @@
       }
       return merged;
     }
-    // Derive a config-safe server id from a display name (roblox is reserved).
+    // Derive a config-safe server id from a display name.
     function mcpSlug(name) {
       let s = String(name || "").toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
-      if (!s || s === "roblox") s = `addon-${s || "server"}`;
+      if (!s) s = `addon-server`;
       let id = s, n = 2;
       while (customMcpServers.some((x) => x.id === id)) id = `${s}-${n++}`;
       return id;
@@ -2789,7 +2656,7 @@
 
     // ── The "more" menu (⋯) ─────────────────────────────────────────────────
     // One popover holding every secondary control: other AI sites, the custom
-    // prompt, and support (Ko-fi + Robux). Opens above the bar.
+    // prompt, and support (Ko-fi). Opens above the bar.
     function buildMenu() {
       const here = (P.displayName || "").toLowerCase();
       const hostOf = (u) => { try { return new URL(u).hostname.replace(/^www\./, ""); } catch { return ""; } };
@@ -2801,15 +2668,9 @@
           ? `<div class="zs-site-opt zs-site-here">${label}<span class="zs-site-badge">active</span></div>`
           : `<button class="zs-site-opt" data-u="${s.url}">${label}<span class="zs-site-go">&rarr;</span></button>`;
       }
-      let passes = "";
-      for (const p of ROBUX_PASSES) {
-        passes += `<button class="zs-tip-opt zs-tip-rbx" data-u="${passUrl(p.id)}"><span class="zs-rbx-cur">R$</span>${p.robux}</button>`;
-      }
       const esc = (s) => String(s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
       const mergedServers = mergedMcpServers();
-      // One uniform list - every server, roblox first when present. Roblox
-      // Studio shows a human name and its launcher as the command; it carries
-      // the same health dot and remove button as any other server.
+      // One uniform list - every server, same row and same remove button.
       let mcpList = "";
       mergedServers.forEach((s, i) => {
         // alive === undefined -> the bridge hasn't reported this server's health
@@ -2825,25 +2686,19 @@
            ${sites}
          </section>
          <section class="zs-menu-sec">
-           <div class="zs-sec-label"><span>Free Support</span></div>
+           <div class="zs-sec-label"><span>Support</span></div>
            <button class="zs-tip-opt zs-tip-star" data-u="${GITHUB_URL}"><span>Star on GitHub</span><span class="zs-tip-sub">free, helps a lot</span></button>
-           ${WORKINK_URL ? `<button class="zs-tip-opt zs-tip-ad" data-u="${WORKINK_URL}"><span>Watch an ad to support</span><span class="zs-tip-sub">free, takes a minute</span></button>` : ""}
-         </section>
-         <section class="zs-menu-sec">
-           <div class="zs-sec-label"><span>Support with Robux / Ko-fi</span></div>
            <button class="zs-tip-opt zs-tip-kofi" data-u="${KOFI_URL}"><span>Tip on Ko-fi</span><span class="zs-tip-sub">any amount</span></button>
-           <div class="zs-tip-sep">or tip in Robux</div>
-           <div class="zs-rbx-grid">${passes}</div>
          </section>
          <section class="zs-menu-sec">
            <div class="zs-sec-label"><span>Custom prompt</span></div>
            <div class="zs-menu-note">Added below the system prompt on every new session. The built-in prompt can't be edited.</div>
-           <textarea id="zs-set-text" rows="4" placeholder="e.g. Always comment your Luau code. Prefer small modular scripts."></textarea>
+           <textarea id="zs-set-text" rows="4" placeholder="e.g. Always add comments to the code you write. Prefer small modular files."></textarea>
            <div class="zs-set-row"><button id="zs-set-save">Save</button><span id="zs-set-status"></span></div>
          </section>
          <section class="zs-menu-sec">
            <div class="zs-sec-label"><span>MCP servers</span></div>
-           <div class="zs-menu-note">Every local MCP server the AI can use - Roblox Studio is preconfigured by default, but any server works (Blender, filesystem, git, ...). Add or remove any of them, including Roblox; the bridge restarts briefly to apply.</div>
+           <div class="zs-menu-note">Every local MCP server the AI can use (Blender, filesystem, git, GitHub, ...). Add or remove servers; the bridge restarts briefly to apply.</div>
            ${mcpList}
            <div class="zs-mcp-sep"></div>
            <input id="zs-mcp-name" class="zs-mcp-field" placeholder="Name, e.g. Blender" />
@@ -2942,7 +2797,7 @@
         : "";
       setupCard.innerHTML =
         `<div id="zs-setup-head"><span id="zs-setup-logo">ZeroScript</span><span id="zs-setup-tag">Setup</span></div>` +
-        `<div id="zs-setup-sub">The <b>Bridge</b> is what connects this chat to your local MCP servers (Roblox Studio by default). Three steps and you're running.</div>` +
+        `<div id="zs-setup-sub">The <b>Bridge</b> is what connects this chat to your local MCP servers. Three steps and you're running.</div>` +
         `<ol id="zs-setup-steps">` +
           `<li>Download the Bridge from GitHub</li>` +
           `<li>Run <code>start.bat</code></li>` +
@@ -3005,9 +2860,9 @@
 
     // The single source of truth for the bar's content. Decides the dot tone,
     // the state line and the primary action from the live state:
-    //  • starting        → spinner, "Starting the Roblox agent…"
+    //  • starting        → spinner, "Starting the agent…"
     //  • session active   → live dot, "Agent active · N tools" (no action)
-    //  • fresh blank chat → "Standby…" (or a bridge/Studio warning), action = Start
+    //  • fresh blank chat → "Standby…" (or a bridge/server warning), action = Start
     //  • existing chat    → "No agent in this chat" (informs only, no action)
     function renderBar() {
       if (!bar) return;
@@ -3032,7 +2887,7 @@
       else if (A.starting) {
         toneClass = "starting";
         indicator = `<span class="zs-spin"></span>`;
-        msg = hasRobloxServer() ? `Starting the Roblox agent…` : `Starting the agent…`;
+        msg = `Starting the agent…`;
         label = "Starting…"; kind = "starting"; disabled = true;
       } else if (A.started) {
         // Prefer the ADVERTISED list length (A.toolList - the AGGREGATE catalogue
@@ -3040,47 +2895,18 @@
         // gate so it matches what the model actually has: e.g. screen_capture is
         // absent on non-vision providers like Kimi). After a page reload A.toolList
         // is empty until the next list_tools, so fall back to the sum of every
-        // server's per-server health count (Roblox + addons like Blender) - NOT the
-        // Roblox-only count, which made the total drop to just 27 after a reload.
+        // server's per-server health count.
         const healthTotal = A.bridge &&
           (A.bridge.servers || []).reduce((n, x) => n + (x.tools || 0), 0);
         const tools = A.toolList.length || healthTotal || (A.bridge && A.bridge.tools) || 0;
-        // "N tools" only means StudioMCP itself is up - it advertises its full
-        // catalogue even with no Studio/place attached (see probe_studio() in
-        // bridge.py), so showing it while Studio/place isn't actually usable
-        // reads as "everything's fine" when tool calls will just fail. Surface
-        // the real blocker instead in that case.
         if (A.bridge && A.bridge.connected === false) {
-          // placeDown/appDown/studioDown are all false in this case (they're
-          // only computed when the bridge IS connected - see setStatus), so
-          // without this check the bridge dropping fell through to the
-          // stale "N tools" text below, reading as if nothing was wrong.
           toneClass = "warn"; warn = true;
           msg = `<b>Agent active</b> · bridge offline, run start.bat`;
-        } else if ((placeDown || appDown || studioDown) && addonOk) {
-          // DEGRADED session by CHOICE: the user started the agent with Roblox
-          // down but other MCP server(s) alive (the "Start agent (Roblox
-          // offline)" path) - they may only want the addon tools (e.g. Blender).
-          // Keep the YELLOW dot as the honest health signal, but do NOT keep the
-          // red imperative "open Roblox Studio" nag on screen for the whole
-          // session (warn=false → no zs-state-warn red text). The full nag
-          // still shows when NO server is usable (the branches below).
-          toneClass = "warn";
-          msg = `<b>Agent active</b>${tools ? ` · ${tools} tools` : ""} · Roblox offline`;
-        } else if (placeDown) {
-          toneClass = "warn"; warn = true;
-          msg = `<b>Agent active</b> · open a place in Roblox Studio`;
-        } else if (appDown || studioDown) {
-          toneClass = "warn"; warn = true;
-          msg = studioProcUp
-            ? `<b>Agent active</b> · Studio is open but not connected - open <b>Assistant Settings &gt; MCP Servers</b> in Studio`
-            : `<b>Agent active</b> · open Roblox Studio & enable its MCP server`;
         } else if (serverDown) {
-          // Bridge is up but NO configured server is usable (the Roblox server
-          // died, or in a generic setup the MCP server went away). The agent
-          // keeps running, but every tool call will fail until it is back -
-          // show the honest state instead of a green "N tools" that would be
-          // a lie (the count is a stale cache, not live health).
+          // Bridge is up but NO configured server is usable. The agent keeps
+          // running, but every tool call will fail until one is back - show the
+          // honest state instead of a green "N tools" that would be a lie (the
+          // count is a stale cache, not live health).
           toneClass = "warn"; warn = true;
           msg = `<b>Agent active</b> · MCP server offline - check the bridge (⋯ menu → MCP servers)`;
         } else {
@@ -3101,38 +2927,17 @@
         if (bridgeOk) {
           toneClass = "standby";
           msg = `Standby. Start the agent, or just chat.`;
-          label = hasRobloxServer() ? "▶︎ Start Roblox agent" : "▶︎ Start agent"; kind = "start";
-        } else if (addonOk) {
-          // Roblox is down but another MCP server is live: allow a DEGRADED start
-          // (yellow). The agent runs on the other server(s); Roblox tools stay
-          // unavailable until Studio is back. Button enabled, but visibly warned.
-          toneClass = "warn"; warn = true;
-          msg = !A.bridge.connected
-            ? `Run <b>start.bat</b> on your PC.`
-            : studioProcUp
-              ? `<b>Studio open but not connected</b> - open <b>Assistant Settings &gt; MCP Servers</b> in Studio, or start without it.`
-              : `<b>Roblox Studio offline</b> - start with your other MCP server(s).`;
-          label = "▶︎ Start agent (Roblox offline)"; kind = "start-degraded";
+          label = "▶︎ Start agent"; kind = "start";
         } else {
           toneClass = "warn"; warn = true;
           msg = !A.bridge.connected
             ? `Run <b>start.bat</b> on your PC.`
-            : !hasRobloxServer()
-              ? (bridgeServers().length
-                  ? `<b>No MCP server is connected yet</b> - check ⋯ menu → MCP servers (its app must be running).`
-                  : `<b>No MCP servers configured</b> - add one in ⋯ menu → MCP servers (or config.json).`)
-              : placeDown
-                ? `Open a <b>place</b> in Roblox Studio.`
-                : (appDown || studioDown) && studioProcUp
-                  ? `Studio is open but not connected - open <b>Assistant Settings &gt; MCP Servers</b> in Studio.`
-                  : appDown
-                    ? `Open <b>Roblox Studio</b> &amp; enable its MCP server.`
-                    : studioDown
-                      ? `Open <b>Roblox Studio</b> &amp; enable its MCP server.`
-                      : `Open <b>Roblox Studio</b> for the tools.`;
-          label = hasRobloxServer() ? "▶︎ Start Roblox agent" : "▶︎ Start agent"; kind = "start";
+            : (bridgeServers().length
+                ? `<b>No MCP server is connected yet</b> - check ⋯ menu → MCP servers (its app must be running).`
+                : `<b>No MCP servers configured</b> - add one in ⋯ menu → MCP servers (or config.json).`);
+          label = "▶︎ Start agent"; kind = "start";
         }
-        disabled = !bridgeOk && !addonOk;
+        disabled = !bridgeOk;
       } else {
         toneClass = "noagent";
         msg = `No agent here. Open a new chat to start one.`;
@@ -3203,80 +3008,40 @@
       if (!dot) return;
       const servers = s.servers || [];
       // ZeroScript is a generic local-MCP bridge: the dot tracks WHATEVER
-      // servers are configured, with Roblox Studio simply the most common one.
-      // When a "roblox" server is present its state drives the gate exactly as
-      // before (its process alive, plus the place-level studioOff sub-state
-      // below), and every other server may NEVER make the dot green while
-      // Roblox is down. Without a roblox server, the dot is green when any
-      // server is alive WITH tools (alive-but-0-tools = still starting). Old
-      // bridges don't send per-server health, so fall back to the aggregate
-      // signals they do send (mcpAlive / total tools).
-      const roblox = servers.find((x) => x.id === "roblox");
-      const hasRoblox = !!roblox;
+      // servers are configured. Green when the bridge is connected AND at
+      // least one server is alive WITH tools (alive-but-0-tools = still
+      // starting), yellow when the bridge is up but no server is usable yet,
+      // grey when the bridge is offline. Old bridges don't send per-server
+      // health, so fall back to the aggregate signals they do send
+      // (mcpAlive / total tools).
       const liveCount = servers.filter((x) => x.alive && (x.tools || 0) > 0).length;
       const mcpUp = servers.length
-        ? (hasRoblox ? !!roblox.alive : liveCount > 0)
+        ? liveCount > 0
         : (!!s.mcpAlive || (s.tools || 0) > 0);
       const mcpOk = s.connected && mcpUp;
-      // The DISPLAYED count is the aggregate across every server (Roblox +
-      // any others), so it stays consistent with the bar and doesn't
-      // under-report when more than one server is loaded.
-      const totalTools = servers.reduce((n, x) => n + (x.tools || 0), 0) || s.tools || (roblox ? (roblox.tools || 0) : 0);
-      // Roblox-only usability sub-states (only meaningful when a roblox server
-      // is configured): studio === false means the MCP answered but the Studio
-      // is not USABLE (no place loaded). studioApp tells the two sub-cases
-      // apart:
-      //   studioApp === false → no Studio connected at all (app closed OR its MCP
-      //                         server option is disabled - indistinguishable).
-      //   studioApp === true  → Studio open but no place loaded (home screen /
-      //                         place closed mid-session). THIS is the case that
-      //                         used to wrongly read "Connected".
-      // null/undefined = unknown (old bridge / probe busy) → don't degrade.
-      const studioOff = hasRoblox && mcpOk && s.studio === false;
-      const noApp = studioOff && s.studioApp === false;
-      const noPlace = studioOff && s.studioApp === true;
-      const ok = mcpOk && !studioOff;
+      // The DISPLAYED count is the aggregate across every server, so it stays
+      // consistent with the bar and doesn't under-report when more than one
+      // server is loaded.
+      const totalTools = servers.reduce((n, x) => n + (x.tools || 0), 0) || s.tools || 0;
+      const ok = mcpOk;
       dot.className = s.connected ? (ok ? "on" : "warn") : "off";
-      // Studio PROCESS running on the machine (bridge-side tasklist check).
-      // Splits noApp into its two truly different situations: Studio not
-      // launched at all vs Studio OPEN but its MCP plugin never registered
-      // with the bridge. The plugin only attempts to register ONCE (at Studio
-      // boot or on a panel/toggle interaction) and never retries by itself,
-      // so for the second case "open Roblox Studio" is dead-end advice - the
-      // action that actually works (validated live 3x, 2026-07-11) is opening
-      // Assistant Settings > MCP Servers inside the already-open Studio.
-      const procUp = s.studioProc === true;
       let txt;
       if (!s.connected) txt = "Bridge offline, run start.bat";
-      else if (!mcpOk) txt = hasRoblox
-        ? (roblox && !roblox.alive && (roblox.tools || 0) > 0
-            // Dead process that HAD a catalogue: the bridge's auto-restart is
-            // almost certainly mid-flight - "open Studio" would mislead.
-            ? "Roblox MCP server is restarting - retry in a moment"
-            : "Bridge OK, open Roblox Studio")
-        : (servers.length
-            ? "Bridge OK, but no MCP server is connected yet"
-            : "Bridge OK, but no MCP servers are configured");
-      else if (noPlace) txt = "Roblox Studio is open but no place is loaded - open a place";
-      else if (noApp) txt = procUp
-        ? "Studio is open but not connected - in Studio, open Assistant Settings > MCP Servers (or toggle its MCP server off/on)"
-        : "Roblox Studio not connected - open it and enable its MCP server";
-      else if (studioOff) txt = "Studio not connected, enable the MCP server in Roblox Studio";
+      else if (!mcpOk) txt = servers.length
+        ? (servers.some((x) => !x.alive && (x.tools || 0) > 0)
+            // A server that HAD a catalogue but is dead: the bridge's
+            // auto-restart is almost certainly mid-flight - telling the user
+            // to fix the config would mislead.
+            ? "An MCP server is restarting - retry in a moment"
+            : "Bridge OK, but no MCP server is connected yet")
+        : "Bridge OK, but no MCP servers are configured";
       else txt = `Connected · ${totalTools} tools ready`;
       dot.title = txt; // full bridge detail on hover over the status dot
       bridgeOk = ok;
-      studioDown = studioOff;
-      placeDown = noPlace;
-      appDown = noApp;
-      studioProcUp = procUp;
-      // The generic "some server is actually usable" signal - drives the
-      // "Agent active · server offline" state (serverDown) for ANY topology.
+      // Bridge is up but NO configured server is usable. The agent keeps
+      // running, but every tool call will fail until one is back - drives the
+      // "Agent active · server offline" bar state.
       serverDown = !!s.connected && !mcpOk;
-      // A non-Roblox MCP (Blender, Sketchfab, ...) that is actually alive. When
-      // Roblox itself is down but such a server is present, the session can still
-      // start in a DEGRADED mode - the agent just can't touch Roblox until Studio
-      // is back. Gated on s.connected so a dropped bridge never reads as usable.
-      addonOk = !!s.connected && servers.some((x) => x.id !== "roblox" && x.alive && (x.tools || 0) > 0);
       // Bridge-drop alert: a clear, persistent red banner the moment a
       // previously-connected bridge goes offline. Clears on reconnect.
       if (wasConnected && !s.connected) bridgeAlert(true);
@@ -3373,15 +3138,13 @@
 
     // A gentle, one-time nudge: the user typed on a fresh chat without starting
     // the agent. We do NOT block the send (plain chat is fine) - we just point at
-    // the Start button so they discover how to enable Roblox control.
+    // the Start button so they discover how to let the AI use their MCP servers.
     let nudged = false;
     function nudgeStart() {
       if (A.started || !P.isFreshChat()) return;
       if (!nudged) {
         nudged = true;
-        toast(hasRobloxServer()
-          ? "Tip: click “▶︎ Start Roblox agent” to let the AI control Roblox Studio."
-          : "Tip: click “▶︎ Start agent” to let the AI use your local MCP servers.");
+        toast("Tip: click “▶︎ Start agent” to let the AI use your local MCP servers.");
       }
       if (!actionBtn) return;
       actionBtn.classList.add("zs-flash");
@@ -3991,7 +3754,7 @@
           delete it.dataset.zResumeLen; delete it.dataset.zloop;
           forgetHalted(it);
           // Strip the OLD command's chip immediately. The regenerate reuses this
-          // turn node, and without this the previous execute_luau chip (with its
+          // turn node, and without this the previous tool chip (with its
           // spinner/settled state) lingers for ~200ms until the sweep repaints the
           // node - the visible "it keeps running the old call for a beat before
           // restarting" flash reported on Kimi. resetDecoration clears the chip and
@@ -4111,7 +3874,7 @@
 
   chrome.runtime.onMessage.addListener((msg) => {
     if (msg && msg.type === "zs-status") {
-      ui.setStatus({ connected: msg.connected, mcpAlive: msg.mcpAlive, studio: msg.studio, studioApp: msg.studioApp, studioProc: msg.studioProc, tools: msg.tools, servers: msg.servers });
+      ui.setStatus({ connected: msg.connected, mcpAlive: msg.mcpAlive, tools: msg.tools, servers: msg.servers });
     }
     if (msg && msg.type === "zs-open-menu") {
       ui.openMenu(false); // from the popup's Settings button — opens at the top (Switch AI / custom prompt)
@@ -4223,7 +3986,7 @@
     // via the SITE's own new-chat (not ZeroScript's button), the loop is bound to
     // a chat the user left, so abandon it. Otherwise A.running keeps this function
     // early-returning below and the stale "Agent active" / Stop button lingers on
-    // the fresh chat instead of "Start Roblox agent". The "/app" → "/app/<id>" id
+    // the fresh chat instead of "Start agent". The "/app" → "/app/<id>" id
     // assignment of the SAME chat is not a move (loopKey is pinned only once the
     // chat has both an id and content), so a normal session is never disturbed.
     if (A.running) {
@@ -4407,7 +4170,7 @@
     if (!item || item.dataset.zloop) return;
     // Never resume the turn that already existed when this session started - it is
     // a reload-restored generation, not a reply to one of our sends (see
-    // A.bootBaselineId). Guards the "execute_luau leaked into the new chat" bug.
+    // A.bootBaselineId). Guards the "a tool call leaked into the new chat" bug.
     if (A.bootBaselineId && P.lastAssistantId && P.lastAssistantId() === A.bootBaselineId) return;
     if (P.turnHalted(item)) return;                     // this turn was stopped → leave it
     // Scrolled-back OLD turn guard (virtualization). lastAssistant() is the last

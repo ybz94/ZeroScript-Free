@@ -1,19 +1,17 @@
-# ZeroScript - Free AI Agent for Roblox Studio
+# ZeroScript - Free AI Agent for your Local MCP Servers
 
 ![GitHub stars](https://img.shields.io/github/stars/sebattfg/ZeroScript-Free?style=social)
 ![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20macOS-lightgrey)
 ![License](https://img.shields.io/badge/license-GPL--3.0-blue)
 
-**ZeroScript** is a free browser extension that turns ChatGPT, DeepSeek, Gemini, Kimi, GLM, Qwen, Arena or Meta AI into a Roblox Studio AI agent.
-Control Roblox Studio with AI directly from your browser - read/edit scripts, run Luau, generate assets, all from a normal AI chat. No API key, no terminal, no coding needed.
+**ZeroScript** is a free browser extension that turns ChatGPT, DeepSeek, Gemini, Kimi, GLM, Qwen, Arena or Meta AI into a local MCP agent.
+Control any MCP server on your PC (filesystem, git, GitHub, Blender, ...) directly from your browser - just describe what you want, and the AI runs the commands itself. No API key, no terminal, no coding needed.
 
-> 🌐 **Website: [zerodev.tools/zeroscript](https://zerodev.tools/zeroscript)** the free Lemonade.gg / Luamotion alternative for building Roblox games with AI.
+> 🌐 **Website: [zerodev.tools/zeroscript](https://zerodev.tools/zeroscript)** the free, open-source way to build with AI on your own machine.
 
-Eight AI providers are supported: **DeepSeek** (chat.deepseek.com, recommended), **ChatGPT** (chatgpt.com), **Google Gemini** (gemini.google.com), **Kimi** (kimi.ai, Moonshot AI), **GLM** (chat.z.ai, Z.ai), **Qwen** (chat.qwen.ai), **Arena** (arena.ai, a multi-model playground) and **Meta AI** (meta.ai). On ChatGPT, screenshots and image input are turned off on purpose: the free tier limits files and images on a separate quota from messages, so vision would only work part of the day. Gemini and Kimi can be unstable: Gemini tends to stop using the Roblox tools in long sessions, and Kimi sometimes uses its own native tools instead of the Roblox commands. On Arena, use **Direct** mode (ZeroScript only supports Direct; it blocks Start in Battle / Side-by-Side / Agent modes). DeepSeek is the recommended provider.
+Eight AI providers are supported: **DeepSeek** (chat.deepseek.com, recommended), **ChatGPT** (chatgpt.com), **Google Gemini** (gemini.google.com), **Kimi** (kimi.ai, Moonshot AI), **GLM** (chat.z.ai, Z.ai), **Qwen** (chat.qwen.ai), **Arena** (arena.ai, a multi-model playground) and **Meta AI** (meta.ai). On ChatGPT, screenshots and image input are turned off on purpose: the free tier limits files and images on a separate quota from messages, so vision would only work part of the day. Gemini and Kimi can be unstable: Gemini tends to stop using the ZeroScript commands in long sessions, and Kimi sometimes uses its own native tools instead. On Arena, use **Direct** mode (ZeroScript only supports Direct; it blocks Start in Battle / Side-by-Side / Agent modes). DeepSeek is the recommended provider.
 
 > 💬 **Stuck? Join the [Discord community](https://discord.gg/9aNyZsMWcb)** get help, share feedback, and follow updates.
-
-> *Also known as: ZeroScript Roblox, ZeroScript free download, Roblox ChatGPT agent, Roblox DeepSeek agent, Roblox Gemini agent, Roblox Kimi agent, Roblox GLM agent, Roblox Qwen agent, Roblox Arena agent, Roblox Meta AI agent, Roblox Studio AI automation, Luau AI, MCP Roblox, lemonade alternative free, lemonade.gg alternative, free Roblox AI agent, free lemonade roblox alternative*
 
 ## ⚠️ ZeroScript is Free Beware of Paid Copycats
 
@@ -24,35 +22,36 @@ If you come across a site or extension using the ZeroScript name that asks for p
 ## How it works
 
 ```
-AI chat (ChatGPT / DeepSeek / Gemini / Kimi / GLM / Qwen / Arena / Meta AI, in your browser) -> ZeroScript Extension -> Bridge (your PC) -> MCP server(s) (Roblox Studio by default)
+AI chat (ChatGPT / DeepSeek / Gemini / Kimi / GLM / Qwen / Arena / Meta AI, in your browser) -> ZeroScript Extension -> Bridge (your PC) -> MCP server(s) (yours)
 ```
 
-The extension runs inside the chat page (ChatGPT, DeepSeek, Gemini, Kimi, GLM, Qwen, Arena or Meta AI). When you type a request, it sends commands to the Bridge running on your PC, which drives Roblox Studio through the built-in MCP server.
+The extension runs inside the chat page (ChatGPT, DeepSeek, Gemini, Kimi, GLM, Qwen, Arena or Meta AI). When you type a request, it sends commands to the Bridge running on your PC, which drives your MCP servers over the standard [Model Context Protocol](https://modelcontextprotocol.io).
 
-### Any MCP server works, not just Roblox
+### Any MCP server works
 
-Roblox Studio is the **default** MCP server, not a requirement. The Bridge speaks the standard [Model Context Protocol](https://modelcontextprotocol.io) over stdio, so any local MCP server can be added alongside or instead of Roblox - the same servers you would configure in an MCP-capable editor (filesystem, git, GitHub, Blender, ...).
+The Bridge speaks MCP over stdio, so any local MCP server can be added - the same servers you would configure in an MCP-capable editor (filesystem, git, GitHub, Puppeteer/Playwright, PostgreSQL, Blender, ...).
 
 - **Add one:** ⋯ menu in the ZeroScript bar (on any supported AI page) → **MCP servers** → type a name and a start command (e.g. `npx -y @modelcontextprotocol/server-filesystem /path/to/dir`) → **Add server**. The bridge restarts briefly to load it.
-- **Remove one:** the ✕ on its row - including Roblox Studio, if you don't use it. The agent then runs on the remaining server(s) only.
+- **Remove one:** the ✕ on its row. The agent then runs on the remaining server(s) only.
 - **Or edit `config.json`** next to `bridge.py` and restart the bridge:
   ```json
   {
     "mcpServers": {
-      "roblox":   { "command": "launch_studio_mcp.py", "args": [] },
-      "files":    { "command": "npx", "args": ["-y", "@modelcontextprotocol/server-filesystem", "/home/me/projects"] }
+      "files": { "command": "npx", "args": ["-y", "@modelcontextprotocol/server-filesystem", "/home/me/projects"] },
+      "git":   { "command": "npx", "args": ["-y", "@modelcontextprotocol/server-git", "/home/me/projects"] }
     }
   }
   ```
-- **Using it:** in the AI chat, the agent discovers servers with `list_mcp_servers` and lists a server's exact commands with `list_commands` (passing `"server": "<id>"`). Everything else - the command format, the chips, the stop button - is identical to the Roblox flow.
+- **Using it:** in the AI chat, the agent discovers servers with `list_mcp_servers` and lists a server's exact commands with `list_commands` (passing `"server": "<id>"`). Everything else - the command format, the chips, the stop button - is identical.
+- **Testing without any external server:** `test_mcp.py` next to `bridge.py` is a tiny filesystem MCP server (list_files / read_file / write_file, rooted at the directory you pass) - add `{"testfs": {"command": "test_mcp.py", "args": ["/path/to/dir"]}}` to `config.json` to verify the whole flow end-to-end.
 
-When no Roblox server is configured, the Roblox-only bits (the place-loaded status, project memory) are simply skipped, and the status dot goes green when any connected server has tools.
+The status dot goes green when any connected server has tools, and the bar always tells you which server is up.
 
 ### Use your servers from an external MCP client (e.g. Arena Agent Mode)
 
-The Bridge also exposes the exact same tools over **MCP over HTTP** (Streamable HTTP transport), so any external MCP client can drive the same local servers - Roblox Studio, your added servers, all of them - without the browser extension. This is how to connect **Arena.ai Agent Mode** (or Claude Desktop, Cursor, or any other HTTP MCP client) to Roblox Studio:
+The Bridge also exposes the exact same tools over **MCP over HTTP** (Streamable HTTP transport), so any external MCP client can drive the same local servers without the browser extension. This is how to connect **Arena.ai Agent Mode** (or Claude Desktop, Cursor, or any other HTTP MCP client):
 
-1. **Run the Bridge** (step 3 above). The console window prints a line like:
+1. **Run the Bridge** (step 3 below). The console window prints a line like:
    ```
    HTTP MCP endpoint (external clients): http://127.0.0.1:17614/mcp/9f2ab3c1...
    ```
@@ -67,13 +66,13 @@ The Bridge also exposes the exact same tools over **MCP over HTTP** (Streamable 
    https://<your-tunnel-host>.trycloudflare.com/mcp/9f2ab3c1...
    ```
    (the tunnel host + the `/mcp/<token>` path printed in step 1) into the MCP server settings and connect.
-4. The client now sees the same tool set the extension uses - `get_studio_place_details`, `execute_code`, `add_server`, ... - and can drive Studio directly.
+4. The client now sees the same tool set the extension uses, and can drive your servers directly.
 
 Notes:
 
-- The endpoint is **read/write**: an external client can execute Luau and edit scripts, exactly like the extension. Only connect clients you trust.
+- The endpoint is **read/write**: an external client can do everything the extension can. Only connect clients you trust.
 - The token changes every time the Bridge restarts, so a stale URL stops working (404) after a restart - that is intentional.
-- Kill the tunnel when you are done; nobody else can reach your Studio while the tunnel is up.
+- Kill the tunnel when you are done; nobody else can reach your machine while the tunnel is up.
 
 ## Setup
 
@@ -90,16 +89,9 @@ To load the extension:
 - Click **Load unpacked**
 - Select the `zeroscript-extension` folder from the extracted zip
 
-### 2. Start Roblox Studio and enable MCP
+### 2. Add an MCP server
 
-Open Studio and load a Place, then enable MCP (first time only):
-
-- Click **Assistant AI** in the top bar
-- Click **...** (top right of the Assistant panel)
-- Click **Manage MCP Servers**
-- Click **Enable Studio as MCP Server**
-
-> Not sure where to find these options? The [video tutorial](https://youtu.be/kPKiZLZ9_Ps) shows exactly where to click.
+In the ⋯ menu of the ZeroScript bar (open on any supported AI page after the bridge is running) → **MCP servers** → type a name and a start command → **Add server**. Or edit `config.json` next to `bridge.py` directly (see the example above). The `test_mcp.py` bundled with the bridge works out of the box if you just want to try the flow.
 
 ### 3. Run the Bridge
 
@@ -110,65 +102,51 @@ A small window opens, that means the Bridge is running.
 
 ### 4. Start a session
 
-Go to https://chat.deepseek.com (recommended), https://chatgpt.com, https://gemini.google.com, https://www.kimi.ai, https://chat.z.ai, https://chat.qwen.ai, https://arena.ai or https://www.meta.ai and open a new chat. The ZeroScript bar appears above the input box. Click **Start session**. Type what you want to build.
+Go to https://chat.deepseek.com (recommended), https://chatgpt.com, https://gemini.google.com, https://www.kimi.ai, https://chat.z.ai, https://chat.qwen.ai, https://arena.ai or https://www.meta.ai and open a new chat. The ZeroScript bar appears above the input box. Click **Start session**. Type what you want to do.
 
 > Only works on chat.deepseek.com, chatgpt.com, gemini.google.com, kimi.ai, chat.z.ai, chat.qwen.ai, arena.ai and meta.ai - it will not work on any other site.
 > On Arena, keep the mode dropdown on **Direct** - ZeroScript blocks Start in Battle / Side-by-Side / Agent modes (it only drives a single Direct reply).
-> Gemini and Kimi can be unstable (model behavior, not the extension): Gemini may stop using the Roblox tools after a while, and Kimi may use its own native tools instead. If the AI starts answering in plain text instead of acting, remind it to use the commands or start a new session.
+> Gemini and Kimi can be unstable (model behavior, not the extension): Gemini may stop using the ZeroScript commands after a while, and Kimi may use its own native tools instead. If the AI starts answering in plain text instead of acting, remind it to use the commands or start a new session.
+
 ### 5. Watch the setup tutorial
 
 [Watch the setup tutorial on YouTube](https://youtu.be/kPKiZLZ9_Ps)
 
 ## What the AI can do
 
-- Read and edit scripts
-- Run Luau code directly in Studio
-- Inspect the game tree and instances
-- Generate meshes, materials, and models
-- Browse and insert from the Creator Store
-- Control play-testing
-- **Remember your project across sessions** persistent project memory saved inside your place
+- Whatever your MCP servers expose: read/edit files, run git commands, drive Blender, query a database, ...
+- **Discover what's connected** on its own with `list_mcp_servers` / `list_commands`
+- **Reply in your language** - the agent mirrors the language you write in
+- **Run from external clients** too (Arena Agent Mode, Claude Desktop, ...) over the HTTP endpoint
+- **Never hang the chat** - every command always produces a result, success or a formatted error
 
-## New in 1.5.5
+## New in 2.0.0
 
-- **DeepSeek: the agent starts again on the new unified model.** DeepSeek merged Instant, Expert and Vision into one model and removed the model picker, which left "Start Roblox agent" stuck on "DeepSeek mode not ready". ZeroScript now recognises the new chat box, switches Search off and starts, with DeepThink left on.
-- **DeepSeek: screenshots work on every chat.** Images no longer need the Vision tab (it is gone) - the unified model sees your Studio captures, one at a time or several in a row.
-
-## New in 1.5.4
-
-- **ChatGPT: the ZeroScript bar is back above the composer.** ChatGPT redesigned its input box and renamed the layout slot the bar sits in. ZeroScript kept asking for the old name, so the browser dropped the bar into a stray strip at the bottom right of the composer and squeezed the text field to nothing. The bar now takes the right row again, and it reads the layout live instead of trusting a fixed name, so the next redesign should not knock it out.
-- **ChatGPT: long commands read cleanly on the new interface.** The same redesign replaced the code-block editor that used to hide line breaks and cut long lines off - the cause of the truncated commands fixed in 1.5.1. A 400-line block now reads back whole. If you are still on the old interface, the previous workaround is untouched.
-
-## New in 1.5.3
-
-- **Kimi moved to kimi.ai.** The old address, kimi.com, now asks for a Chinese phone number to sign in, which locked most people out. Open https://www.kimi.ai instead - the page is unchanged, the bar appears above the input box exactly as before. Reopen any Kimi tab you had on the old address.
-- **DeepSeek: the Instant model can now run the agent.** Picking Instant used to leave "Start Roblox agent" spinning forever with no explanation, because only Expert and Vision were accepted. Choose Instant before starting and the session runs on it - much faster than Expert, without the reasoning pass. Images stay off on Instant just like on Expert; the Vision tab remains the only one that can see screenshots.
-- **DeepSeek: a reply written in DeepSeek's own tool-call format no longer kills the turn.** DeepSeek occasionally answers with its internal markup instead of a ZeroScript command. Nothing recognised it, so the tool never ran, the raw tags stayed on screen and the agent stopped dead with you waiting. It is now caught, hidden behind a tool chip like any other command, and DeepSeek is told to rewrite the call properly.
-- **ChatGPT: the bar no longer clips into the composer's rounded corners.**
-
-See [CHANGELOG.md](CHANGELOG.md) for older releases.
+- **Fully generic.** All Roblox Studio machinery is gone: the default server set is empty, the bridge only manages whatever you configure, and the prompt/UI speak only in terms of MCP servers. Adding your first server takes 30 seconds (⋯ menu → MCP servers, or `config.json`).
+- **External MCP clients over HTTP.** Streamable HTTP endpoint on `127.0.0.1:17614` with a per-launch token - connect Arena Agent Mode, Claude Desktop, Cursor, or any HTTP MCP client through a tunnel (see "Use your servers from an external MCP client" above).
+- **Bundled test server.** `test_mcp.py` gives you a zero-dependency filesystem MCP server to verify the whole flow before installing anything.
 
 ## Panel status
 
 | Dot | Meaning |
 |-----|---------|
-| Green | Bridge + Studio ready (a place is open) |
-| Yellow | Bridge OK, but Studio isn't usable yet - open Roblox Studio, load a place, or enable its MCP server (hover the dot for the exact reason) |
+| Green | Bridge + at least one MCP server ready (has tools) |
+| Yellow | Bridge OK, but no MCP server is usable yet - check the ⋯ menu → MCP servers (a server that had tools is restarting shows the same dot for a moment) |
 | Grey | Bridge offline - run start.bat (Windows) or MacOS_Start.command (macOS) |
 
 ## Requirements
 
 - Windows or macOS
-- Roblox Studio (MCP support built-in)
 - Microsoft Edge or Chrome
 - Python 3.9+ (installed automatically on Windows, or install it yourself on macOS - see [python.org/downloads](https://www.python.org/downloads/))
+- The MCP server(s) you want to use (any stdio MCP server)
 
 ## Support
 
-ZeroScript is free. If it saves you time: [Ko-fi](https://ko-fi.com/sebattfg) - Robux tip passes available in the extension panel
+ZeroScript is free. If it saves you time: [Ko-fi](https://ko-fi.com/sebattfg) - or star the repo
 
 ---
 
-Credit: the idea for connecting other MCP servers (Blender, Sketchfab, etc.) alongside Roblox Studio came from [javnpa](https://github.com/javnpa).
+Credit: the idea for connecting other MCP servers (Blender, Sketchfab, etc.) came from [javnpa](https://github.com/javnpa).
 
 Credit: macOS/Linux support contributed by [archivealf](https://github.com/archivealf).

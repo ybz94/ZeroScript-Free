@@ -132,8 +132,8 @@ const ZSProvider = (() => {
   // checked up to 479 lines). That collapse is what broke MOST tool calls in a
   // real session: the core's parser saw the opening marker fused to the first
   // statement and reported "Failed to parse command code / your code block was
-  // empty", and on the runs that did execute, Roblox reported every error at
-  // "AssistantCommand:1" because the whole script really was one line.
+  // empty", and on the runs that did execute, the server reported every error
+  // at line 1 because the whole script really was one line.
   // So: emit a newline for every cm-line (even an empty one - blank lines must
   // survive or reported line numbers shift), for <br>, and at block boundaries
   // (which also gives the unfenced-prose shape a usable line structure).
@@ -772,10 +772,10 @@ const ZSProvider = (() => {
   //
   // Why ChatGPT needs the image rule and the others don't: ChatGPT reaches for
   // its own image GENERATION on any turn that carries an image, and answers by
-  // producing a new picture instead of doing the Roblox work the image was
-  // meant to illustrate. Its native image tool also runs in the sandbox that
-  // cannot touch the user's project, so a generated image is a dead end here.
-  const PROMPT_EXTRA = `- WHEN THE USER SENDS AN IMAGE: by default it is REFERENCE MATERIAL for the work they want done in their project - a screenshot of a bug, a mockup of the UI they want, a photo of the thing to build, a picture of what is wrong in Studio. Look at it, use it to understand what they want, and then do that work with the ZeroScript commands. Do NOT generate a new image from it, and do NOT treat it as an image-editing request. Only generate an image when the user EXPLICITLY asks you to create, generate, draw or edit one ("make me an image of...", "generate a texture", "edit this picture"). If what they want from the image is genuinely unclear, ask them in one short sentence rather than guessing - and never guess "they want a picture".`;
+  // producing a new picture instead of doing the work the image was meant to
+  // illustrate. Its native image tool also runs in the sandbox that
+  // cannot touch the user's machine, so a generated image is a dead end here.
+  const PROMPT_EXTRA = `- WHEN THE USER SENDS AN IMAGE: by default it is REFERENCE MATERIAL for the work they want done in their project - a screenshot of a bug, a mockup of the UI they want, a photo of the thing to build, a picture of what is wrong with their project. Look at it, use it to understand what they want, and then do that work with the ZeroScript commands. Do NOT generate a new image from it, and do NOT treat it as an image-editing request. Only generate an image when the user EXPLICITLY asks you to create, generate, draw or edit one ("make me an image of...", "generate a texture", "edit this picture"). If what they want from the image is genuinely unclear, ask them in one short sentence rather than guessing - and never guess "they want a picture".`;
 
   // ── User-send interception ────────────────────────────────────────────────
   function installSendHooks(handlers) {

@@ -86,8 +86,8 @@ const ZSProvider = (() => {
   // ── Monaco code-block cache (the CRITICAL fix) ─────────────────────────────
   // Qwen renders fenced code in a Monaco editor and DISPOSES the block when it
   // scrolls out of view (validated live: the block collapses to its FIRST
-  // `.view-line` only, e.g. a 50-line execute_luau payload becomes just
-  // "###LUA###"). The agent loop then reads a command that has its opener but no
+  // `.view-line` only, e.g. a 50-line command payload becomes just its first
+  // line). The agent loop then reads a command that has its opener but no
   // body/closer -> hasOpenToolBlock() stays true (the ~5s "stuck on active"
   // wait) and parseToolCalls() fails (the "command detected but JSON could not be
   // parsed" error). Both symptoms are this one disposal race.
@@ -120,7 +120,7 @@ const ZSProvider = (() => {
     // [TRACE] Suspect #1 for the "15-20s freeze after N tools": this observer
     // fires on EVERY characterData/childList mutation across document.body and
     // re-scans EVERY code block in the whole conversation. Cost grows with the
-    // number of execute_luau blocks. We time each pass and, once per second, log
+    // number of command blocks. We time each pass and, once per second, log
     // the fire-rate, block count and worst single-pass duration - but only when
     // it's actually notable, so a quiet page stays silent.
     let _snCount = 0, _snMaxMs = 0, _snMaxBlocks = 0, _snWinStart = Date.now();
@@ -191,7 +191,7 @@ const ZSProvider = (() => {
   // turn (Qwen may not render a `button.stop-button` for the comparison UI, and the
   // candidate-1 DOM text stalls while candidate 2 streams). Suppressing the tap for
   // gen-state too made netGenState fall back to flickery DOM signals, so the watcher
-  // judged a still-streaming execute_luau "done but unclosed" and fired a premature
+  // judged a still-streaming command "done but unclosed" and fired a premature
   // parse_error - sending an ERROR to Qwen mid-generation (validated live, 2026-06).
   function netReplyFor(item) {
     if (item !== lastAssistant()) return null;
@@ -334,13 +334,13 @@ const ZSProvider = (() => {
   // Stable per-turn identity for ANY assistant item (not just the last). The
   // core's off-DOM executed/halted maps key on turnKey(item) → P.itemKey(item)
   // when present, else the POSITIONAL assistantIdx. Qwen VIRTUALIZES its list, so
-  // the positional index is NOT stable: two different turns (e.g. two execute_luau
-  // or two multi_edit calls) can land on the same index and, sharing a 60-char
+  // the positional index is NOT stable: two different turns (e.g. two commands
+  // with long payloads) can land on the same index and, sharing a 60-char
   // command prefix, collide in the executed map. That false "already executed"
   // made the auto-resume watchdog SKIP a fresh command (never ran, no result
   // injected) AND the sweep paint its chip green ✓ done - the "tool done but
   // nothing ran, no result" bug (confirmed live 2026-07-21 via executed.collision:
-  // idx 10 shared by a 1384-char and a 775-char execute_luau turn). The per-turn
+  // idx 10 shared by a 1384-char and a 775-char command turn). The per-turn
   // uuid in the DESCENDANT div id="chat-response-message-<uuid>" is immune to
   // virtualization, so exposing it as itemKey gives the core a collision-proof key.
   // Returns a STRING uuid; the core's numeric maxTurnId guards use Number.isFinite
@@ -622,7 +622,7 @@ const ZSProvider = (() => {
 
   // Qwen's composer hard-caps a message at 131072 characters: past that it refuses
   // to send with "Prompt cannot exceed 131072 characters" (validated live), so a
-  // large tool result (e.g. a big http_get / get_page_text / luau dump) silently
+  // large tool result (e.g. a big http_get / get_page_text / code dump) silently
   // wedges the loop in the input box. Truncate outgoing text to a safe margin below
   // the cap, keeping the head AND tail so neither the start nor the end of a result
   // is lost, and mark the gap so the model knows content was dropped and does not

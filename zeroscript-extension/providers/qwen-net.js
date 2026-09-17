@@ -5,8 +5,8 @@
 // that carry ZeroScript commands) in a Monaco editor that DISPOSES off-screen
 // blocks - collapsing them to their first line - and can drop the final complete
 // frame for short/fast blocks. Reading the command back from the DOM is therefore
-// unreliable (a `{"command":...}` becomes just `{`, a 50-line execute_luau becomes
-// just `###LUA###`), which made the agent loop hang (opener with no closer) and
+// unreliable (a `{"command":...}` becomes just `{`, a 50-line command becomes
+// just its first line), which made the agent loop hang (opener with no closer) and
 // fail to parse. The streamed API response, by contrast, carries the assistant's
 // RAW markdown verbatim. This script taps it and republishes the reconstructed
 // text so providers/qwen.js can read commands from a source Monaco can't corrupt.
