@@ -30,22 +30,22 @@ import threading
 import time
 import uuid
 
-try:
-    import websockets
-except ImportError:
-    print("[bridge] Missing dependency. Run:  pip install websockets")
-    sys.exit(1)
-
 # Windows consoles often default to a legacy codepage (cp1252): printing
 # non-ASCII text then raises UnicodeEncodeError INSIDE the WS handler, which
-# kills the connection. Force UTF-8 (best effort). We also keep all console
-# output strictly ASCII (no arrows / dots) so nothing garbles on a console that
-# stayed on a legacy codepage anyway.
+# kills the connection. Force UTF-8 (best effort), BEFORE anything below can
+# print - the missing-dependency message is the first thing a user sees, and it
+# must not itself be the thing that garbles on a legacy codepage.
 try:
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
     sys.stderr.reconfigure(encoding="utf-8", errors="replace")
 except Exception:
     pass
+
+try:
+    import websockets
+except ImportError:
+    print("[bridge] 缺少依赖。请运行:  pip install websockets")
+    sys.exit(1)
 
 
 def _enable_ansi_colors():
@@ -127,8 +127,12 @@ class _Spinner:
         if self._thread:
             self._thread.join(timeout=1.0)
             # Wipe the spinner line so the next log() line doesn't get glued
-            # onto trailing spinner characters.
-            print("\r" + " " * (len(self.label) + 4) + "\r", end="", flush=True)
+            # onto trailing spinner characters. Clear-to-end-of-line instead of
+            # padding with len(label) spaces: the label is CJK text now, and a
+            # CJK glyph occupies TWO terminal columns, so a character count
+            # always under-erased and left stray glyph halves behind.
+            wipe = "\033[K" if C.get("reset") else " " * (len(self.label) * 2 + 8)
+            print("\r" + wipe + "\r", end="", flush=True)
         if self._owns_lock:
             _Spinner._active.release()
 
@@ -276,18 +280,18 @@ def _reclaim_bridge_port():
         return False
     cmdline = _process_cmdline(pid_i)
     if "bridge.py" not in cmdline.lower():
-        log(f"port {PORT} is held by pid {pid_i} ('{name}') but it does not look "
-            f"like a ZeroScript bridge - leaving it alone.", "yl")
+        log(f"端口 {PORT} 被进程 {pid_i}（'{name}'）占用，但它看起来不是 "
+            f"ZeroScript 桥接 - 不动它。", "yl")
         return False
-    log(f"port {PORT} is held by a leftover ZeroScript bridge (pid {pid_i}) from a "
-        "previous session - killing it so this one can start.", "yl")
+    log(f"端口 {PORT} 被上一次运行遗留的 ZeroScript 桥接占用（pid {pid_i}）- "
+        "正在结束它，好让本次能启动。", "yl")
     try:
         subprocess.run(["taskkill", "/F", "/PID", str(pid_i)],
                        capture_output=True, text=True, timeout=8)
     except Exception as e:
-        log(f"could not kill the leftover bridge (pid {pid_i}): {e}", "rd")
+        log(f"无法结束遗留的桥接进程（pid {pid_i}）: {e}", "rd")
         return False
-    log(f"killed the leftover bridge (pid {pid_i}); the port is free now.", "cy")
+    log(f"已结束遗留的桥接进程（pid {pid_i}），端口现在空闲了。", "cy")
     return True
 
 
@@ -301,7 +305,7 @@ def _read_config():
                 cfg.setdefault("mcpServers", {})
                 return cfg
         except Exception as e:
-            log(f"config.json unreadable ({e}) - starting from a fresh one", "yl")
+            log(f"config.json 无法读取（{e}）- 将使用一份全新的配置", "yl")
     return {"mcpServers": {}}
 
 
@@ -317,9 +321,9 @@ def config_add_server(server_id, command, args=None, env=None):
     """Add/replace a server in config.json. Returns (ok, error)."""
     sid = (server_id or "").strip()
     if not sid:
-        return False, "server id is required"
+        return False, "必须提供服务器 id"
     if not (command or "").strip():
-        return False, "a command is required"
+        return False, "必须提供启动命令"
     cfg = _read_config()
     spec = {"command": command.strip(), "args": list(args or [])}
     if env:
@@ -328,7 +332,7 @@ def config_add_server(server_id, command, args=None, env=None):
     try:
         _write_config(cfg)
     except Exception as e:
-        return False, f"could not write config.json: {e}"
+        return False, f"无法写入 config.json: {e}"
     return True, None
 
 
@@ -337,12 +341,12 @@ def config_remove_server(server_id):
     sid = (server_id or "").strip()
     cfg = _read_config()
     if sid not in cfg.get("mcpServers", {}):
-        return False, f"server '{sid}' is not in the config"
+        return False, f"config.json 里没有服务器 '{sid}'"
     del cfg["mcpServers"][sid]
     try:
         _write_config(cfg)
     except Exception as e:
-        return False, f"could not write config.json: {e}"
+        return False, f"无法写入 config.json: {e}"
     return True, None
 
 
@@ -350,7 +354,7 @@ def restart_self():
     """Replace this process with a fresh one so config.json is reloaded from
     scratch. Children are killed first to free their stdio pipes / ports before
     the new instance claims them. Never returns on success (os.execv)."""
-    log("restarting bridge to load new server config...", "yl")
+    log("正在重启桥接以加载新的服务器配置…", "yl")
     try:
         for c in mgr.clients.values():
             c.stop()
@@ -371,11 +375,11 @@ def restart_self():
     except Exception as e:
         # execv failed (rare) - fall back to spawning a detached copy and exiting
         # so the user still ends up with a running, up-to-date bridge.
-        log(f"in-place restart failed ({e}); spawning a fresh bridge...", "rd")
+        log(f"原地重启失败（{e}）；正在启动一个新的桥接进程…", "rd")
         try:
             subprocess.Popen([sys.executable] + argv, cwd=HERE)
         except Exception as e2:
-            log(f"could not spawn a fresh bridge: {e2} - please restart it manually", "rd")
+            log(f"无法启动新的桥接进程: {e2} - 请手动重启", "rd")
         os._exit(0)
 
 
@@ -447,8 +451,8 @@ class MCPClient:
             env = dict(os.environ)
             for k, v in self.env.items():
                 env[k] = self._resolve(v)
-            log(f"[{self.id}] launching  ({' '.join(cmd)})", "cy")
-            with _Spinner(f"    [{self.id}] starting..."):
+            log(f"[{self.id}] 正在启动  ({' '.join(cmd)})", "cy")
+            with _Spinner(f"    [{self.id}] 正在启动…"):
                 try:
                     self.proc = subprocess.Popen(
                         cmd,
@@ -469,13 +473,13 @@ class MCPClient:
                     # user may install it later), but name the real cause so
                     # it doesn't just look like an endless silent restart loop.
                     self.start_error = (
-                        f"command not found: '{cmd[0]}' - is it installed and on PATH? "
-                        f"(configured for server '{self.id}' in config.json)"
+                        f"找不到命令: '{cmd[0]}' - 它是否已安装并在 PATH 中？"
+                        f"（在 config.json 中为服务器 '{self.id}' 配置）"
                     )
                     log(f"[{self.id}] {self.start_error}", "rd")
                     raise
                 except OSError as e:
-                    self.start_error = f"could not launch '{cmd[0]}': {e}"
+                    self.start_error = f"无法启动 '{cmd[0]}': {e}"
                     log(f"[{self.id}] {self.start_error}", "rd")
                     raise
                 else:
@@ -506,13 +510,13 @@ class MCPClient:
                     if not self.is_alive():
                         break
                     time.sleep(1.0)
-            log(f"[{self.id}] MCP server up  ({len(self.tools_cache)} tools advertised)", "cy")
+            log(f"[{self.id}] MCP 服务器已就绪  （通告了 {len(self.tools_cache)} 个工具）", "cy")
 
     def is_alive(self):
         return self.proc is not None and self.proc.poll() is None
 
     def restart(self):
-        log(f"[{self.id}] restarting...", "yl")
+        log(f"[{self.id}] 正在重启…", "yl")
         self.stop()
         time.sleep(0.4)
         self.start()
@@ -572,7 +576,7 @@ class MCPClient:
                     pass
         code = proc.poll()
         self.last_exit = code  # kept for the crash-loop banner in server_watch
-        log(f"[{self.id}] stdout closed (process ended, exit code {code})", "rd")
+        log(f"[{self.id}] stdout 已关闭（进程结束，退出码 {code}）", "rd")
         with self.pend_lock:
             for q in self.pending.values():
                 try:
@@ -614,7 +618,7 @@ class MCPClient:
 
     def _request(self, method, params, timeout):
         if not self.is_alive():
-            raise RuntimeError(f"server '{self.id}' is not running")
+            raise RuntimeError(f"服务器 '{self.id}' 未在运行")
         rid = self._next_id()
         q = queue.Queue(maxsize=1)
         with self.pend_lock:
@@ -654,7 +658,7 @@ class MCPClient:
                                             {"name": name, "arguments": arguments}, timeout)
                     if msg is None:
                         raise TimeoutError(
-                            f"No response from server '{self.id}' after {timeout}s.")
+                            f"服务器 '{self.id}' 在 {timeout} 秒内没有响应。")
                 if msg.get("error"):
                     err = msg["error"]
                     err_text = err.get("message", json.dumps(err))
@@ -672,7 +676,7 @@ class MCPClient:
                 # shows a green chip and the model reads "Output of 'x':
                 # error: ..." as if it were tool output.
                 if msg.get("result", {}).get("isError"):
-                    raise RuntimeError(text or "the tool reported an error")
+                    raise RuntimeError(text or "该工具报错但没有给出错误信息")
                 return {"text": text, "images": images}
 
 
@@ -690,7 +694,7 @@ class MCPManager:
         for sid, spec in servers.items():
             self.clients[sid] = MCPClient(
                 sid, spec.get("command"), spec.get("args"), spec.get("env"))
-        log(f"configured {len(self.clients)} MCP server(s): {', '.join(self.clients) or '(none)'}", "cy")
+        log(f"已配置 {len(self.clients)} 个 MCP 服务器: {', '.join(self.clients) or '（无）'}", "cy")
 
     def start_all(self):
         # Launch every configured server IN PARALLEL, not one after another.
@@ -704,7 +708,7 @@ class MCPManager:
                 try:
                     client.start()
                 except Exception as e:
-                    log(f"[{sid}] failed to start: {e}  (other servers continue)", "rd")
+                    log(f"[{sid}] 启动失败: {e}  （其他服务器继续运行）", "rd")
             t = threading.Thread(target=_run, daemon=True)
             t.start()
             threads.append(t)
@@ -733,7 +737,7 @@ class MCPManager:
                     else:
                         client.refresh_tools()
                 except Exception as e:
-                    log(f"[{sid}] refresh failed: {e}", "yl")
+                    log(f"[{sid}] 刷新工具列表失败: {e}", "yl")
             self.rebuild_index()
         out = []
         for sid, client in self.clients.items():
@@ -761,7 +765,7 @@ class MCPManager:
             with self.index_lock:
                 entry = self.index.get(name)
         if entry is None:
-            raise RuntimeError(f"unknown tool '{name}'")
+            raise RuntimeError(f"未知工具 '{name}'")
         holder, real_name = entry
         return holder.call_tool(real_name, arguments, timeout)
 
@@ -771,7 +775,7 @@ class MCPManager:
             try:
                 client.restart()
             except Exception as e:
-                log(f"[{client.id}] restart failed: {e}", "rd")
+                log(f"[{client.id}] 重启失败: {e}", "rd")
         self.rebuild_index()
 
     def health(self):
@@ -810,11 +814,11 @@ async def run_tool_task(ws, name, args, timeout, rid):
     elapsed = time.monotonic() - t0
     tag = "gr" if res.get("ok") else "rd"
     summary = (res.get("text") or res.get("error") or "")[:80].replace("\n", " ")
-    slow = "  [SLOW]" if elapsed > 5 else ""
+    slow = "  [慢]" if elapsed > 5 else ""
     # Routine per-call traces are technical noise for a non-dev user watching
     # the console; they still land in bridge_debug.log. A failed/slow call
     # DOES surface on the terminal - that's the signal a user should notice.
-    log(f"<- {name} ({elapsed:.1f}s){slow}: {summary}", tag, terminal=not res.get("ok") or elapsed > 5)
+    log(f"<- {name}（{elapsed:.1f}s）{slow}: {summary}", tag, terminal=not res.get("ok") or elapsed > 5)
     try:
         await ws.send(json.dumps({"type": "tool_result", "id": rid, **res}))
     except websockets.ConnectionClosed:
@@ -860,7 +864,7 @@ async def broadcast_status():
 async def handler(ws):
     peer = getattr(ws, "remote_address", ("?",))[0]
     clients.add(ws)
-    log(f"extension connected  ({peer})  [{len(clients)} client(s)]", "gr")
+    log(f"扩展已连接  （{peer}）  [{len(clients)} 个客户端]", "gr")
     try:
         await ws.send(json.dumps({
             "type": "connected",
@@ -885,7 +889,7 @@ async def handler(ws):
                     tools = await asyncio.to_thread(mgr.list_tools, True)
                 except Exception as e:
                     tools = mgr.list_tools()
-                    log(f"list_tools error: {e}", "yl")
+                    log(f"获取工具列表出错: {e}", "yl")
                 await ws.send(json.dumps({
                     "type": "tools", "id": rid,
                     "tools": tools, "mcp_alive": mgr.any_alive(),
@@ -948,15 +952,15 @@ async def handler(ws):
             else:
                 await ws.send(json.dumps({
                     "type": "error", "id": rid,
-                    "error": f"unknown message type: {mtype}",
+                    "error": f"未知的消息类型: {mtype}",
                 }))
     except websockets.ConnectionClosed:
         pass
     except Exception as e:
-        log(f"handler error: {e}", "rd")
+        log(f"连接处理出错: {e}", "rd")
     finally:
         clients.discard(ws)
-        log(f"extension disconnected  [{len(clients)} client(s)]", "yl")
+        log(f"扩展已断开  [{len(clients)} 个客户端]", "yl")
 
 
 async def server_watch():
@@ -990,20 +994,20 @@ async def server_watch():
                     looping = len(client.restart_times) >= LOOP_N
                     if looping and now - client.loop_warned_at > LOOP_WARN_COOLDOWN:
                         client.loop_warned_at = now
-                        log(f"[{sid}] CRASH LOOP: died {len(client.restart_times)} times in the last "
-                            f"{LOOP_WINDOW}s (last exit code: {client.last_exit}). Something is killing it "
-                            f"or it cannot start.", "rd")
+                        log(f"[{sid}] 反复崩溃: 最近 {LOOP_WINDOW} 秒内已死 {len(client.restart_times)} 次"
+                            f"（最后一次退出码: {client.last_exit}）。有东西在结束它，"
+                            f"或者它根本无法启动。", "rd")
                         if client.start_error:
                             log(f"[{sid}] {client.start_error}", "rd")
                         elif client.stderr_tail:
-                            log(f"[{sid}] last error output (usually the real reason):", "rd")
+                            log(f"[{sid}] 最后的错误输出（通常才是真正的原因）:", "rd")
                             for ln in client.stderr_tail:
                                 log(f"[{sid}]   {ln}", "yl")
                         else:
-                            log(f"[{sid}] the server printed no error output before dying.", "yl")
-                        log(f"[{sid}] common causes: its app is not running (e.g. Blender + addon), a port "
-                            f"conflict, an antivirus killing it, or a bad command in config.json. "
-                            f"Auto-restart continues in the background.", "yl")
+                            log(f"[{sid}] 该服务器在退出前没有输出任何错误信息。", "yl")
+                        log(f"[{sid}] 常见原因: 它依赖的程序没有在运行（比如 Blender + 插件）、端口"
+                            f"冲突、被杀毒软件结束，或者 config.json 里的命令有误。"
+                            f"后台仍会继续自动重启。", "yl")
                     if looping and client.restart_times and now - client.restart_times[-1] < 15:
                         # Clearly hopeless right now: drop to a ~15s cadence so a
                         # broken command isn't hammer-spawned every 5 seconds,
@@ -1011,12 +1015,12 @@ async def server_watch():
                         # the user finally opens Blender).
                         continue
                     client.restart_times.append(now)
-                    log(f"[{sid}] found dead - auto-restarting...", "yl")
+                    log(f"[{sid}] 已停止 - 正在自动重启…", "yl")
                     await asyncio.to_thread(client.start)
                     mgr.rebuild_index()
                     await broadcast_status()  # tell any connected extension right away
             except Exception as e:
-                log(f"[{sid}] auto-restart failed: {e}", "rd")
+                log(f"[{sid}] 自动重启失败: {e}", "rd")
 
 
 async def _supervised(name, coro_factory):
@@ -1034,8 +1038,8 @@ async def _supervised(name, coro_factory):
             await coro_factory()
             return  # normal completion (doesn't happen today, but respect it)
         except Exception as e:
-            log(f"{name} crashed: {type(e).__name__}: {e} - restarting it in 5s "
-                f"(please report this).", "rd")
+            log(f"{name} 崩溃: {type(e).__name__}: {e} - 5 秒后重启 "
+                f"（请反馈这个问题）。", "rd")
             await asyncio.sleep(5)
 
 
@@ -1211,8 +1215,8 @@ def start_mcp_http():
     try:
         server = http.server.ThreadingHTTPServer(("127.0.0.1", MCP_HTTP_PORT), _McpHttpHandler)
     except OSError as e:
-        log(f"HTTP MCP face not started: port {MCP_HTTP_PORT} unavailable ({e}) - "
-            "set ZS_MCP_HTTP_PORT to another value (0 disables it).", "yl")
+        log(f"HTTP MCP 接口未启动: 端口 {MCP_HTTP_PORT} 不可用（{e}）- "
+            "可用 ZS_MCP_HTTP_PORT 换个端口（设为 0 表示关闭）。", "yl")
         return None
     MCP_HTTP_TOKEN = uuid.uuid4().hex
     threading.Thread(target=server.serve_forever, daemon=True, name="mcp-http").start()
@@ -1229,8 +1233,8 @@ def start_mcp_http():
 async def main():
     mgr.load_config()
     log(f"===== BRIDGE START  v{BRIDGE_VERSION}  pid={os.getpid()}  log={LOG_PATH} =====", "cy")
-    print(f"\n{C['cy']}  ZeroScript Bridge v{BRIDGE_VERSION}{C['reset']}  {C['dim']}- "
-          f"local MCP bridge - ws://{HOST}:{PORT}{C['reset']}\n")
+    print(f"\n{C['cy']}  ZeroScript 桥接 v{BRIDGE_VERSION}{C['reset']}  {C['dim']}- "
+          f"本机 MCP 桥接 - ws://{HOST}:{PORT}{C['reset']}\n")
 
     async def _boot_and_diagnose():
         """Launch every configured MCP server and print the boot diagnostic
@@ -1241,21 +1245,21 @@ async def main():
         try:
             await asyncio.to_thread(mgr.start_all)
         except Exception as e:
-            log(f"server startup error: {e}", "rd")
-            log("The bridge will keep running; it retries on the first tool call.", "yl")
+            log(f"服务器启动出错: {e}", "rd")
+            log("桥接会继续运行；它会在第一次调用工具时重试。", "yl")
         total = len(mgr.list_tools())
         if total == 0:
             if mgr.clients:
-                log("ready - 0 tools available.", "yl")
-                log("    Check each server's command in the extension's menu (MCP servers)", "yl")
-                log("    (or config.json). A dead server is auto-restarted, so an app that", "yl")
-                log("    starts up later will connect on its own.", "yl")
+                log("就绪 - 当前可用工具为 0 个。", "yl")
+                log("    请在扩展菜单（MCP 服务器）里检查每个服务器的命令", "yl")
+                log("    （或检查 config.json）。已停止的服务器会自动重启，所以稍后才", "yl")
+                log("    启动的程序也能自己连上。", "yl")
             else:
-                log("ready - no MCP servers are configured yet.", "yl")
-                log("    Add one in the extension's MCP servers menu (or edit config.json) -", "yl")
-                log("    the bridge picks it up on its next restart.", "yl")
+                log("就绪 - 目前还没有配置任何 MCP 服务器。", "yl")
+                log("    请在扩展的 MCP 服务器菜单里添加一个（或编辑 config.json）-", "yl")
+                log("    桥接会在下次重启时加载它。", "yl")
         else:
-            log(f"ready {total} tools available ({len(mgr.clients)} MCP server(s))", "gr")
+            log(f"就绪，共 {total} 个可用工具（{len(mgr.clients)} 个 MCP 服务器）", "gr")
 
     async def _early_status_pushes():
         """A few follow-up status broadcasts shortly after boot.
@@ -1289,13 +1293,13 @@ async def main():
         # owns the port - another app, or a python whose cmdline we couldn't read.
         if getattr(e, "errno", None) in (98, 10048) or "10048" in str(e):
             owner = await asyncio.to_thread(_port_owner, PORT)
-            who = f" by '{owner[1]}' (pid {owner[0]})" if owner else ""
-            log(f"could not start: port {PORT} is already in use{who}.", "rd")
-            log(f"    A previous bridge may still be running, or another app took "
-                f"the port. Close it, then relaunch. To find it:", "yl")
+            who = f"（占用者: '{owner[1]}'，pid {owner[0]}）" if owner else ""
+            log(f"无法启动: 端口 {PORT} 已被占用{who}。", "rd")
+            log(f"    可能是上一次的桥接还在运行，或者被别的程序占用了这个端口。"
+                f"请先关掉它，再重新运行。查找方式：", "yl")
             log(f"      netstat -ano | findstr {PORT}", "yl")
-            log(f"      taskkill /F /PID <the pid from the last column>", "yl")
-            log(f"    Or set a different port before start.bat:  set ZS_BRIDGE_PORT=17614", "yl")
+            log(f"      taskkill /F /PID <上一条命令最后一列的那个 pid>", "yl")
+            log(f"    或者在运行 start.bat 前换一个端口:  set ZS_BRIDGE_PORT=17614", "yl")
             return
         raise
 
@@ -1304,13 +1308,13 @@ async def main():
     # and localhost-only. Best-effort - a dead port never blocks the WS face.
     mcp_http_url = await asyncio.to_thread(start_mcp_http)
     if mcp_http_url:
-        log(f"HTTP MCP endpoint (external clients): {mcp_http_url}", "cy")
-        log(f"    for another machine: run a tunnel, e.g. `cloudflared tunnel --url "
-            f"http://127.0.0.1:{MCP_HTTP_PORT}` and paste the public URL + path. "
-            "Treat the URL as a secret.", "dim")
+        log(f"HTTP MCP 接口（供外部客户端使用）: {mcp_http_url}", "cy")
+        log(f"    想给另一台机器用: 开一条隧道，例如 `cloudflared tunnel --url "
+            f"http://127.0.0.1:{MCP_HTTP_PORT}`，然后把公网 URL + 路径粘贴过去。"
+            "请把该 URL 当作密码保管。", "dim")
 
     async with server_ctx:
-        log(f"listening on ws://{HOST}:{PORT}  - load the extension and open a supported AI chat", "cy")
+        log(f"正在监听 ws://{HOST}:{PORT}  - 请加载扩展并打开一个受支持的 AI 聊天页面", "cy")
         asyncio.create_task(_supervised("server_watch", server_watch))
         asyncio.create_task(_boot_and_diagnose())
         asyncio.create_task(_early_status_pushes())
@@ -1321,7 +1325,7 @@ if __name__ == "__main__":
     try:
         asyncio.run(main())
     except KeyboardInterrupt:
-        log("shutting down...", "yl")
+        log("正在关闭…", "yl")
         for c in mgr.clients.values():
             c.stop()
     finally:

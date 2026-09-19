@@ -24,13 +24,13 @@ function render(s) {
   const ok = mcpOk;
   dot.className = "dot " + (s.connected ? (ok ? "on" : "warn") : "");
   state.textContent = s.connected
-    ? (ok ? "Connected · MCP ready"
-        : (list.length ? "Bridge OK · no MCP server connected yet"
-          : "Bridge OK · no MCP servers configured"))
-    : "Bridge offline";
-  tools.textContent = s.connected ? `${s.tools || 0} tools available` : "Run bridge.py";
+    ? (ok ? "已连接 · MCP 就绪"
+        : (list.length ? "桥接正常 · 尚未连接 MCP 服务器"
+          : "桥接正常 · 未配置 MCP 服务器"))
+    : "桥接离线";
+  tools.textContent = s.connected ? `可用工具 ${s.tools || 0} 个` : "请运行 bridge.py";
   servers.textContent = s.connected
-    ? list.map((x) => `${x.alive ? "●" : "○"} ${x.id} (${x.alive ? x.tools + " tools" : "down"})`).join("\n")
+    ? list.map((x) => `${x.alive ? "●" : "○"} ${x.id}（${x.alive ? x.tools + " 个工具" : "离线"}）`).join("\n")
     : "";
 }
 
@@ -42,9 +42,9 @@ document.getElementById("reconnect").addEventListener("click", () => {
   chrome.runtime.sendMessage({ type: "reconnect" }, () => setTimeout(refresh, 600));
 });
 document.getElementById("restart").addEventListener("click", (e) => {
-  e.target.textContent = "Restarting…";
+  e.target.textContent = "正在重启…";
   chrome.runtime.sendMessage({ type: "restart_mcp" }, () => {
-    e.target.textContent = "⟳ Restart servers";
+    e.target.textContent = "⟳ 重启服务器";
     setTimeout(refresh, 600);
   });
 });

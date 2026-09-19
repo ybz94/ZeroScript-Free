@@ -594,7 +594,7 @@ const ZSProvider = (() => {
 
   async function typeAndSend(text, images) {
     const ed = getEditor();
-    if (!ed) throw new Error("ChatGPT input box not found");
+    if (!ed) throw new Error("未找到 ChatGPT 输入框");
     text = truncateForSend(text);
     const relock = _locked;
     if (relock) ed.setAttribute("contenteditable", "true"); // injection needs it editable
@@ -700,7 +700,7 @@ const ZSProvider = (() => {
         }
       }
     } catch {}
-    if (!getEditor()) return "The input box disappeared (session ended?).";
+    if (!getEditor()) return "输入框已消失（会话可能已结束？）";
     return null;
   }
   const isTooLongMsg = (text) => RE.tooLong.test(text);

@@ -2,7 +2,7 @@
 @echo off
 setlocal enabledelayedexpansion
 chcp 65001 >nul
-title ZeroScript Bridge
+title ZeroScript 桥接
 cd /d "%~dp0"
 
 if not exist "%~dp0logs" mkdir "%~dp0logs" >nul 2>nul
@@ -14,7 +14,7 @@ REM environment must be either ON SCREEN or in this log.
 for /f "tokens=*" %%v in ('ver') do call :log "%%v"
 
 echo.
-echo   === ZeroScript Bridge ===
+echo   === ZeroScript 桥接 ===
 echo.
 
 REM Refuse to run from inside a ZIP preview: Explorer extracts start.bat alone
@@ -22,11 +22,10 @@ REM to %TEMP%, so bridge.py is missing and the launch fails with a confusing
 REM Python error. Detect the missing file up front with a plain explanation -
 REM this is one of the most common first-run mistakes.
 if not exist "%~dp0bridge.py" (
-    echo   ERROR: bridge.py not found next to start.bat.
+    echo   错误：start.bat 旁边没有找到 bridge.py。
     echo.
-    echo   If you opened start.bat from inside the downloaded ZIP, first EXTRACT
-    echo   the whole ZIP ^(right-click, "Extract All..."^), then run start.bat
-    echo   from the extracted folder.
+    echo   如果你是直接在下载的 ZIP 压缩包里打开的 start.bat，请先解压整个 ZIP
+    echo   ^（右键，"全部解压缩..."^），再从解压出来的文件夹里运行 start.bat。
     echo.
     call :log "FATAL: bridge.py missing next to start.bat (run from inside ZIP?)."
     pause
@@ -34,7 +33,7 @@ if not exist "%~dp0bridge.py" (
 )
 
 REM --- 1. Find Python ---------------------------------------------------------
-echo   [1/3] Looking for Python...
+echo   [1/3] 正在查找 Python...
 set "PY="
 
 REM Prefer the py launcher - it never resolves to the Microsoft Store stub.
@@ -76,7 +75,7 @@ REM "call" prefix: when %PY% is a quoted full path (the no-PATH scan case), a
 REM bare quoted command inside for /f trips cmd's leading-quote stripping rule;
 REM call re-parses the line and keeps the quotes intact.
 for /f "tokens=*" %%v in ('call %PY% --version 2^>^&1') do (
-    echo         Found: %PY%  ^(%%v^)
+    echo         已找到: %PY%  ^(%%v^)
     call :log "Python found: %PY% (%%v)"
 )
 goto :install_deps
@@ -88,22 +87,22 @@ REM this check the "winget" line fails with an unrelated "not recognized" error
 REM that users screenshot without context - name the real problem instead.
 where winget >nul 2>nul
 if errorlevel 1 (
-    echo   ERROR: Python is not installed and winget ^(Windows package manager^)
-    echo   is not available on this PC, so it cannot be installed automatically.
+    echo   错误：本机没有安装 Python，也没有 winget ^(Windows 包管理器^)，
+    echo   所以无法自动安装。
     echo.
-    echo   Install Python manually: https://www.python.org/downloads/
-    echo   IMPORTANT: tick "Add python.exe to PATH", then run start.bat again.
+    echo   请手动安装 Python: https://www.python.org/downloads/
+    echo   重要：安装时勾选 "Add python.exe to PATH"，然后重新运行 start.bat。
     echo.
     call :log "FATAL: no Python and no winget on this machine."
     pause
     exit /b 1
 )
-echo         Not found. Installing via winget...
+echo         未找到，正在通过 winget 安装...
 echo.
 winget install --id Python.Python.3.12 --source winget --accept-package-agreements --accept-source-agreements
 if errorlevel 1 call :log "winget install returned an error (see console output above)."
 echo.
-echo   Checking again...
+echo   正在再次检查...
 set "PY=py -3"
 call :validate_py && goto :ready
 set "PY=python"
@@ -128,32 +127,32 @@ for %%R in (
     )
 )
 echo.
-echo   ERROR: Python not found after install.
-echo   Install manually: https://www.python.org/downloads/
-echo   Tick "Add python.exe to PATH" then run this again.
+echo   错误：安装之后仍然找不到 Python。
+echo   请手动安装: https://www.python.org/downloads/
+echo   安装时勾选 "Add python.exe to PATH"，然后重新运行本脚本。
 echo.
 call :log "FATAL: no usable Python found even after winget install."
 pause
 exit /b 1
 :ready
-echo         Python ready!
+echo         Python 已就绪！
 call :log "Python ready after winget install: %PY%"
 
 :install_deps
 REM --- 2. Install websockets --------------------------------------------------
 echo.
-echo   [2/3] Checking websockets library...
+echo   [2/3] 正在检查 websockets 库...
 %PY% -c "import websockets" >nul 2>nul
 if errorlevel 1 (
-    echo         Installing websockets - first time only...
+    echo         正在安装 websockets - 仅首次需要...
     %PY% -m pip install --user websockets
     if errorlevel 1 (
         echo.
-        echo   ERROR: Could not install websockets ^(see pip output above^).
-        echo   Common causes: no internet, a firewall/antivirus blocking pip,
-        echo   or Python has no working pip. If you used the Microsoft Store
-        echo   python, install from https://www.python.org/downloads/ instead
-        echo   ^(tick "Add to PATH"^).
+        echo   错误：无法安装 websockets ^(请看上面的 pip 输出^)。
+        echo   常见原因：没有网络、防火墙/杀毒软件拦截了 pip，
+        echo   或者这个 Python 的 pip 不可用。如果你用的是 Microsoft Store
+        echo   版 Python，请改从 https://www.python.org/downloads/ 安装
+        echo   ^（勾选 "Add to PATH"^）。
         echo.
         call :log "FATAL: pip install websockets failed."
         pause
@@ -165,7 +164,7 @@ call :log "websockets library OK"
 
 REM --- 3. Run the bridge ------------------------------------------------------
 echo.
-echo   [3/3] Starting bridge...
+echo   [3/3] 正在启动桥接...
 
 REM If a previous bridge is already listening on 17613, say so instead of
 REM silently killing it - a double-launch is easy to do by mistake (e.g.
@@ -175,8 +174,8 @@ for /f "tokens=5" %%a in ('netstat -aon ^| findstr :17613 ^| findstr LISTENING 2
     set "OLDPID=%%a"
 )
 if defined OLDPID (
-    echo         A previous bridge ^(pid !OLDPID!^) is already running on this port.
-    echo         Replacing it with this new instance...
+    echo         端口上已经有一个正在运行的桥接 ^(pid !OLDPID!^)。
+    echo         正在用这次的实例替换它...
     call :log "Killing previous bridge instance (pid !OLDPID!) on port 17613."
     taskkill /F /T /PID !OLDPID! >nul 2>nul
     REM Give Windows a moment to actually free the socket before we rebind it.
@@ -187,10 +186,9 @@ if defined OLDPID (
     )
     if defined STILLTHERE (
         echo.
-        echo   WARNING: port 17613 is still held by pid !STILLTHERE! after trying
-        echo   to close the previous bridge. If the bridge below fails to start,
-        echo   close that process manually in Task Manager ^(or restart Windows^)
-        echo   and run start.bat again.
+        echo   警告：尝试关闭上一个桥接之后，端口 17613 仍被 pid !STILLTHERE! 占用。
+        echo   如果下面的桥接启动失败，请在任务管理器里手动结束该进程
+        echo   ^（或者重启 Windows^），然后重新运行 start.bat。
         echo.
         call :log "WARNING: port 17613 still held by pid !STILLTHERE! after taskkill."
     )
@@ -199,10 +197,9 @@ if defined OLDPID (
 echo.
 echo  ############################################################
 echo  ##                                                        ##
-echo  ##   KEEP THIS TERMINAL OPEN - DO NOT CLOSE THIS WINDOW   ##
-echo  ##                                                        ##
-echo  ##   ZeroScript stops working if you close it. Just       ##
-echo  ##   minimize this window and leave it running.           ##
+echo  ##  请保持此终端窗口打开 - 不要关闭它                     ##
+echo  ##  关闭此窗口后 ZeroScript 将无法工作。                  ##
+echo  ##  只需最小化窗口，让它一直在后台运行。                  ##
 echo  ##                                                        ##
 echo  ############################################################
 echo.
@@ -216,13 +213,13 @@ call :log "bridge.py exited with code %BRIDGE_EXIT%"
 
 echo.
 if not "%BRIDGE_EXIT%"=="0" (
-    echo   Bridge stopped with ERROR code %BRIDGE_EXIT% - scroll up for the Python
-    echo   error message and include THIS WHOLE WINDOW in any bug report.
-    echo   Log file: logs\start.log
+    echo   桥接异常退出，错误码 %BRIDGE_EXIT% - 请往上翻看 Python 打印的
+    echo   错误信息，并把整个窗口的内容附在问题反馈里。
+    echo   日志文件: logs\start.log
 ) else (
-    echo   Bridge stopped normally.
+    echo   桥接已正常停止。
 )
-echo   Press any key to close.
+echo   按任意键关闭窗口。
 pause >nul
 exit /b 0
 

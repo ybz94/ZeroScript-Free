@@ -425,7 +425,7 @@ const ZSProvider = (() => {
   // ── Input lock ────────────────────────────────────────────────────────────
   // Real <textarea>: swap placeholder text and set readonly. No re-assert loop
   // needed -- React doesn't recreate this element between inject/clear cycles.
-  const LOCK_MSG = "⏳ Agent working… please wait";
+  const LOCK_MSG = "⏳ Agent 正在工作…请稍候";
   let _origPlaceholder = null;
 
   function setInputLock(on) {
@@ -644,7 +644,7 @@ const ZSProvider = (() => {
 
   async function typeAndSend(text, images) {
     const ed = getEditor();
-    if (!ed) throw new Error("Qwen input box not found");
+    if (!ed) throw new Error("未找到 Qwen 输入框");
     text = truncateForSend(text);
     // Mark the response now in the tap as consumed: we are replying to it, so the
     // tap is stale until Qwen opens the next response (see netCurrent()).
@@ -695,7 +695,7 @@ const ZSProvider = (() => {
         if (t.length > 8 && t.length < 600 && (RE.contextLimit.test(t) || RE.usageLimit.test(t))) return t.slice(0, 240);
       }
     } catch {}
-    if (!getEditor()) return "The input box disappeared (session ended?).";
+    if (!getEditor()) return "输入框已消失（会话可能已结束？）";
     return null;
   }
   const isTooLongMsg = (text) => RE.tooLong.test(text);

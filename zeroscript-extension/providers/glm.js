@@ -209,7 +209,7 @@ const ZSProvider = (() => {
     if (on) {
       if (!ed.dataset.zsPlaceholder) ed.dataset.zsPlaceholder = ed.getAttribute("placeholder") || "";
       ed.setAttribute("readonly", "");
-      ed.setAttribute("placeholder", "⏳ Agent working… please wait");
+      ed.setAttribute("placeholder", "⏳ Agent 正在工作…请稍候");
     } else {
       ed.removeAttribute("readonly");
       if (ed.dataset.zsPlaceholder != null) ed.setAttribute("placeholder", ed.dataset.zsPlaceholder);
@@ -338,7 +338,7 @@ const ZSProvider = (() => {
 
   async function typeAndSend(text, images) {
     const editor = getEditor();
-    if (!editor) throw new Error("GLM input box not found");
+    if (!editor) throw new Error("未找到 GLM 输入框");
     editor.focus();
     setTextareaValue(editor, text);
     // Attach images LAST, right before the send click - see gemini.js's
@@ -397,7 +397,7 @@ const ZSProvider = (() => {
         if (t.length > 8 && t.length < 600 && RE.contextLimit.test(t)) return t.slice(0, 240);
       }
     } catch {}
-    if (!getEditor()) return "The input box disappeared (session ended?).";
+    if (!getEditor()) return "输入框已消失（会话可能已结束？）";
     return null;
   }
   const isTooLongMsg = (text) => RE.tooLong.test(text);
@@ -575,9 +575,8 @@ const ZSProvider = (() => {
     // again later" (a z.ai server issue, NOT the extension). Prefer the GLM-5.2
     // model and retry off-peak.
     unstableWarning:
-      "GLM (z.ai) can be unstable: when its servers are busy a turn fails with " +
-      "\"No response, please try again later\" - that's a z.ai issue, not the extension. " +
-      "Prefer the GLM-5.2 model and retry in a moment (or off-peak) if it happens.",
+      "GLM（z.ai）可能不稳定：服务器繁忙时某一轮会失败并提示 “No response, please try again later”——" +
+      "这是 z.ai 的服务问题，与扩展无关。遇到时建议改用 GLM-5.2 模型，稍等片刻重试（或错峰使用）。",
     // Svelte re-renders the reply's markdown subtree on every update, wiping any
     // chip placed inside it. Anchor chips at the turn-element level instead
     // (redirected into the reply column by chipAnchor).

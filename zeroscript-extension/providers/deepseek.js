@@ -169,7 +169,7 @@ const ZSProvider = (() => {
     if (on) {
       if (!ed.dataset.zsPlaceholder) ed.dataset.zsPlaceholder = ed.getAttribute("placeholder") || "";
       ed.setAttribute("readonly", "");
-      ed.setAttribute("placeholder", "⏳ Agent working… please wait");
+      ed.setAttribute("placeholder", "⏳ Agent 正在工作…请稍候");
     } else {
       ed.removeAttribute("readonly");
       if (ed.dataset.zsPlaceholder != null) ed.setAttribute("placeholder", ed.dataset.zsPlaceholder);
@@ -681,7 +681,7 @@ const ZSProvider = (() => {
 
   async function typeAndSend(text, images) {
     const editor = getEditor();
-    if (!editor) throw new Error("DeepSeek input box not found");
+    if (!editor) throw new Error("未找到 DeepSeek 输入框");
     editor.focus();
     text = truncateForSend(text);
     setTextareaValue(editor, text);
@@ -737,7 +737,7 @@ const ZSProvider = (() => {
         if (t.length > 8 && t.length < 600 && RE.contextLimit.test(t)) return t.slice(0, 240);
       }
     } catch {}
-    if (!getEditor()) return "The input box disappeared (session ended?).";
+    if (!getEditor()) return "输入框已消失（会话可能已结束？）";
     return null;
   }
 

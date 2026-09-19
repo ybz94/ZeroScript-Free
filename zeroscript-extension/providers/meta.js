@@ -542,7 +542,7 @@ const ZSProvider = (() => {
     }
     // Write via the mirror textarea (the controlled input that drives Lexical).
     const editor = writeEl();
-    if (!editor) throw new Error("Meta AI input box not found");
+    if (!editor) throw new Error("未找到 Meta AI 输入框");
     editor.focus();
     setTextareaValue(editor, text);
     const sendReady = () => {
@@ -647,7 +647,7 @@ const ZSProvider = (() => {
         if (t.length > 8 && t.length < 600 && RE.contextLimit.test(t)) return t.slice(0, 240);
       }
     } catch {}
-    if (!getEditor()) return "The input box disappeared (session ended?).";
+    if (!getEditor()) return "输入框已消失（会话可能已结束？）";
     return null;
   }
   const isTooLongMsg = (text) => RE.tooLong.test(text);

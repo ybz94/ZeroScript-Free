@@ -301,7 +301,7 @@ const ZSProvider = (() => {
     if (on) {
       if (!ed.dataset.zsPlaceholder) ed.dataset.zsPlaceholder = ed.getAttribute("placeholder") || "";
       ed.setAttribute("readonly", "");
-      ed.setAttribute("placeholder", "⏳ Agent working… please wait");
+      ed.setAttribute("placeholder", "⏳ Agent 正在工作…请稍候");
     } else {
       ed.removeAttribute("readonly");
       if (ed.dataset.zsPlaceholder != null) ed.setAttribute("placeholder", ed.dataset.zsPlaceholder);
@@ -427,7 +427,7 @@ const ZSProvider = (() => {
 
   async function typeAndSend(text, images) {
     const editor = getEditor();
-    if (!editor) throw new Error("Arena input box not found");
+    if (!editor) throw new Error("未找到 Arena 输入框");
     editor.focus();
     setTextareaValue(editor, truncateForSend(text));
     if (images && images.length) tagImages(images);
@@ -546,9 +546,9 @@ const ZSProvider = (() => {
   // idle - the OTHER `hover:bg-*` classes always present don't match this
   // substring check). Detection fails CLOSED for safety only on a positive match.
   const UNSUPPORTED_MODES = [
-    { route: /^\/code\//, aria: "Code", label: "Build Apps", tip: "the <b>Code</b> button" },
-    { route: /^\/search\//, aria: "Search", label: "Web Search", tip: "the <b>Search</b> (globe) button" },
-    { route: /^\/image\//, aria: "Image", label: "Generate Image", tip: "the <b>Image</b> button" },
+    { route: /^\/code\//, aria: "Code", label: "Build Apps", tip: "输入框里的 <b>Code</b> 按钮" },
+    { route: /^\/search\//, aria: "Search", label: "Web Search", tip: "输入框里的 <b>Search</b>（地球图标）按钮" },
+    { route: /^\/image\//, aria: "Image", label: "Generate Image", tip: "输入框里的 <b>Image</b> 按钮" },
   ];
   function activeUnsupportedMode() {
     for (const m of UNSUPPORTED_MODES) {
@@ -611,14 +611,14 @@ const ZSProvider = (() => {
   function modeWarning() {
     const um = activeUnsupportedMode();
     if (um)
-      return `Turn off <b>${um.label}</b> (${um.tip} in the composer) - ` +
-        `ZeroScript only works in plain chat. ${um.label} mode uses a different ` +
-        `output surface and breaks the agent loop.`;
+      return `请关闭 <b>${um.label}</b>（${um.tip}）——` +
+        `ZeroScript 只能在普通聊天中工作。${um.label} 模式使用的是另一套输出界面，` +
+        `会中断智能体循环。`;
     if (isSupportedMode()) return "";
     const m = currentMode();
-    const name = m ? m.charAt(0).toUpperCase() + m.slice(1) : "another mode";
-    return `Switch the mode dropdown to <b>Direct</b> - ZeroScript only works in ` +
-      `Direct mode (current: <b>${name}</b>).`;
+    const name = m ? m.charAt(0).toUpperCase() + m.slice(1) : "其他模式";
+    return `请把模式下拉框切换到 <b>Direct</b>——ZeroScript 只能在 ` +
+      `Direct 模式下工作（当前：<b>${name}</b>）。`;
   }
 
   // A bot-check challenge is on screen (Cloudflare Turnstile / hCaptcha /
@@ -696,7 +696,7 @@ const ZSProvider = (() => {
         if (t.length > 8 && t.length < 600 && RE.contextLimit.test(t)) return t.slice(0, 240);
       }
     } catch {}
-    if (!getEditor()) return "The input box disappeared (session ended?).";
+    if (!getEditor()) return "输入框已消失（会话可能已结束？）";
     return null;
   }
   const isTooLongMsg = (text) => RE.tooLong.test(text);

@@ -405,7 +405,7 @@ const ZSProvider = (() => {
 
   async function typeAndSend(text, images) {
     const ed = getEditor();
-    if (!ed) throw new Error("Gemini input box not found");
+    if (!ed) throw new Error("未找到 Gemini 输入框");
     // Cap BEFORE any comparison below, so the retry path's `editorText() !== text`
     // test compares against what we actually typed.
     text = truncateForSend(text);
@@ -483,7 +483,7 @@ const ZSProvider = (() => {
         if (t.length > 8 && t.length < 600 && RE.contextLimit.test(t)) return t.slice(0, 240);
       }
     } catch {}
-    if (!getEditor()) return "The input box disappeared (session ended?).";
+    if (!getEditor()) return "输入框已消失（会话可能已结束？）";
     return null;
   }
   const isTooLongMsg = (text) => RE.tooLong.test(text);
@@ -690,8 +690,8 @@ const ZSProvider = (() => {
     // Gemini drifts away from emitting tool blocks after a while in long
     // sessions - observed live, model behavior, not something the prompt fixes.
     unstableWarning:
-      "Gemini tends to stop using the ZeroScript commands after a while in long sessions (model behavior, not the extension). " +
-      "If it starts answering in plain text instead of acting, remind it to use the commands - or start a new session.",
+      "在长会话中，Gemini 用久了往往不再使用 ZeroScript 命令（这是模型行为，与扩展无关）。" +
+      "如果它开始用纯文本回答而不执行动作，请提醒它使用这些命令，或开启新会话。",
     init({ diag: d } = {}) { if (d) diag = d; },
     // turns
     allItems, isUserItem, isAssistantItem, itemText, classifyText,

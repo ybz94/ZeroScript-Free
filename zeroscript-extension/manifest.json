@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
-  "name": "ZeroScript Free",
+  "name": "ZeroScript 免费版",
   "version": "2.0.0",
-  "description": "Turn ChatGPT, DeepSeek, Gemini, Kimi, GLM, Qwen, Arena or Meta AI into a local MCP agent: any MCP server on your PC, driven from a normal AI chat.",
+  "description": "把 ChatGPT、DeepSeek、Gemini、Kimi、GLM、Qwen、Arena 或 Meta AI 变成一个本地 MCP 智能体：在普通 AI 聊天里驱动你电脑上的任意 MCP 服务器。",
   "permissions": ["storage"],
   "host_permissions": [
     "https://chat.deepseek.com/*",
@@ -30,7 +30,7 @@
   },
   "action": {
     "default_popup": "popup.html",
-    "default_title": "ZeroScript Free",
+    "default_title": "ZeroScript 免费版",
     "default_icon": {
       "16": "icon.png",
       "48": "icon.png",

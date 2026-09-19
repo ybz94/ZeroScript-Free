@@ -42,17 +42,19 @@
   const _diag = [];
   function diag(event, data) {
     const snap = { ...P.snapshot(), gen: P.isGenerating(), run: A.running };
-    const e = { t: Date.now(), iso: new Date().toISOString().slice(11, 23), event,
-                data: data || null, snap };
+    const e = {
+      t: Date.now(), iso: new Date().toISOString().slice(11, 23), event,
+      data: data || null, snap
+    };
     _diag.push(e);
     if (_diag.length > ZS_DIAG_MAX) _diag.shift();
-    try { console.log("[zs-diag]", e.iso, event, JSON.stringify({ ...data, ...snap })); } catch {}
+    try { console.log("[zs-diag]", e.iso, event, JSON.stringify({ ...data, ...snap })); } catch { }
     try {
       let n = document.getElementById("zs-diag-log");
       if (!n) { n = document.createElement("script"); n.type = "application/json"; n.id = "zs-diag-log"; (document.body || document.documentElement).appendChild(n); }
       n.textContent = JSON.stringify(_diag);
-    } catch {}
-    try { window.__zsDiag = _diag; } catch {}
+    } catch { }
+    try { window.__zsDiag = _diag; } catch { }
   }
   P.init({ diag });
 
@@ -72,8 +74,10 @@
       const gap = now - _lastTick;
       _lastTick = now;
       if (gap > STALL) {
-        diag("stall.detected", { ms: gap, overBy: gap - EXPECT,
-          toolRunning: A.toolRunning, running: A.running, injecting: A.injecting });
+        diag("stall.detected", {
+          ms: gap, overBy: gap - EXPECT,
+          toolRunning: A.toolRunning, running: A.running, injecting: A.injecting
+        });
       }
     }, EXPECT);
   }
@@ -199,7 +203,7 @@
   async function waitVisible() {
     if (!document.hidden || A.stop) return !A.stop;
     A.parked = true;
-    try { ui.setStarting(); } catch {}
+    try { ui.setStarting(); } catch { }
     try {
       await new Promise((resolve) => {
         const done = () => {
@@ -215,7 +219,7 @@
       });
     } finally {
       A.parked = false;
-      try { ui.setStarting(); } catch {}
+      try { ui.setStarting(); } catch { }
     }
     return !A.stop;
   }
@@ -264,7 +268,7 @@
       const _settleLen0 = _settleItem ? P.streamLen(_settleItem) : 0;
       await sleep(200);
       if (_settleItem && _settleItem === P.lastAssistant() &&
-          P.streamLen(_settleItem) > _settleLen0) {
+        P.streamLen(_settleItem) > _settleLen0) {
         await waitFor(() => !P.isGenerating(), 4000);
       }
       const base = P.assistantCount();
@@ -320,9 +324,9 @@
       // themselves instead of watching a stuck bar.
       if (!messageSent && !landed() && !A.stop) {
         diag("send.failed", { tries });
-        ui.banner("warn", "Message could not be sent",
-          `${P.displayName} did not accept the injected message after ${tries} attempts. ` +
-          `Send a short message yourself (e.g. "continue") to resume the agent.`);
+        ui.banner("warn", "消息发送失败",
+          `${P.displayName} 在 ${tries} 次尝试后仍未接受注入的消息。` +
+          `请你自己发送一条短消息（例如“继续”）来恢复智能体。`);
       }
       return base;
     } finally {
@@ -477,7 +481,7 @@
           // diag: WHICH empty-branch fired matters - a dead post-regenerate turn
           // on Qwen kept ending "empty" with a complete command in the net tap,
           // and without the branch name the cause was unfindable from the log.
-          if (Date.now() - preStartSilent > 60000) { diag("empty.why", { branch: "preStart", rep: (d.reply||"").length }); return { kind: "empty" }; }
+          if (Date.now() - preStartSilent > 60000) { diag("empty.why", { branch: "preStart", rep: (d.reply || "").length }); return { kind: "empty" }; }
           await sleep(200);
           continue;
         }
@@ -562,7 +566,8 @@
             curTok: (P.lastAssistantId ? P.lastAssistantId() : undefined),
             sendToken: A.sendToken,
             assistantCount: P.assistantCount ? P.assistantCount() : undefined,
-            base, gen, started, replyLen: (d.reply || "").length });
+            base, gen, started, replyLen: (d.reply || "").length
+          });
         }
         if (Date.now() - noTurnSince < NO_TURN_GRACE_MS) { await sleep(200); continue; }
       } else {
@@ -581,7 +586,7 @@
       if (!sawContent) {
         if (!warmSince) warmSince = Date.now();
         if (Date.now() - warmSince < WARMUP_MS) { await sleep(200); continue; }
-        diag("empty.why", { branch: "warmup", rep: (d.reply||"").length, lastGood: lastGoodReply.length });
+        diag("empty.why", { branch: "warmup", rep: (d.reply || "").length, lastGood: lastGoodReply.length });
         return { kind: "empty" };
       }
 
@@ -707,7 +712,7 @@
       // real callable function (seen on Gemini). Those argument keys never appear in a
       // normal prose answer, so nudge a rewrite rather than ending the turn silently.
       if (/"(?:edits|old_string|new_string|file_path|target_file)"\s*:/.test(r) &&
-          !/"command"\s*:/.test(r)) {
+        !/"command"\s*:/.test(r)) {
         return { kind: "parse_error", reason: "envelope", raw: r, item: d.item };
       }
       // Malformed command, function-calling flavour: the model named a REAL tool
@@ -834,14 +839,14 @@
     if (!bare || A.imageTools.has(bare)) return;
     A.imageTools.add(bare);
     diag("imageTool.remember", { name: bare, total: A.imageTools.size });
-    try { chrome.storage.local.set({ zsImageTools: [...A.imageTools].slice(-200) }); } catch {}
+    try { chrome.storage.local.set({ zsImageTools: [...A.imageTools].slice(-200) }); } catch { }
   }
   try {
     chrome.storage.local.get("zsImageTools", (r) => {
       if (r && Array.isArray(r.zsImageTools)) for (const n of r.zsImageTools) A.imageTools.add(n);
       diag("imageTool.loaded", { tools: [...A.imageTools] });
     });
-  } catch {}
+  } catch { }
 
   // How long a fetched catalogue stays good enough to reuse without a round trip.
   const TOOLS_TTL_MS = 30000;
@@ -909,7 +914,7 @@
       const servers = (A.bridge && A.bridge.servers) || [];
       const lines = servers.length
         ? servers.map((sv) =>
-            `- ${sv.id} - ${sv.alive ? `${sv.tools || 0} commands available` : "offline (no tools)"}`)
+          `- ${sv.id} - ${sv.alive ? `${sv.tools || 0} commands available` : "offline (no tools)"}`)
         : ["- (the bridge did not report any servers - it has none configured, or it is too old to report health)"];
       return (
         `Output of 'list_mcp_servers':\n` +
@@ -1042,10 +1047,9 @@
     // Orphaned content script - a page reload is the only cure, so say exactly
     // that instead of blaming the bridge (see bg / isContextInvalidated).
     if (r.kind === "stale-extension") {
-      ui.banner("warn", "Reload this page",
-        "ZeroScript was updated or reloaded while this tab was open, so this page is running an " +
-        "old copy of it and commands can no longer run. Reload the page (F5) to reconnect - your " +
-        "bridge and its MCP servers are unaffected.");
+      ui.banner("warn", "请刷新本页面",
+        "此标签页打开期间 ZeroScript 被更新或重新加载，本页面仍在运行旧副本，命令已无法执行。" +
+        "请刷新页面（F5）以重新连接——你的桥接及其 MCP 服务器不受影响。");
       diag("bridge.staleExtension", { name, error: r.error });
       return ZS.FEEDBACK.staleExtension;
     }
@@ -1094,7 +1098,7 @@
     if (!/^[[{]/.test(body) || body.length > 200000) return null;
     let v;
     try { v = JSON.parse(body); } catch { return null; }
-    if (Array.isArray(v)) return `${v.length} item${v.length === 1 ? "" : "s"}`;
+    if (Array.isArray(v)) return `${v.length} 项`;
     if (!v || typeof v !== "object") return null;
     const keys = Object.keys(v);
     // The common MCP shape: one wrapper key holding the list. Its name is already
@@ -1110,7 +1114,7 @@
       .filter((k) => v[k] === null || typeof v[k] !== "object")
       .map((k) => `${k}: ${v[k]}`);
     if (scalars.length) return scalars.join(", ").slice(0, 44);
-    return `${keys.length} field${keys.length === 1 ? "" : "s"}`;
+    return `${keys.length} 个字段`;
   }
 
   function outSummary(feedback) {
@@ -1130,7 +1134,7 @@
     }
     first = first.slice(0, 44);
     if (isErr) return first;
-    return lines > 1 ? `${first} · ${lines} lines` : first;
+    return lines > 1 ? `${first} · 共 ${lines} 行` : first;
   }
 
   // Full args / code, shown in a tool chip's expandable body.
@@ -1148,7 +1152,7 @@
     A.resumeArmed = false; // loop now owns the turn; drop the regenerate grace
     A.stop = false;
     A.stopping = false; // clean slate: never inherit a stale "Stopping…" from a
-                        // Stop click that landed before this loop actually started
+    // Stop click that landed before this loop actually started
     A.loopKey = null; // pinned by syncSessionState once this chat has an id + content
     let truncCount = 0;
     const MAX_TRUNC = 6;
@@ -1185,18 +1189,18 @@
         if (A.stop || res.kind === "stopped") break;
 
         if (res.kind === "context_limit") {
-          ui.banner("limit", `${P.displayName} reached its context limit`,
-            (res.detail || "") + "  -  open a new chat to start fresh.");
+          ui.banner("limit", `${P.displayName} 已达到上下文上限`,
+            (res.detail || "") + "  ——  请开启新对话以重新开始。");
           break;
         }
         if (res.kind === "too_long") {
-          ui.banner("limit", "Conversation too long",
-            `${P.displayName} reports the conversation is getting too long. Start a new session.`);
+          ui.banner("limit", "对话过长",
+            `${P.displayName} 提示当前对话过长，请开始新会话。`);
           break;
         }
         if (res.kind === "timeout") {
-          ui.banner("warn", `No response from ${P.displayName}`,
-            `${P.displayName} did not respond in time. The loop has stopped.`);
+          ui.banner("warn", `${P.displayName} 无响应`,
+            `${P.displayName} 未及时响应，循环已停止。`);
           break;
         }
         // A genuinely empty turn is effectively never produced (the warm-up guard
@@ -1206,9 +1210,9 @@
         // explanation anywhere. Say what happened.
         if (res.kind === "empty") {
           diag("empty.end");
-          ui.banner("warn", `${P.displayName} returned an empty reply`,
-            `The turn produced no text, so the agent loop stopped. Nothing was run. ` +
-            `Ask ${P.displayName} to continue, or press Start again in a new chat.`);
+          ui.banner("warn", `${P.displayName} 返回了空回复`,
+            `该轮没有产生任何文本，智能体循环已停止，未执行任何操作。` +
+            `请让 ${P.displayName} 继续，或在新对话中再次点击开始。`);
           break;
         }
 
@@ -1226,13 +1230,13 @@
               continue; // same turn resumes (base unchanged)
             }
             diag("truncated.sendFallback");
-            ui.toast("Reply was cut off, resuming…");
+            ui.toast("回复被截断，正在继续…");
             base = await submitAndGetBase(ZS.FEEDBACK.truncated);
             continue;
           }
           if (res.text) break; // give up resuming; keep what we have as the answer
-          ui.banner("warn", "Reply kept getting cut off",
-            "The model repeatedly hit its length limit. Try a shorter request or start a new session.");
+          ui.banner("warn", "回复反复被截断",
+            "模型多次触及其长度上限。请尝试更短的请求，或开始新会话。");
           break;
         }
         truncCount = 0;
@@ -1245,14 +1249,14 @@
           // execute_blender_code).
           const failName = ZSParse.toolNameFromText(res.raw || "") || "command";
           if (res.item) {
-            const detail = res.reason === "unclosed" ? "cut off"
-              : res.reason === "luaOpener" ? "missing ###LUA###"
-              : res.reason === "envelope" ? "bad format"
-              // DSML is not JSON at all - it is DeepSeek's own markup - so the
-              // default "bad JSON" would send the user (and anyone reading a bug
-              // report) looking for a syntax slip that does not exist.
-              : res.reason === "dsml" ? "wrong format"
-              : "bad JSON";
+            const detail = res.reason === "unclosed" ? "已截断"
+              : res.reason === "luaOpener" ? "缺少 ###LUA###"
+                : res.reason === "envelope" ? "格式错误"
+                  // DSML is not JSON at all - it is DeepSeek's own markup - so the
+                  // default "bad JSON" would send the user (and anyone reading a bug
+                  // report) looking for a syntax slip that does not exist.
+                  : res.reason === "dsml" ? "格式有误"
+                    : "JSON 格式错误";
             decorate.toolBox(res.item, failName, "err", detail, true, "", ZS.toolCategory(failName));
           }
           // Pass the detected command name so the feedback can name the specific
@@ -1315,7 +1319,7 @@
             // never repaints it ✓ done once generation ends (the real cause of a
             // stopped call still going green a moment later).
             if (res.item) { res.item.dataset.zStopped = "1"; rememberHalted(res.item); }
-            decorate.toolBox(res.item, call.tool, "err", "stopped", true, "", category);
+            decorate.toolBox(res.item, call.tool, "err", "已停止", true, "", category);
             break;
           }
           const isErr = feedbackIsError(feedback);
@@ -1327,9 +1331,11 @@
           // success line so we can see the mismatch without guessing.
           {
             const lns = outBody.split("\n").map((l) => l.trim()).filter(Boolean);
-            diag("tool.result", { name: call.tool, isErr, phase: isErr ? "err" : "done",
+            diag("tool.result", {
+              name: call.tool, isErr, phase: isErr ? "err" : "done",
               summary: outSummary(feedback), lineCount: lns.length,
-              firstLine: (lns[0] || "").slice(0, 90), lastLine: (lns[lns.length - 1] || "").slice(0, 90) });
+              firstLine: (lns[0] || "").slice(0, 90), lastLine: (lns[lns.length - 1] || "").slice(0, 90)
+            });
           }
           // A tool (any MCP server) that actually RETURNED an
           // image becomes a "screen" chip - even if its name never let us guess.
@@ -1389,7 +1395,7 @@
       }
     } catch (e) {
       diag("loop.error", { msg: String((e && e.message) || e) });
-      ui.banner("warn", "Internal loop error", String((e && e.message) || e));
+      ui.banner("warn", "内部循环错误", String((e && e.message) || e));
     } finally {
       A.running = false;
       A.stop = false;
@@ -1451,11 +1457,11 @@
       // spot). Too little text to identify → rely on the dataset marker only.
       if (pref.trim().length < 12) return;
       halted.set(`${P.conversationKey()}|${turnKey(item)}`, pref);
-    } catch {}
+    } catch { }
   }
   function forgetHalted(item) {
     if (!item || !halted.size) return;
-    try { halted.delete(`${P.conversationKey()}|${turnKey(item)}`); } catch {}
+    try { halted.delete(`${P.conversationKey()}|${turnKey(item)}`); } catch { }
   }
   // The halt was recorded MID-stream, so the stored text is a PREFIX of the
   // turn's final text - match on startsWith, never equality.
@@ -1495,7 +1501,7 @@
       // index. Fall back to the dataset marker until there is enough text.
       if (pref.trim().length < 12) return;
       executed.set(`${P.conversationKey()}|${turnKey(item)}`, pref);
-    } catch {}
+    } catch { }
   }
   function isRememberedExecuted(item, txt) {
     if (!executed.size) return false;
@@ -1533,11 +1539,11 @@
     if (A.toolRunning && A.toolItem) {
       A.toolItem.dataset.zStopped = "1";
       rememberHalted(A.toolItem);
-      decorate.toolBox(A.toolItem, A.toolName, "err", "stopped", true, "", ZS.toolCategory(A.toolName));
+      decorate.toolBox(A.toolItem, A.toolName, "err", "已停止", true, "", ZS.toolCategory(A.toolName));
     }
     ui.markStopping();    // instant feedback: button → "⏳ Stopping…", disabled
     P.stopGeneration();
-    ui.toast("Stopping…");
+    ui.toast("正在停止…");
   }
 
   // ── Server topology ───────────────────────────────────────────────────────
@@ -1564,7 +1570,7 @@
     let lang = "";
     try {
       lang = (navigator.languages && navigator.languages[0]) || navigator.language || "";
-    } catch {}
+    } catch { }
     return ZS.buildSystemPrompt({
       siteName: P.displayName,
       customPrompt: ui.getCustomPrompt(),
@@ -1633,11 +1639,11 @@
         users: Math.max(saved.users || 0, local.users || 0),
         results: Math.max(saved.results || 0, local.results || 0),
       };
-    } catch {}
+    } catch { }
     return sysCount;
   }
   function saveSysCount() {
-    try { chrome.storage.local.set({ [sysCountKey]: sysCount }); } catch {}
+    try { chrome.storage.local.set({ [sysCountKey]: sysCount }); } catch { }
   }
   // Increment SYNCHRONOUSLY, persist asynchronously. sysResendDue() reads
   // sysCount in the same tick as the bump that should trip it, so deferring the
@@ -1744,7 +1750,7 @@
     // "Start session" is allowed ONLY on a blank conversation. Opening an
     // EXISTING conversation must never trigger the bootstrap.
     if (!P.chatIsEmpty() && !A.started) {
-      ui.toast("Open a new, empty conversation to start a session.");
+      ui.toast("请打开一个新的空对话以启动会话。");
       return;
     }
     A.userStopped = false;
@@ -1765,19 +1771,19 @@
     ui.inputCover(true);  // cover the composer ("Working…") for the WHOLE Starting Up
     try {
       await ensureTools(true); // boot: always take a fresh catalogue (the TTL then
-                               // covers the list_commands / list_mcp_servers calls
-                               // the model makes seconds later)
+      // covers the list_commands / list_mcp_servers calls
+      // the model makes seconds later)
       if (!alive()) return;
       if (!A.toolList.length) {
-        ui.banner("warn", "No MCP tools available",
-          "Could not fetch tools. Run start.bat, then check the MCP servers in the ⋯ menu (or config.json) - each needs a live command, then try again.");
+        ui.banner("warn", "没有可用的 MCP 工具",
+          "无法获取工具列表。请运行 start.bat，然后在 ⋯ 菜单（或 config.json）中检查 MCP 服务器——每个服务器都需要一个可用的启动命令，之后重试。");
         return;
       }
       const modeState = await P.ensureComposerReady("startup");
       if (!alive()) return;
       if (!modeState.ready) {
-        ui.banner("warn", `${P.displayName} mode not ready`,
-          `Could not switch ${P.displayName} to the required mode. Start a new chat or reload the page, then try again.`);
+        ui.banner("warn", `${P.displayName} 模式尚未就绪`,
+          `无法将 ${P.displayName} 切换到所需模式。请新建一个对话或刷新页面，然后重试。`);
         return;
       }
       const prompt = systemPrompt();
@@ -1795,8 +1801,8 @@
       // If the model calls list_commands as instructed, run it and wait for the "ready" reply.
       const firstName = startRes.calls && startRes.calls[0] && startRes.calls[0].tool;
       if (startRes.kind === "tool" && startRes.calls && startRes.calls.length === 1 &&
-          (firstName === "list_commands" || firstName === "list_tools")) {
-        decorate.toolBox(startRes.item, "Loading commands", "run", "", true);
+        (firstName === "list_commands" || firstName === "list_tools")) {
+        decorate.toolBox(startRes.item, "正在加载命令", "run", "", true);
         const toolFeedback = await runTool(startRes.calls[0]);
         {
           // Count what the model ACTUALLY received: list_commands is scoped to the
@@ -1806,7 +1812,7 @@
           // the default-server-scoped tools instead, matching the real result.
           const defId = defaultServerId();
           const serverCount = A.toolList.filter((t) => (t.server || defId) === defId).length;
-          decorate.toolBox(startRes.item, "Loading commands", "done", `${serverCount} commands`, true);
+          decorate.toolBox(startRes.item, "正在加载命令", "done", `${serverCount} 个命令`, true);
         }
         const base2 = await submitAndGetBase(toolFeedback);
         const readyRes = await waitForResponse(base2); // wait for "I'm ready" reply
@@ -1816,9 +1822,9 @@
       A.started = true;
       rememberSession(P.conversationKey()); // survives virtualization AND reloads
       ui.setStarted(true);
-      ui.toast(`Agent ready. Ask ${P.displayName} to do something on your machine.`);
+      ui.toast(`Agent 已就绪。让 ${P.displayName} 在你的电脑上做点什么吧。`);
     } catch (e) {
-      if (alive()) ui.banner("warn", "Startup failed", String((e && e.message) || e));
+      if (alive()) ui.banner("warn", "启动失败", String((e && e.message) || e));
     } finally {
       // Only tear down our OWN starting state. If we were superseded (the user
       // opened another chat), the newer flow / syncSessionState owns it now.
@@ -1838,19 +1844,19 @@
   // ════════════════════════════════════════════════════════════════════════
   const SVG = (p) => `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${p}</svg>`;
   const ICONS = {
-    screen:  SVG('<rect x="3" y="4" width="18" height="13" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/>'),
-    read:    SVG('<circle cx="11" cy="11" r="7"/><line x1="21" y1="21" x2="16.65" y2="16.65"/>'),
-    edit:    SVG('<path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4z"/>'),
+    screen: SVG('<rect x="3" y="4" width="18" height="13" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/>'),
+    read: SVG('<circle cx="11" cy="11" r="7"/><line x1="21" y1="21" x2="16.65" y2="16.65"/>'),
+    edit: SVG('<path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4z"/>'),
     generate: SVG('<path d="M12 2v4M12 18v4M4.9 4.9l2.8 2.8M16.3 16.3l2.8 2.8M2 12h4M18 12h4M4.9 19.1l2.8-2.8M16.3 7.7l2.8-2.8"/>'),
-    tool:    SVG('<path d="M14.7 6.3a4 4 0 0 0-5.4 5.4L3 18v3h3l6.3-6.3a4 4 0 0 0 5.4-5.4l-2.5 2.5-2-2z"/>'),
-    result:  SVG('<path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/>'),
-    check:   SVG('<polyline points="20 6 9 17 4 12"/>'),
+    tool: SVG('<path d="M14.7 6.3a4 4 0 0 0-5.4 5.4L3 18v3h3l6.3-6.3a4 4 0 0 0 5.4-5.4l-2.5 2.5-2-2z"/>'),
+    result: SVG('<path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/>'),
+    check: SVG('<polyline points="20 6 9 17 4 12"/>'),
     // Bell - the mid-session system-prompt re-statement. Deliberately NOT the
     // gear: the gear means "the agent is starting up", and a reminder is the
     // opposite (a session already long enough to need re-anchoring).
-    remind:  SVG('<path d="M18 8a6 6 0 0 0-12 0c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.7 21a2 2 0 0 1-3.4 0"/>'),
-    error:   SVG('<path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/>'),
-    gear:    SVG('<circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-2.82 1.17V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 8 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.6 15H4.5a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 6 8a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 11 4.6h.09A1.65 1.65 0 0 0 12 3.09 2 2 0 0 1 16 3v.09A1.65 1.65 0 0 0 19 4.6l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 21.4 11h.1a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.5 1z"/>'),
+    remind: SVG('<path d="M18 8a6 6 0 0 0-12 0c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.7 21a2 2 0 0 1-3.4 0"/>'),
+    error: SVG('<path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/>'),
+    gear: SVG('<circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-2.82 1.17V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 8 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.6 15H4.5a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 6 8a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 11 4.6h.09A1.65 1.65 0 0 0 12 3.09 2 2 0 0 1 16 3v.09A1.65 1.65 0 0 0 19 4.6l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 21.4 11h.1a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.5 1z"/>'),
   };
   const SPIN = '<span class="zs-spin"></span>';
 
@@ -1908,10 +1914,10 @@
         chip.className = `zs-chip cat-${category} ${cls || ""}`;
         chip.innerHTML =
           `<div class="zs-chip-head">` +
-            `<span class="zs-chip-ic">${iconFor(category, phase)}</span>` +
-            `<span class="zs-chip-tx"></span>` +
-            `<span class="zs-chip-dt"></span>` +
-            (hasBody ? `<span class="zs-chip-cv">${SVG('<polyline points="6 9 12 15 18 9"/>')}</span>` : "") +
+          `<span class="zs-chip-ic">${iconFor(category, phase)}</span>` +
+          `<span class="zs-chip-tx"></span>` +
+          `<span class="zs-chip-dt"></span>` +
+          (hasBody ? `<span class="zs-chip-cv">${SVG('<polyline points="6 9 12 15 18 9"/>')}</span>` : "") +
           `</div>` +
           (hasBody ? `<div class="zs-chip-body"><pre></pre></div>` : "");
         chip.querySelector(".zs-chip-tx").textContent = label;
@@ -1989,16 +1995,16 @@
         // rebuild fire on EVERY sweep forever (60Hz spam, seen live).
         rawVisible = [...item.querySelectorAll("pre, p, [class*='code'], .cm-line")].some(
           (e) => !e.closest(".zs-tool-hide") && !e.closest(".zs-chip") &&
-                 !(P.thinkingSel && e.closest(P.thinkingSel)) &&
-                 // Some sites (Arena) wrap a code block in a bare outer <pre>
-                 // that has no hide class of its own - the real content (and
-                 // the .zs-tool-hide class) live on a child wrapper instead.
-                 // closest() only checks ancestors, so without this the outer
-                 // <pre> reads as "raw command visible" FOREVER (its own
-                 // textContent includes the hidden child's text), causing an
-                 // infinite rebuild loop (~60/s, seen live on Arena).
-                 !e.querySelector(".zs-tool-hide") &&
-                 ZSParse.hasCommandShape(e.textContent || ""));
+            !(P.thinkingSel && e.closest(P.thinkingSel)) &&
+            // Some sites (Arena) wrap a code block in a bare outer <pre>
+            // that has no hide class of its own - the real content (and
+            // the .zs-tool-hide class) live on a child wrapper instead.
+            // closest() only checks ancestors, so without this the outer
+            // <pre> reads as "raw command visible" FOREVER (its own
+            // textContent includes the hidden child's text), causing an
+            // infinite rebuild loop (~60/s, seen live on Arena).
+            !e.querySelector(".zs-tool-hide") &&
+            ZSParse.hasCommandShape(e.textContent || ""));
       }
       // A provider opted into `chipAppend` (chip trails the reply text instead
       // of pinning first) has no equivalent of firstChild's immunity to churn:
@@ -2062,8 +2068,8 @@
           // result is the only one in the conversation with no visible outcome.
           const m = txt.match(/Output of '([^']+)'/);
           this.chip(item, {
-            label: "Reminder",
-            detail: m ? `with ${m[1]} result` : "",
+            label: "提醒",
+            detail: m ? `含 ${m[1]} 结果` : "",
             category: "remind", phase: "remind", cls: "sys", whole: true,
           });
           item.dataset.zs = "resend";
@@ -2076,7 +2082,7 @@
       if (txt.includes(ZS.SYS_MARKER)) {
         const phase = A.starting ? "run" : "sys";
         if (item.dataset.zs !== "sys" || item.dataset.zphase !== phase || chipGone) {
-          this.chip(item, { label: "Starting Up", category: "tool", phase, cls: "sys", whole: true });
+          this.chip(item, { label: "启动中", category: "tool", phase, cls: "sys", whole: true });
           item.dataset.zphase = phase;
         }
         return;
@@ -2095,7 +2101,7 @@
         const sig = (m ? m[1] : "note") + "|" + (isErr ? "err" : hasImg ? "img" : "result");
         if (item.dataset.zsig !== sig || !item.classList.contains("zs-hidden") || chipGone) {
           this.chip(item, {
-            label: m ? `${m[1]} · result` : "result",
+            label: m ? `${m[1]} · 结果` : "结果",
             category: hasImg ? "screen" : m ? ZS.toolCategory(m[1]) : "tool",
             body: txt, phase: isErr ? "err" : "result",
             cls: isErr ? "err" : "result", whole: true,
@@ -2115,7 +2121,7 @@
       // our injected result (`Output of 'name'`) is definitive proof it WAS
       // one - settle it from that evidence instead of leaving the chip gone.
       if (P.isAssistantItem(item) && !ZSParse.hasCommandShape(txt) &&
-          next && P.isUserItem(next)) {
+        next && P.isUserItem(next)) {
         const nt = P.classifyText(next, ".zs-chip");
         const m = nt.match(/^\s*Output of '([^']+)'/);
         if (m) {
@@ -2137,7 +2143,7 @@
       // not proof of a session. (Branches 1/2 above key off OUR OWN injected
       // markers, which only exist in real sessions, so they need no gate.)
       if (P.isAssistantItem(item) && ZSParse.hasCommandShape(txt) &&
-          (A.started || A.starting)) {
+        (A.started || A.starting)) {
         // Regenerate transition (see zRegenLen capture in regenResume): the site is
         // still showing the OLD command text after a post-stop regenerate, before it
         // wipes and re-streams. Keep the coherent red "stopped" look instead of
@@ -2152,7 +2158,7 @@
           const expired = Date.now() - armedAt > 6000;    // safety fallback
           if (!replaced && !expired) {
             const nm = ZSParse.toolNameFromText(txt) || "command";
-            this.toolBox(item, nm, "err", "stopped", false);
+            this.toolBox(item, nm, "err", "已停止", false);
             return;
           }
           delete item.dataset.zRegenLen;
@@ -2198,16 +2204,16 @@
         // outcome. The count guard skips this once the model's NEXT turn exists,
         // so a follow-up call to the same tool still classifies live.
         if (!stopped && A.running && !A.toolRunning && A.toolSettle &&
-            // Same TURN check. Node identity when available (virtualization-proof:
-            // on Qwen the count doesn't grow for a new turn, and a back-to-back
-            // call to the same tool defeats the name guard - the old outcome then
-            // repainted the STREAMING next turn's chip as done/err). Falls back to
-            // the count guard for providers without lastAssistantId.
-            (A.toolSettle.id !== undefined && P.lastAssistantId
-              ? P.lastAssistantId() === A.toolSettle.id
-              : A.toolSettle.count === P.assistantCount()) &&
-            item === P.lastAssistant() &&
-            ZSParse.toolNameFromText(txt) === A.toolName) {
+          // Same TURN check. Node identity when available (virtualization-proof:
+          // on Qwen the count doesn't grow for a new turn, and a back-to-back
+          // call to the same tool defeats the name guard - the old outcome then
+          // repainted the STREAMING next turn's chip as done/err). Falls back to
+          // the count guard for providers without lastAssistantId.
+          (A.toolSettle.id !== undefined && P.lastAssistantId
+            ? P.lastAssistantId() === A.toolSettle.id
+            : A.toolSettle.count === P.assistantCount()) &&
+          item === P.lastAssistant() &&
+          ZSParse.toolNameFromText(txt) === A.toolName) {
           diag("chip.reown", { name: A.toolName, phase: A.toolSettle.phase });
           this.toolBox(item, A.toolName, A.toolSettle.phase, A.toolSettle.detail,
             true, A.toolSettle.body, A.toolSettle.category);
@@ -2284,7 +2290,7 @@
         const pendingExec = !stopped && !orphanPending && !live &&
           neverRun && item === P.lastAssistant() && Date.now() - A.lastGenAt <= RESUME_FRESH_MS;
         let phase = stopped ? "err" : (orphanPending ? "idle" : ((live || pendingExec) ? "run" : "done"));
-        let detail = stopped ? "stopped" : (orphanPending ? "not run" : "");
+        let detail = stopped ? "已停止" : (orphanPending ? "未运行" : "");
         // A DSML turn is the model calling a tool in its OWN markup, which can
         // never be executed - it always resolves to the "dsml" parse_error. So
         // once it has FINISHED streaming, "waiting to run" (spinner) and "not
@@ -2299,7 +2305,7 @@
         // error-aware settle just below is skipped (phase is no longer "done") so
         // the more precise "bad format" wording survives.
         if (!stopped && !live && phase !== "err" && ZSParse.DSML_RE.test(txt)) {
-          phase = "err"; detail = "wrong format";
+          phase = "err"; detail = "格式有误";
         }
         // Error-aware settle: a command whose injected result RIGHT BELOW is an
         // ERROR must never wear a green ✓. The loop paints this correctly while
@@ -2313,7 +2319,7 @@
           // test would miss - the Blender case), so a revisited conversation
           // re-settles it red, matching what the loop painted live.
           if (ZSParse.isInjectedFeedback(nt) && feedbackIsError(nt)) {
-            phase = "err"; detail = "error";
+            phase = "err"; detail = "错误";
             if (item.dataset.zphase !== "err") diag("chip.errSettle", { name: ZSParse.toolNameFromText(txt) });
           }
         }
@@ -2327,12 +2333,12 @@
         // green chip blinking back to a blue spinner).
         const rawVisible = [...item.querySelectorAll("pre, p, [class*='code'], .cm-line")].some(
           (e) => !e.classList.contains("zs-tool-hide") && !e.closest(".zs-tool-hide") &&
-                 !e.closest(".zs-chip") && !(P.thinkingSel && e.closest(P.thinkingSel)) &&
-                 // see ensureOwnedChip's matching guard: a bare outer <pre>
-                 // wrapping a hidden child wrapper otherwise reads as visible
-                 // forever (Arena code-block markup).
-                 !e.querySelector(".zs-tool-hide") &&
-                 ZSParse.hasCommandShape(e.textContent || ""));
+            !e.closest(".zs-chip") && !(P.thinkingSel && e.closest(P.thinkingSel)) &&
+            // see ensureOwnedChip's matching guard: a bare outer <pre>
+            // wrapping a hidden child wrapper otherwise reads as visible
+            // forever (Arena code-block markup).
+            !e.querySelector(".zs-tool-hide") &&
+            ZSParse.hasCommandShape(e.textContent || ""));
         // A tool learned to return images gets the "screen" chip even though its
         // name alone wouldn't reveal it (parity with screen_capture). The
         // fact can land AFTER this turn first settled (imageTools loads from
@@ -2396,10 +2402,10 @@
         item.dataset.zStopped === "1" ||
         (A.userStopped && item === P.lastAssistant());
       if (haltedTurn && P.isAssistantItem(item) && item.dataset.zphase !== "err"
-          && item.querySelector(".zs-chip")) {
+        && item.querySelector(".zs-chip")) {
         const tx = item.querySelector(".zs-chip-tx");
         const name = ZSParse.toolNameFromText(txt) || (tx && tx.textContent) || "tool";
-        this.toolBox(item, name, "err", "stopped", false);
+        this.toolBox(item, name, "err", "已停止", false);
         return;
       }
 
@@ -2437,7 +2443,7 @@
         while (item && !(item.dataset && item.dataset.zStopped)) item = item.parentElement;
         if (item && item.dataset.zphase !== "err") {
           const tx = chip.querySelector(".zs-chip-tx");
-          this.toolBox(item, (tx && tx.textContent) || "tool", "err", "stopped", false);
+          this.toolBox(item, (tx && tx.textContent) || "tool", "err", "已停止", false);
         }
       }
     },
@@ -2467,13 +2473,13 @@
           <span id="zs-brand">ZeroScript <span class="zs-free">v${EXT_VERSION}</span></span>
           <span id="zs-state"></span>
           <button id="zs-action"></button>
-          <button id="zs-stop" hidden>■ Stop</button>
-          <a id="zs-discord" href="https://discord.gg/D5G2HAzX8z" target="_blank" rel="noopener" title="Need help? Join our Discord"><svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor" xmlns="http://www.w3.org/2000/svg"><path d="M20.317 4.37a19.791 19.791 0 0 0-4.885-1.515.074.074 0 0 0-.079.037c-.21.375-.444.864-.608 1.25a18.27 18.27 0 0 0-5.487 0 12.64 12.64 0 0 0-.617-1.25.077.077 0 0 0-.079-.037A19.736 19.736 0 0 0 3.677 4.37a.07.07 0 0 0-.032.027C.533 9.046-.32 13.58.099 18.057a.082.082 0 0 0 .031.057 19.9 19.9 0 0 0 5.993 3.03.078.078 0 0 0 .084-.028c.462-.63.874-1.295 1.226-1.994a.076.076 0 0 0-.041-.106 13.107 13.107 0 0 1-1.872-.892.077.077 0 0 1-.008-.128 10.2 10.2 0 0 0 .372-.292.074.074 0 0 1 .077-.01c3.928 1.793 8.18 1.793 12.062 0a.074.074 0 0 1 .078.01c.12.098.246.198.373.292a.077.077 0 0 1-.006.127 12.299 12.299 0 0 1-1.873.892.077.077 0 0 0-.041.107c.36.698.772 1.362 1.225 1.993a.076.076 0 0 0 .084.028 19.839 19.839 0 0 0 6.002-3.03.077.077 0 0 0 .032-.054c.5-5.177-.838-9.674-3.549-13.66a.061.061 0 0 0-.031-.03zM8.02 15.33c-1.183 0-2.157-1.085-2.157-2.419 0-1.333.956-2.419 2.157-2.419 1.21 0 2.176 1.096 2.157 2.42 0 1.333-.956 2.418-2.157 2.418zm7.975 0c-1.183 0-2.157-1.085-2.157-2.419 0-1.333.955-2.419 2.157-2.419 1.21 0 2.176 1.096 2.157 2.42 0 1.333-.946 2.418-2.157 2.418z"/></svg></a>
-          <button id="zs-switch" aria-label="Switch AI and options" title="Switch AI, custom prompt, support"><span id="zs-switch-name"></span><svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"/></svg></button>
-          <button id="zs-support" aria-label="Support ZeroScript" title="Support ZeroScript"><svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M12 21.35l-1.45-1.32C5.4 15.36 2 12.28 2 8.5 2 5.42 4.42 3 7.5 3c1.74 0 3.41.81 4.5 2.09C13.09 3.81 14.76 3 16.5 3 19.58 3 22 5.42 22 8.5c0 3.78-3.4 6.86-8.55 11.54L12 21.35z"/></svg></button>
+          <button id="zs-stop" hidden>■ 停止</button>
+          <a id="zs-discord" href="https://discord.gg/D5G2HAzX8z" target="_blank" rel="noopener" title="需要帮助？加入我们的 Discord"><svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor" xmlns="http://www.w3.org/2000/svg"><path d="M20.317 4.37a19.791 19.791 0 0 0-4.885-1.515.074.074 0 0 0-.079.037c-.21.375-.444.864-.608 1.25a18.27 18.27 0 0 0-5.487 0 12.64 12.64 0 0 0-.617-1.25.077.077 0 0 0-.079-.037A19.736 19.736 0 0 0 3.677 4.37a.07.07 0 0 0-.032.027C.533 9.046-.32 13.58.099 18.057a.082.082 0 0 0 .031.057 19.9 19.9 0 0 0 5.993 3.03.078.078 0 0 0 .084-.028c.462-.63.874-1.295 1.226-1.994a.076.076 0 0 0-.041-.106 13.107 13.107 0 0 1-1.872-.892.077.077 0 0 1-.008-.128 10.2 10.2 0 0 0 .372-.292.074.074 0 0 1 .077-.01c3.928 1.793 8.18 1.793 12.062 0a.074.074 0 0 1 .078.01c.12.098.246.198.373.292a.077.077 0 0 1-.006.127 12.299 12.299 0 0 1-1.873.892.077.077 0 0 0-.041.107c.36.698.772 1.362 1.225 1.993a.076.076 0 0 0 .084.028 19.839 19.839 0 0 0 6.002-3.03.077.077 0 0 0 .032-.054c.5-5.177-.838-9.674-3.549-13.66a.061.061 0 0 0-.031-.03zM8.02 15.33c-1.183 0-2.157-1.085-2.157-2.419 0-1.333.956-2.419 2.157-2.419 1.21 0 2.176 1.096 2.157 2.42 0 1.333-.956 2.418-2.157 2.418zm7.975 0c-1.183 0-2.157-1.085-2.157-2.419 0-1.333.955-2.419 2.157-2.419 1.21 0 2.176 1.096 2.157 2.42 0 1.333-.946 2.418-2.157 2.418z"/></svg></a>
+          <button id="zs-switch" aria-label="切换 AI 与选项" title="切换 AI、自定义提示词、支持"><span id="zs-switch-name"></span><svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"/></svg></button>
+          <button id="zs-support" aria-label="支持 ZeroScript" title="支持 ZeroScript"><svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M12 21.35l-1.45-1.32C5.4 15.36 2 12.28 2 8.5 2 5.42 4.42 3 7.5 3c1.74 0 3.41.81 4.5 2.09C13.09 3.81 14.76 3 16.5 3 19.58 3 22 5.42 22 8.5c0 3.78-3.4 6.86-8.55 11.54L12 21.35z"/></svg></button>
         </div>
         <div id="zs-menu" hidden></div>
-        ${P.unstableWarning ? `<button id="zs-unstable" aria-label="Provider may be unstable" hidden>⚠ unstable</button>` : ""}
+        ${P.unstableWarning ? `<button id="zs-unstable" aria-label="该提供方可能不稳定" hidden>⚠ 不稳定</button>` : ""}
       `;
       document.documentElement.appendChild(root);
       bar = root.querySelector("#zs-bar");
@@ -2563,7 +2569,7 @@
           syncMenuPrompt();
         }
       });
-    } catch {}
+    } catch { }
     function getCustomPrompt() { return customPrompt; }
     // Reflect the saved value back into the menu textarea (unless being edited).
     function syncMenuPrompt() {
@@ -2586,10 +2592,10 @@
           if (!menuEl.hidden) buildMenu();
         }
       });
-    } catch {}
+    } catch { }
     function getCustomMcpServers() { return customMcpServers; }
     function saveCustomMcpServers() {
-      try { chrome.storage.local.set({ zsCustomMcpServers: customMcpServers }); } catch {}
+      try { chrome.storage.local.set({ zsCustomMcpServers: customMcpServers }); } catch { }
     }
     // The bridge (config.json + live health) is the SOURCE OF TRUTH for which
     // addon servers actually exist - chrome.storage.local is just a display-name
@@ -2668,7 +2674,7 @@
         const current = s.name.toLowerCase() === here;
         const label = `<span class="zs-site-name"><span>${s.name}</span><span class="zs-site-host">${hostOf(s.url)}</span></span>`;
         sites += current
-          ? `<div class="zs-site-opt zs-site-here">${label}<span class="zs-site-badge">active</span></div>`
+          ? `<div class="zs-site-opt zs-site-here">${label}<span class="zs-site-badge">当前使用</span></div>`
           : `<button class="zs-site-opt" data-u="${s.url}">${label}<span class="zs-site-go">&rarr;</span></button>`;
       }
       const esc = (s) => String(s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
@@ -2679,36 +2685,31 @@
         // alive === undefined -> the bridge hasn't reported this server's health
         // yet (just added/removed, still restarting) - shown neutral, not red.
         const healthClass = s.alive === true ? "on" : s.alive === false ? "off" : "unknown";
-        const healthTitle = s.alive === true ? `${s.tools || 0} tools available` : s.alive === false ? "offline" : "status unknown";
-        mcpList += `<div class="zs-mcp-item"><span class="zs-mcp-health zs-mcp-health-${healthClass}" title="${healthTitle}"></span><div class="zs-mcp-info"><span class="zs-mcp-name">${esc(s.name)}</span><span class="zs-mcp-url">${esc(s.command || s.id)}</span></div><button class="zs-mcp-remove" data-id="${esc(s.id)}" title="Remove">✕</button></div>`;
+        const healthTitle = s.alive === true ? `可用工具 ${s.tools || 0} 个` : s.alive === false ? "离线" : "状态未知";
+        mcpList += `<div class="zs-mcp-item"><span class="zs-mcp-health zs-mcp-health-${healthClass}" title="${healthTitle}"></span><div class="zs-mcp-info"><span class="zs-mcp-name">${esc(s.name)}</span><span class="zs-mcp-url">${esc(s.command || s.id)}</span></div><button class="zs-mcp-remove" data-id="${esc(s.id)}" title="删除">✕</button></div>`;
       });
       menuEl.innerHTML =
         `<div class="zs-menu-head"><span class="zs-menu-logo">ZeroScript</span><span class="zs-menu-tag">v${EXT_VERSION}</span></div>
          <section class="zs-menu-sec">
-           <div class="zs-sec-label"><span>Switch AI</span></div>
+           <div class="zs-sec-label"><span>切换 AI</span></div>
            ${sites}
          </section>
          <section class="zs-menu-sec">
-           <div class="zs-sec-label"><span>Support</span></div>
-           <button class="zs-tip-opt zs-tip-star" data-u="${GITHUB_URL}"><span>Star on GitHub</span><span class="zs-tip-sub">free, helps a lot</span></button>
-           <button class="zs-tip-opt zs-tip-kofi" data-u="${KOFI_URL}"><span>Tip on Ko-fi</span><span class="zs-tip-sub">any amount</span></button>
+           <div class="zs-sec-label"><span>自定义提示词</span></div>
+           <div class="zs-menu-note">每次新会话都会追加到系统提示词之后。内置提示词不可修改。</div>
+           <textarea id="zs-set-text" rows="4" placeholder="例如：给你写的代码加上注释，尽量使用小而模块化的文件。"></textarea>
+           <div class="zs-set-row"><button id="zs-set-save">保存</button><span id="zs-set-status"></span></div>
          </section>
          <section class="zs-menu-sec">
-           <div class="zs-sec-label"><span>Custom prompt</span></div>
-           <div class="zs-menu-note">Added below the system prompt on every new session. The built-in prompt can't be edited.</div>
-           <textarea id="zs-set-text" rows="4" placeholder="e.g. Always add comments to the code you write. Prefer small modular files."></textarea>
-           <div class="zs-set-row"><button id="zs-set-save">Save</button><span id="zs-set-status"></span></div>
-         </section>
-         <section class="zs-menu-sec">
-           <div class="zs-sec-label"><span>MCP servers</span></div>
-           <div class="zs-menu-note">Every local MCP server the AI can use (Blender, filesystem, git, GitHub, ...). Add or remove servers; the bridge restarts briefly to apply.</div>
+           <div class="zs-sec-label"><span>MCP 服务器</span></div>
+           <div class="zs-menu-note">AI 可使用的全部本地 MCP 服务器（Blender、文件系统、git、GitHub……）。可添加或删除服务器；桥接会短暂重启以生效。</div>
            ${mcpList}
            <div class="zs-mcp-sep"></div>
-           <input id="zs-mcp-name" class="zs-mcp-field" placeholder="Name, e.g. Blender" />
-           <input id="zs-mcp-url" class="zs-mcp-field" placeholder="Start command, e.g. npx -y @some/mcp-server" />
-           <div class="zs-set-row"><button id="zs-mcp-add">Add server</button><span id="zs-mcp-status"></span></div>
+           <input id="zs-mcp-name" class="zs-mcp-field" placeholder="名称，例如 Blender" />
+           <input id="zs-mcp-url" class="zs-mcp-field" placeholder="启动命令，例如 npx -y @some/mcp-server" />
+           <div class="zs-set-row"><button id="zs-mcp-add">添加服务器</button><span id="zs-mcp-status"></span></div>
          </section>`;
-      const open = (url) => { try { window.open(url, "_blank", "noopener"); } catch {} menuEl.hidden = true; };
+      const open = (url) => { try { window.open(url, "_blank", "noopener"); } catch { } menuEl.hidden = true; };
       menuEl.querySelectorAll("button.zs-site-opt, .zs-tip-opt").forEach((b) =>
         b.addEventListener("click", () => open(b.dataset.u)));
       const ta = menuEl.querySelector("#zs-set-text");
@@ -2717,8 +2718,8 @@
       ta.value = customPrompt;
       saveBtn.addEventListener("click", () => {
         customPrompt = ta.value;
-        try { chrome.storage.local.set({ zsCustomPrompt: customPrompt }); } catch {}
-        status.textContent = "Saved ✓";
+        try { chrome.storage.local.set({ zsCustomPrompt: customPrompt }); } catch { }
+        status.textContent = "已保存 ✓";
         setTimeout(() => { status.textContent = ""; }, 1600);
       });
       const mcpNameEl = menuEl.querySelector("#zs-mcp-name");
@@ -2734,7 +2735,7 @@
         mcpAddBtn.disabled = on;
         menuEl.querySelectorAll(".zs-mcp-remove").forEach((b) => (b.disabled = on));
         mcpStatus.innerHTML = on
-          ? `<span class="zs-mcp-spin-row"><span class="zs-mcp-spin"></span>${label || "Restarting bridge…"}</span>`
+          ? `<span class="zs-mcp-spin-row"><span class="zs-mcp-spin"></span>${label || "正在重启桥接…"}</span>`
           : "";
       }
 
@@ -2743,11 +2744,11 @@
           if (mcpBusy) return;
           const id = b.dataset.id;
           if (!id) return;
-          setMcpBusy(true, "Restarting bridge…");
+          setMcpBusy(true, "正在重启桥接…");
           const r = await bg({ type: "remove_server", server_id: id });
           if (!r || !r.ok) {
             setMcpBusy(false);
-            mcpStatus.textContent = (r && r.error) || "Couldn't remove server";
+            mcpStatus.textContent = (r && r.error) || "删除服务器失败";
             setTimeout(() => { if (!mcpBusy) mcpStatus.textContent = ""; }, 2400);
             return;
           }
@@ -2762,17 +2763,17 @@
         const name = mcpNameEl.value.trim();
         const command = mcpUrlEl.value.trim();
         if (!name || !command) {
-          mcpStatus.textContent = "Name and command required";
+          mcpStatus.textContent = "请填写名称和启动命令";
           setTimeout(() => { if (!mcpBusy) mcpStatus.textContent = ""; }, 1800);
           return;
         }
         const id = mcpSlug(name);
         const { command: cmd, args } = splitCommand(command);
-        setMcpBusy(true, "Restarting bridge…");
+        setMcpBusy(true, "正在重启桥接…");
         const r = await bg({ type: "add_server", server_id: id, command: cmd, args });
         if (!r || !r.ok) {
           setMcpBusy(false);
-          mcpStatus.textContent = (r && r.error) || "Couldn't add server";
+          mcpStatus.textContent = (r && r.error) || "添加服务器失败";
           setTimeout(() => { if (!mcpBusy) mcpStatus.textContent = ""; }, 2400);
           return;
         }
@@ -2789,51 +2790,51 @@
       chrome.storage.local.get("zsSetupSeen", (r) => {
         if (r && r.zsSetupSeen) setupSeen = true;
       });
-    } catch {}
+    } catch { }
 
     function buildSetup() {
       setupCard = document.createElement("div");
       setupCard.id = "zs-setup";
       setupCard.hidden = true;
       const videoBtn = VIDEO_URL
-        ? `<a id="zs-setup-video" href="${VIDEO_URL}" target="_blank" rel="noopener">▶︎ Watch tutorial</a>`
+        ? `<a id="zs-setup-video" href="${VIDEO_URL}" target="_blank" rel="noopener">▶︎ 观看教程</a>`
         : "";
       setupCard.innerHTML =
-        `<div id="zs-setup-head"><span id="zs-setup-logo">ZeroScript</span><span id="zs-setup-tag">Setup</span></div>` +
-        `<div id="zs-setup-sub">The <b>Bridge</b> is what connects this chat to your local MCP servers. Three steps and you're running.</div>` +
+        `<div id="zs-setup-head"><span id="zs-setup-logo">ZeroScript</span><span id="zs-setup-tag">安装向导</span></div>` +
+        `<div id="zs-setup-sub"><b>桥接（Bridge）</b>负责把这个对话连接到本机的 MCP 服务器。三步即可开始使用。</div>` +
         `<ol id="zs-setup-steps">` +
-          `<li>Download the Bridge from GitHub</li>` +
-          `<li>Run <code>start.bat</code></li>` +
-          `<li>Back here, click <b>Start agent</b></li>` +
+        `<li>从 GitHub 下载桥接程序</li>` +
+        `<li>运行 <code>start.bat</code></li>` +
+        `<li>回到这里，点击 <b>启动 Agent</b></li>` +
         `</ol>` +
         `<div class="zs-setup-copy-row">` +
-          `<input type="text" id="zs-setup-link" readonly value="${GITHUB_URL}">` +
-          `<button id="zs-setup-copy">Copy</button>` +
+        `<input type="text" id="zs-setup-link" readonly value="${GITHUB_URL}">` +
+        `<button id="zs-setup-copy">复制</button>` +
         `</div>` +
         videoBtn +
-        `<button id="zs-setup-dismiss">Got it</button>`;
+        `<button id="zs-setup-dismiss">知道了</button>`;
       document.documentElement.appendChild(setupCard);
 
       setupCard.querySelector("#zs-setup-copy").addEventListener("click", () => {
         try { navigator.clipboard.writeText(GITHUB_URL); } catch {
           const inp = setupCard.querySelector("#zs-setup-link");
-          inp.select(); try { document.execCommand("copy"); } catch {}
+          inp.select(); try { document.execCommand("copy"); } catch { }
         }
         const btn = setupCard.querySelector("#zs-setup-copy");
-        btn.textContent = "Copied!";
-        setTimeout(() => { btn.textContent = "Copy"; }, 1600);
+        btn.textContent = "已复制！";
+        setTimeout(() => { btn.textContent = "复制"; }, 1600);
       });
 
       setupCard.querySelector("#zs-setup-dismiss").addEventListener("click", () => {
         setupSeen = true;
-        try { chrome.storage.local.set({ zsSetupSeen: true }); } catch {}
+        try { chrome.storage.local.set({ zsSetupSeen: true }); } catch { }
         hideSetup();
       });
     }
 
     // The onboarding card is pinned to the top-right corner (via CSS), out of the
     // way of the composer; nothing to reposition per frame.
-    function placeSetup() {}
+    function placeSetup() { }
 
     function showSetup() {
       if (!setupCard) buildSetup();
@@ -2881,7 +2882,7 @@
       if (A.staleExtension) {
         if (dot) dot.className = "off";
         toneClass = "warn"; warn = true;
-        msg = `<b>Disconnected</b> · reload this page to reconnect`;
+        msg = `<b>已断开</b> · 请刷新本页面以重新连接`;
       }
       // Show "Starting…" for the whole bootstrap. If the user actually leaves for
       // a new (empty) chat, syncSessionState clears A.starting, so this naturally
@@ -2890,8 +2891,8 @@
       else if (A.starting) {
         toneClass = "starting";
         indicator = `<span class="zs-spin"></span>`;
-        msg = `Starting the agent…`;
-        label = "Starting…"; kind = "starting"; disabled = true;
+        msg = `正在启动 Agent…`;
+        label = "启动中…"; kind = "starting"; disabled = true;
       } else if (A.started) {
         // Prefer the ADVERTISED list length (A.toolList - the AGGREGATE catalogue
         // across every connected MCP server, already filtered by the vision/blocked
@@ -2904,20 +2905,20 @@
         const tools = A.toolList.length || healthTotal || (A.bridge && A.bridge.tools) || 0;
         if (A.bridge && A.bridge.connected === false) {
           toneClass = "warn"; warn = true;
-          msg = `<b>Agent active</b> · bridge offline, run start.bat`;
+          msg = `<b>Agent 运行中</b> · 桥接离线，请运行 start.bat`;
         } else if (serverDown) {
           // Bridge is up but NO configured server is usable. The agent keeps
           // running, but every tool call will fail until one is back - show the
           // honest state instead of a green "N tools" that would be a lie (the
           // count is a stale cache, not live health).
           toneClass = "warn"; warn = true;
-          msg = `<b>Agent active</b> · MCP server offline - check the bridge (⋯ menu → MCP servers)`;
+          msg = `<b>Agent 运行中</b> · MCP 服务器离线——请检查桥接（⋯ 菜单 → MCP 服务器）`;
         } else {
           toneClass = "active";
           // No inline dot here: the leading status dot already shows green, two
           // dots side by side looked cluttered. The green "Agent active" text
           // carries it.
-          msg = `<b>Agent active</b>${tools ? ` · ${tools} tools` : ""}`;
+          msg = `<b>Agent 运行中</b>${tools ? ` · ${tools} 个工具` : ""}`;
         }
       } else if (P.isFreshChat() || P.chatIsEmpty()) {
         // Treat ANY empty chat (no turns yet) as the standby/start case - not just
@@ -2929,21 +2930,21 @@
         // an EXISTING conversation (one that has turns) we did not start.
         if (bridgeOk) {
           toneClass = "standby";
-          msg = `Standby. Start the agent, or just chat.`;
-          label = "▶︎ Start agent"; kind = "start";
+          msg = `待命中。可启动 Agent，也可以直接聊天。`;
+          label = "▶︎ 启动 Agent"; kind = "start";
         } else {
           toneClass = "warn"; warn = true;
           msg = !A.bridge.connected
-            ? `Run <b>start.bat</b> on your PC.`
+            ? `请在电脑上运行 <b>start.bat</b>。`
             : (bridgeServers().length
-                ? `<b>No MCP server is connected yet</b> - check ⋯ menu → MCP servers (its app must be running).`
-                : `<b>No MCP servers configured</b> - add one in ⋯ menu → MCP servers (or config.json).`);
-          label = "▶︎ Start agent"; kind = "start";
+              ? `<b>暂无 MCP 服务器连接</b>——请检查 ⋯ 菜单 → MCP 服务器（对应应用需正在运行）。`
+              : `<b>尚未配置 MCP 服务器</b>——请在 ⋯ 菜单 → MCP 服务器中添加（或编辑 config.json）。`);
+          label = "▶︎ 启动 Agent"; kind = "start";
         }
         disabled = !bridgeOk;
       } else {
         toneClass = "noagent";
-        msg = `No agent here. Open a new chat to start one.`;
+        msg = `此对话没有 Agent。新建一个对话即可启动。`;
       }
       // Parked on visibility: the loop is alive but deliberately frozen because
       // this tab is not the foreground tab of its window. Say so explicitly -
@@ -2952,7 +2953,7 @@
       // background"). No red warn tone: this is a normal, recoverable pause.
       if (A.parked && (A.running || A.starting)) {
         toneClass = "warn"; warn = false;
-        msg = `<b>Paused</b> · bring this tab to the front to continue`;
+        msg = `<b>已暂停</b> · 切换到本标签页以继续`;
       }
       // Provider mode guard: some sites (e.g. Arena) only work in one chat mode.
       // When the provider reports the current mode is unsupported, override the
@@ -3029,16 +3030,16 @@
       const ok = mcpOk;
       dot.className = s.connected ? (ok ? "on" : "warn") : "off";
       let txt;
-      if (!s.connected) txt = "Bridge offline, run start.bat";
+      if (!s.connected) txt = "桥接离线，请运行 start.bat";
       else if (!mcpOk) txt = servers.length
         ? (servers.some((x) => !x.alive && (x.tools || 0) > 0)
-            // A server that HAD a catalogue but is dead: the bridge's
-            // auto-restart is almost certainly mid-flight - telling the user
-            // to fix the config would mislead.
-            ? "An MCP server is restarting - retry in a moment"
-            : "Bridge OK, but no MCP server is connected yet")
-        : "Bridge OK, but no MCP servers are configured";
-      else txt = `Connected · ${totalTools} tools ready`;
+          // A server that HAD a catalogue but is dead: the bridge's
+          // auto-restart is almost certainly mid-flight - telling the user
+          // to fix the config would mislead.
+          ? "有 MCP 服务器正在重启，请稍后重试"
+          : "桥接正常，但还没有 MCP 服务器连接")
+        : "桥接正常，但尚未配置任何 MCP 服务器";
+      else txt = `已连接 · ${totalTools} 个工具就绪`;
       dot.title = txt; // full bridge detail on hover over the status dot
       bridgeOk = ok;
       // Bridge is up but NO configured server is usable. The agent keeps
@@ -3055,7 +3056,7 @@
       // bridge later drops, it would reappear on top of the bridge-lost banner).
       if (s.connected && !setupSeen) {
         setupSeen = true;
-        try { chrome.storage.local.set({ zsSetupSeen: true }); } catch {}
+        try { chrome.storage.local.set({ zsSetupSeen: true }); } catch { }
       }
       renderBar();
       refreshSetup(s.connected);
@@ -3075,9 +3076,9 @@
       if (root.querySelector(".zs-banner.zs-stale")) return;
       const b = document.createElement("div");
       b.className = "zs-banner limit zs-stale";
-      b.innerHTML = `<div class="zs-banner-t">⚠ Reload this page to reconnect ZeroScript</div>
-        <div class="zs-banner-m">ZeroScript was updated or reloaded while this tab was open, so this page is still running the old copy and commands can no longer run. Your bridge and its MCP servers are fine - only this page needs refreshing.</div>
-        <div class="zs-banner-acts"><button class="zs-banner-reload">Reload page</button></div>`;
+      b.innerHTML = `<div class="zs-banner-t">⚠ 请刷新本页面以重新连接 ZeroScript</div>
+        <div class="zs-banner-m">此标签页打开期间 ZeroScript 被更新或重新加载，本页面仍在运行旧副本，命令已无法执行。你的桥接及其 MCP 服务器都很正常——只需刷新本页面。</div>
+        <div class="zs-banner-acts"><button class="zs-banner-reload">刷新页面</button></div>`;
       b.querySelector(".zs-banner-reload").addEventListener("click", () => location.reload());
       root.appendChild(b);
       bridgeBannerEl = b;
@@ -3095,11 +3096,11 @@
       // The setup tutorial lives INSIDE this banner (not as a separate card) so it
       // can never overlap the alert - the previous standalone onboarding card did.
       const videoLink = VIDEO_URL
-        ? `<a class="zs-banner-video" href="${VIDEO_URL}" target="_blank" rel="noopener">▶︎ Watch setup tutorial</a>`
+        ? `<a class="zs-banner-video" href="${VIDEO_URL}" target="_blank" rel="noopener">▶︎ 观看安装教程</a>`
         : "";
-      b.innerHTML = `<div class="zs-banner-t">⚠ Lost connection to ZeroScript</div>
-        <div class="zs-banner-m">The ZeroScript bridge stopped on your PC. Restart it (run start.bat): the agent will reconnect automatically as soon as it is detected again.</div>
-        <div class="zs-banner-acts">${videoLink}<button class="zs-banner-x">Close</button></div>`;
+      b.innerHTML = `<div class="zs-banner-t">⚠ 与 ZeroScript 的连接已断开</div>
+        <div class="zs-banner-m">本机上的 ZeroScript 桥接已停止。请重新启动它（运行 start.bat）：一旦重新检测到，Agent 会自动重连。</div>
+        <div class="zs-banner-acts">${videoLink}<button class="zs-banner-x">关闭</button></div>`;
       b.querySelector(".zs-banner-x").addEventListener("click", () => { b.remove(); if (bridgeBannerEl === b) bridgeBannerEl = null; });
       root.appendChild(b);
       bridgeBannerEl = b;
@@ -3121,7 +3122,7 @@
       // active turn (not a stop-in-progress).
       if (allow && !A.stopping && stopBtn.dataset.state === "stopping") {
         stopBtn.disabled = false;
-        stopBtn.textContent = "■ Stop";
+        stopBtn.textContent = "■ 停止";
         delete stopBtn.dataset.state;
       }
       if (was !== stopBtn.hidden) renderBar(); // reflect the action/stop swap
@@ -3135,7 +3136,7 @@
       stopBtn.hidden = false;
       stopBtn.disabled = true;
       stopBtn.dataset.state = "stopping";
-      stopBtn.textContent = "⏳ Stopping…";
+      stopBtn.textContent = "⏳ 正在停止…";
       renderBar();
     }
 
@@ -3147,7 +3148,7 @@
       if (A.started || !P.isFreshChat()) return;
       if (!nudged) {
         nudged = true;
-        toast("Tip: click “▶︎ Start agent” to let the AI use your local MCP servers.");
+        toast("提示：点击“▶︎ 启动 Agent”，AI 就能使用你本机的 MCP 服务器。");
       }
       if (!actionBtn) return;
       actionBtn.classList.add("zs-flash");
@@ -3170,7 +3171,7 @@
       if (/\bdark\b/.test(cls)) return "dark";
       if (/\blight\b/.test(cls)) return "light";
       const attr = (de.getAttribute("data-theme") || de.getAttribute("data-color-mode") ||
-                    de.getAttribute("data-color-scheme") || "").toLowerCase();
+        de.getAttribute("data-color-scheme") || "").toLowerCase();
       if (/dark/.test(attr)) return "dark";
       if (/light/.test(attr)) return "light";
       const cs = (getComputedStyle(de).colorScheme || "").toLowerCase();
@@ -3223,7 +3224,7 @@
     // leave anchored mode so the site's composer returns to its normal layout.
     let anchorPadEl = null;
     function clearAnchorPad() {
-      if (anchorPadEl) { try { anchorPadEl.style.paddingTop = ""; } catch {} anchorPadEl = null; }
+      if (anchorPadEl) { try { anchorPadEl.style.paddingTop = ""; } catch { } anchorPadEl = null; }
     }
 
     // Position the floating "⚠ unstable" pill just above the bar's left edge.
@@ -3250,7 +3251,7 @@
       // rAF loop is resilient (its next frame is scheduled before any body code),
       // so the panel reappears on the very next frame.
       if (root && !root.isConnected) {
-        try { document.documentElement.appendChild(root); } catch {}
+        try { document.documentElement.appendChild(root); } catch { }
       }
 
       // The instability warning floats just ABOVE the bar (not inside it), so it
@@ -3280,7 +3281,7 @@
       if (mount) {
         clearAnchorPad();
         if (bar.parentElement !== mount.parent || bar.nextElementSibling !== mount.before) {
-          try { mount.parent.insertBefore(bar, mount.before || null); } catch {}
+          try { mount.parent.insertBefore(bar, mount.before || null); } catch { }
         }
         if (!bar.classList.contains("zs-bar-inline")) {
           bar.classList.add("zs-bar-inline");
@@ -3389,7 +3390,7 @@
       // Guarantee an opaque base at the bottom of the stack.
       if (!layers.length || layers[layers.length - 1].a < 0.999) {
         const base = parseColor(getComputedStyle(document.body).backgroundColor) ||
-                     { r: 255, g: 255, b: 255, a: 1 };
+          { r: 255, g: 255, b: 255, a: 1 };
         layers.push({ r: base.r, g: base.g, b: base.b, a: 1 });
       }
       // We collected top-most (el) first, so composite from the opaque base (last)
@@ -3431,7 +3432,7 @@
       if (!cover) {
         cover = document.createElement("div");
         cover.id = "zs-input-cover";
-        cover.innerHTML = `<span>Agent is working…</span>`;
+        cover.innerHTML = `<span>Agent 正在工作…</span>`;
         document.documentElement.appendChild(cover);
       }
       cover.dataset.on = "1"; // intent flag: keep the place() loop alive while set
@@ -3584,7 +3585,7 @@
       b.className = `zs-banner ${kind}`;
       b.innerHTML = `<div class="zs-banner-t"></div><div class="zs-banner-m"></div>
         <div class="zs-banner-acts">
-          <button class="zs-banner-x">Close</button>
+          <button class="zs-banner-x">关闭</button>
         </div>`;
       b.querySelector(".zs-banner-t").textContent = title;
       b.querySelector(".zs-banner-m").textContent = msg;
@@ -3604,7 +3605,7 @@
       hdr.className = "zs-shot-hdr";
       const ttl = document.createElement("span");
       ttl.className = "zs-shot-ttl";
-      ttl.textContent = `${toolName} · ${images.length} image${images.length > 1 ? "s" : ""}`;
+      ttl.textContent = `${toolName} · ${images.length} 张图片`;
       const close = document.createElement("button");
       close.className = "zs-shot-x";
       close.textContent = "✕";
@@ -3729,12 +3730,12 @@
     // false trigger the hard-edge gate above filters out. Log it so live tests
     // can SEE the old bug firing and being ignored.
     if (A.started && A.userStopped && !A.running && !A.injecting && !A.stopping &&
-        gen && _prevSoftGen === false && !hardGen) {
+      gen && _prevSoftGen === false && !hardGen) {
       diag("regenBlip.ignored");
     }
     if (P.hasRegenerate !== false &&
-        A.started && A.userStopped && !A.running && !A.injecting && !A.stopping &&
-        hardGen && _prevHardGen === false) {
+      A.started && A.userStopped && !A.running && !A.injecting && !A.stopping &&
+      hardGen && _prevHardGen === false) {
       // Gate on ACTUAL user intent: a real regenerate is always a trusted click
       // moments before the new generation, and never the Stop click itself.
       // Distinguish the two by ORDER, not a fixed delay: require the latest
@@ -3775,7 +3776,7 @@
           try {
             it.dataset.zRegenLen = String(P.classifyText(it, ".zs-chip").length);
             it.dataset.zRegenAt = String(Date.now());
-          } catch {}
+          } catch { }
         }
         // Bridge the gap until the auto-resume watchdog (1s interval) re-owns the
         // tool: regenResume only CLEARS the stop latch, it does not start the loop
@@ -3831,7 +3832,7 @@
         if (grown && Date.now() - (A.stopRetryAt || 0) > 800) {
           A.stopRetryAt = Date.now();
           A.stopStreamLen = P.streamLen ? P.streamLen() : 0;
-          try { P.stopGeneration(); } catch {}
+          try { P.stopGeneration(); } catch { }
           diag("stop.retry");
         } else if (!grown && Date.now() - (A.stopAt || 0) > 2500) {
           // Wedged stop button on a dead stream (text frozen since the stop):
@@ -3865,7 +3866,7 @@
         if (name && name !== "command") setChipLabel(item, name);
         const tokens = Math.floor(reply.length / TOKEN_CHARS);
         const s = Math.round(elapsedOn(item, "zsGenT0"));
-        setChipDetail(item, `~${formatCount(tokens)} tokens · ${s}s`);
+        setChipDetail(item, `~${formatCount(tokens)} tokens · ${s} 秒`);
         return;
       }
     }
@@ -3923,7 +3924,7 @@
     if (!path) return;
     if (startedSessions.has(path)) return;
     startedSessions.add(path);
-    try { chrome.storage.local.set({ zsStartedSessions: [...startedSessions].slice(-300) }); } catch {}
+    try { chrome.storage.local.set({ zsStartedSessions: [...startedSessions].slice(-300) }); } catch { }
   }
   // Load the persisted set once, then re-sync.
   try {
@@ -3933,7 +3934,7 @@
         syncSessionState();
       }
     });
-  } catch {}
+  } catch { }
   // A conversation IS a ZeroScript session if any rendered turn carries a
   // telltale artefact: the system-prompt marker, an injected tool-result /
   // system-note turn, or a ZeroScript command an assistant wrote. Works even
@@ -4064,7 +4065,7 @@
       const users = items.filter((it) => P.isUserItem(it));
       const last = users[users.length - 1];
       if (last && !last.classList.contains("zs-hidden") &&
-          users.length > (A.injectPreUser || 0)) {
+        users.length > (A.injectPreUser || 0)) {
         last.classList.add("zs-hidden");
         A.injectHideUntil = 0; // one-shot: this turn is now masked
         diag("result.prehide", { users: users.length });
@@ -4074,7 +4075,7 @@
       if (item.classList.contains("zs-hidden")) continue;
       const txt = P.classifyText(item, ".zs-chip");
       if (txt.includes(ZS.SYS_MARKER) ||
-          (P.isUserItem(item) && ZSParse.isInjectedFeedback(txt))) {
+        (P.isUserItem(item) && ZSParse.isInjectedFeedback(txt))) {
         item.classList.add("zs-hidden");
       }
     }
@@ -4201,7 +4202,7 @@
     const all = P.allItems();
     const after = all[all.indexOf(item) + 1];
     if (after && P.isUserItem(after) &&
-        ZSParse.isInjectedFeedback(P.classifyText(after, ".zs-chip"))) return;
+      ZSParse.isInjectedFeedback(P.classifyText(after, ".zs-chip"))) return;
     const txt = P.itemText(item);
     if (!ZSParse.hasToolSignature(txt)) return;
     // Node-independent dedupe: this turn's command was already dispatched (by the

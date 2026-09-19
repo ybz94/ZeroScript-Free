@@ -251,7 +251,7 @@ const ZSProvider = (() => {
   // small interval rather than setting it once. The site's real placeholder text
   // is captured the first time we lock so we can restore it on unlock regardless
   // of which (recreated) node is current.
-  const LOCK_MSG = "⏳ Agent working… please wait";
+  const LOCK_MSG = "⏳ Agent 正在工作…请稍候";
   let _locked = false, _phTimer = null, _phObs = null, _origPlaceholder = null;
   // Set true only for the brief window typeAndSend re-enables the editor to
   // inject text - so the self-healing lock below doesn't fight the injection.
@@ -414,7 +414,7 @@ const ZSProvider = (() => {
 
   async function typeAndSend(text, images) {
     const ed = getEditor();
-    if (!ed) throw new Error("Kimi input box not found");
+    if (!ed) throw new Error("未找到 Kimi 输入框");
     const relock = _locked;
     if (relock) { _injecting = true; ed.setAttribute("contenteditable", "true"); } // injection needs it editable
     try {
@@ -460,8 +460,8 @@ const ZSProvider = (() => {
   // into a red warning state and disables Start until the user switches it off.
   function modeWarning() {
     if (nativeAgentModeOn())
-      return `Switch the model picker off <b>K3 Swarm</b> (pick <b>K3</b> or <b>Instantané</b>) - ` +
-        `Kimi's own agentic mode replaces the ZeroScript commands with its native tools and breaks the agent loop.`;
+      return `请把模型选择器从 <b>K3 Swarm</b> 切换掉（改选 <b>K3</b> 或 <b>Instantané</b>）——` +
+        `Kimi 自带的智能体模式会用它的原生工具替代 ZeroScript 命令，从而中断智能体循环。`;
     return "";
   }
 
@@ -575,7 +575,7 @@ const ZSProvider = (() => {
         if (t.length > 8 && t.length < 600 && RE.contextLimit.test(t)) return t.slice(0, 240);
       }
     } catch {}
-    if (!getEditor()) return "The input box disappeared (session ended?).";
+    if (!getEditor()) return "输入框已消失（会话可能已结束？）";
     return null;
   }
   const isTooLongMsg = (text) => RE.tooLong.test(text);
@@ -793,8 +793,8 @@ const ZSProvider = (() => {
     // runner, etc.) instead of emitting the ZeroScript command blocks - model
     // behavior, not something the prompt fully prevents.
     unstableWarning:
-      "Kimi sometimes uses its own native tools instead of the ZeroScript commands (model behavior, not the extension). " +
-      "If it stops acting and answers in plain text or runs its own tools, remind it to use the ZeroScript commands - or start a new session.",
+      "Kimi 有时会改用自带的原生工具，而不是发出 ZeroScript 命令（这是模型行为，扩展无法完全避免）。" +
+      "如果它不再执行动作、改用纯文本回答或运行自己的工具，请提醒它使用 ZeroScript 命令，或开启新会话。",
     init({ diag: d } = {}) { if (d) diag = d; },
     // turns
     allItems, isUserItem, isAssistantItem, itemText, classifyText,

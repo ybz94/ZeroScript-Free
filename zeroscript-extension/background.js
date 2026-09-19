@@ -79,7 +79,7 @@ function connect() {
     mcpAlive = false;
     serversCache = [];
     stopHeartbeat();
-    failAllPending("bridge connection closed");
+    failAllPending("桥接连接已断开");
     broadcastStatus();
     scheduleReconnect();
   };
@@ -147,7 +147,7 @@ async function send(obj, timeout = REQUEST_TIMEOUT_DEFAULT) {
   }
   return new Promise((resolve) => {
     if (!connected || !ws || ws.readyState !== WebSocket.OPEN) {
-      resolve({ ok: false, kind: "disconnected", error: "bridge not connected" });
+      resolve({ ok: false, kind: "disconnected", error: "桥接未连接" });
       return;
     }
     const id = nextId++;
@@ -155,7 +155,7 @@ async function send(obj, timeout = REQUEST_TIMEOUT_DEFAULT) {
     const timer = setTimeout(() => {
       if (pending.has(id)) {
         pending.delete(id);
-        resolve({ ok: false, kind: "timeout", error: "bridge did not respond in time" });
+        resolve({ ok: false, kind: "timeout", error: "桥接没有及时响应" });
       }
     }, timeout);
     pending.set(id, { resolve, timer });
@@ -296,7 +296,7 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
         sendResponse({ ok: true });
         break;
       default:
-        sendResponse({ ok: false, error: "unknown message" });
+        sendResponse({ ok: false, error: "未知的消息类型" });
     }
   })();
   return true; // async sendResponse
