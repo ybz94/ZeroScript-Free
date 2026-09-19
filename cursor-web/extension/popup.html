@@ -1,0 +1,7 @@
+<!doctype html><html lang="zh-CN"><meta charset="utf-8"><title>Cursor Web Assistant</title>
+<style>body{font:14px system-ui;width:310px;padding:16px}input{box-sizing:border-box;width:100%;margin:8px 0;padding:8px}button{padding:8px 16px}p{line-height:1.6}#status{overflow-wrap:anywhere}</style>
+<h3>连接本地 Bridge</h3><p>仅连接本机。输入 cursor-web/.bridge-token 文件中的令牌，请勿分享。</p>
+<label>配对令牌<input id="token" type="password" autocomplete="off"></label>
+<label>端口<input id="port" type="number" value="17614" min="1024" max="65535"></label>
+<button id="save">保存并连接</button><p id="status" role="status"></p>
+<p>支持 DeepSeek、ChatGPT、Arena。请关闭旧扩展，刷新网页，并保持目标会话为浏览器窗口中的活动标签页。</p><script src="popup.js"></script></html>

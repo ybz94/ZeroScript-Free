@@ -1,0 +1,60 @@
+# 自动化测试结果
+
+日期：2026-09-19
+
+## 环境
+
+- Linux 沙箱，Python 3.11、Node.js 22.22.3。
+- 独立虚拟环境，mcp 1.30.0、websockets 15.0.1。
+- 未安装 Cursor 桌面客户端或 Chromium，未使用真实网站登录会话。
+
+## 最终结果
+
+| 类别 | 数量 | 结果 |
+|---|---:|---|
+| Python Bridge/MCP 集成测试 | 14 | 全部通过 |
+| JavaScript 扩展逻辑模拟测试 | 15 | 全部通过 |
+| Python 编译检查 | 新模块全部 Python 文件 | 通过 |
+| JavaScript 语法检查 | 独立扩展及复制的网站适配器 | 通过 |
+| 扩展打包准备、Manifest 引用文件检查 | 全部引用 | 通过 |
+| Git 补丁空白检查 | 本次修改 | 通过 |
+
+### Python 测试范围
+
+真实本机 WebSocket 连接：令牌生成/权限/持久性、错误令牌、角色校验、恶意网页 Origin 拒绝、扩展 Origin 接受、第二浏览器拒绝、会话收发、Unicode 回答、重复结果忽略、忙碌会话、无效输入、未知任务、伪造结果拒绝、浏览器断开、任务过期和迟到结果。
+
+MCP 使用真实 SDK stdio 客户端启动独立 Python 子进程，执行 initialize、tools/list 和三个工具，打通 MCP → 真实 Bridge → 模拟浏览器 → Bridge → MCP 的请求结果闭环。浏览器 AI 回答是测试桩，不是真实网站回答。
+
+### JavaScript 测试范围
+
+在 Node VM 中执行实际扩展脚本，模拟 chrome API、网站适配器和时间：新回答捕获、后台页面拒绝、忙碌状态、未发送草稿保护、发送失败、截断、人工停止、超时、重复提交、失效绑定、运行中导航、超长回答、指定标签页结果验证、标签页关闭及刷新后的会话清理。
+
+## 测试发现并修复
+
+第一次 JS 测试：12 项通过、3 项失败。修复后 15 项全部通过。
+
+1. **运行中切换网页会话后，旧会话 ID 仍然有效**：检测到非预期会话变化时，清空采集文本并更换绑定 ID，阻止后续请求沿用旧绑定。
+2. **超过 250,000 字符的回答被静默裁剪且标记完成**：现在返回明确大小限制错误；裁剪部分不再被标记为完整答案。
+3. **页面刷新后旧会话仍出现在列表中**：同一标签页注册新会话时删除旧会话，对原会话未完成任务返回失效错误。
+
+另增加旧 WebSocket 消息防护，防止已替换连接的消息影响新连接状态。
+
+## 无法由本次测试保证的部分
+
+- Cursor 桌面客户端实际加载 MCP、原生 Diff、高亮、确认、文件列表及撤回。
+- 三个网站当前 DOM、登录、验证码、限流、浏览器前后台节流行为。
+- Windows/macOS 实机、浏览器扩展真实加载和长时间运行稳定性。
+- 实际模型是否遵循项目规则、是否正确理解代码建议。
+
+因此结论是 **29 项自动化测试通过，已修复已发现问题**，不是“真实 Cursor 和所有网站场景已保证无问题”。上线前仍需按 README 的手动验收流程在本地完成联调。
+
+## 复现
+
+```sh
+.venv/bin/python -m unittest discover -s cursor-web/tests -v
+node --test cursor-web/tests/extension.test.cjs
+.venv/bin/python cursor-web/prepare_extension.py
+.venv/bin/python -m compileall -q cursor-web
+find cursor-web/extension -name '*.js' -print0 | xargs -0 -n1 node --check
+git diff --check
+```
