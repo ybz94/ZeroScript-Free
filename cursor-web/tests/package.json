@@ -1,0 +1,6 @@
+{
+  "name": "cursor-web-protocol-tests",
+  "private": true,
+  "scripts": {"test": "node --test *.test.cjs"},
+  "devDependencies": {"linkedom": "^0.18.12", "markdown-it": "^14.1.0"}
+}

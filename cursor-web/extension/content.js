@@ -27,13 +27,13 @@
     // our own submission keeps the same binding for subsequent turns.
     if (current !== key) {if (!busy) id = crypto.randomUUID(); key = current;}
     notify({type:'session', id, key, provider:P.id, title:document.title,
-            url:location.href, visible:!document.hidden, busy, transportVersion:'0.3.0', inputMaxChars, inputMaxLines});
+            url:location.href, visible:!document.hidden, busy, transportVersion:'0.4.0', inputMaxChars, inputMaxLines});
   }
   async function run(msg) {
     busy = true;
     const sessionId = id;
     let text = '', failure;
-    const diagnostics = {version:'0.3.0', startedHidden:document.hidden, sawHidden:document.hidden, phase:'preflight'};
+    const diagnostics = {version:'0.4.0', startedHidden:document.hidden, sawHidden:document.hidden, phase:'preflight'};
     try {
       if (P.isBusyNow() || P.isGenerating()) throw new Error('Webpage is already generating');
       if (P.editorText().trim()) throw new Error('Composer contains a draft; send or clear it manually first');
@@ -65,12 +65,18 @@
           (result.item !== before && result.reply !== beforeText);
         if (!fresh) continue;
         diagnostics.phase = 'reading_reply';
-        text = result.reply || '';
+        const extracted = msg.response_format === 'json_code_block'
+          ? ZSWebProtocol.read(result) : {text:result.reply || '', source:'rendered_reply'};
+        diagnostics.extraction = extracted.source;
+        // Use rendered text only to determine settling when extraction failed;
+        // never return that text as a successful protocol response.
+        text = extracted.error ? (result.reply || '') : extracted.text;
         if (text !== last) {last = text; changed = Date.now();}
         const idle = !P.isGenerating() && !P.isBusyNow();
         if (!idle) idleSince = null;
         else if (idleSince === null) idleSince = Date.now();
         if (text && idle && Date.now() - idleSince > 4000 && Date.now() - changed > 4000) {
+          if (extracted.error) throw new Error(extracted.error);
           if (P.findContinueBtn?.()) throw new Error('Reply is truncated; continue on webpage before requesting another task');
           if (P.turnHalted?.(result.item)) throw new Error('Webpage generation was stopped');
           complete = true; break;

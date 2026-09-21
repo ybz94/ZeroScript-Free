@@ -189,6 +189,7 @@ class BridgeTests(unittest.IsolatedAsyncioTestCase):
         async def webpage():
             for turn in range(2):
                 dispatch = json.loads(await browser.recv())
+                self.assertEqual(dispatch.get('response_format'), 'json_code_block')
                 request = json.loads(dispatch['prompt'].split('CURRENT_REQUEST:\n')[1])
                 if turn == 0:
                     answer = {'request_id': request['request_id'], 'content': None,

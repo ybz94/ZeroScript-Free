@@ -1,16 +1,16 @@
 {
   "manifest_version": 3,
   "name": "Cursor Web Assistant",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "description": "Send Cursor MCP tasks to a paired webpage and return suggestions without editing local files.",
   "permissions": ["storage", "alarms"],
   "host_permissions": ["http://127.0.0.1/*", "ws://127.0.0.1/*"],
   "background": {"service_worker": "background.js"},
   "action": {"default_popup": "popup.html"},
   "content_scripts": [
-    {"matches": ["https://chat.deepseek.com/*"], "js": ["providers/deepseek.js", "content.js"]},
+    {"matches": ["https://chat.deepseek.com/*"], "js": ["providers/deepseek.js", "protocol.js", "content.js"]},
     {"matches": ["https://chatgpt.com/*", "https://chat.openai.com/*"], "js": ["providers/chatgpt-cm.js"], "world": "MAIN", "run_at": "document_start"},
-    {"matches": ["https://chatgpt.com/*", "https://chat.openai.com/*"], "js": ["providers/chatgpt.js", "content.js"]},
-    {"matches": ["https://arena.ai/*"], "js": ["providers/arena.js", "content.js"]}
+    {"matches": ["https://chatgpt.com/*", "https://chat.openai.com/*"], "js": ["providers/chatgpt.js", "protocol.js", "content.js"]},
+    {"matches": ["https://arena.ai/*"], "js": ["providers/arena.js", "protocol.js", "content.js"]}
   ]
 }

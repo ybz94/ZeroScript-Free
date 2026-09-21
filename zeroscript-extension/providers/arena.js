@@ -377,6 +377,7 @@ const ZSProvider = (() => {
     const md = proseOf(item);
     return {
       present: true,
+      replyRoots: [md],
       reply: md ? textWithout(md, ".zs-chip").trim() : "",
       thinking: "",
       item,

@@ -195,3 +195,28 @@ function greet(name) {
 - 网页模型可能在重写格式时改变意图或代码；schema 校验不能证明语义等价。因此仍需审阅 Cursor 实际 diff，不可把“格式合法”当作“修改正确”。不要开启高风险工具自动批准。
 
 更新后仅需重启模型端点；旧的失败缓存随进程退出清除。先确认目标文件的当前状态，再用可丢弃示例测试。
+
+## 0.4.0：协议 JSON 必须从代码块原文采集
+
+此前要求网页输出“没有代码块的 JSON”，而插件读取渲染后的回答文字。标准 Markdown 会把普通段落中的部分反斜杠转义消耗掉，导致合法 JSON 变成 Invalid escape；还有可能使 Windows 路径被误解为合法的换行/制表符转义而不报错。这是已用 Markdown 渲染器复现的传输缺陷，不代表已证实每个用户错误都由此引起。
+
+新版模型请求要求恰好一个 fenced json 代码块。Bridge 传递 `response_format=json_code_block`，插件只在当前非思考回答区域提取代码块原文；CodeMirror 使用完整文档属性。找不到块、有多个块或 CodeMirror 原文不可用时拒绝回退到普通段落文字。旧 MCP 普通问答仍按原方式取文本，不强制用户问答都使用 JSON。
+
+**此次必须更新并重新加载插件，不是只重启模型端点：**
+
+1. 停止 Bridge 和模型端点，拉取更新。
+2. 运行 `python cursor-web/prepare_extension.py`，同步网站适配器。
+3. 浏览器扩展管理页重新加载，确认 0.4.0，然后刷新 AI 网页。
+4. 重启 Bridge，重新查询 session ID，再启动模型端点。
+5. cursor-byok 配置/API Key 不变。用可丢弃文件验证路径、代码和原生 diff。
+
+结果诊断 `extraction` 应为 `code_text`、`pre_text` 或 `codemirror_document`。若代码块原文本身仍含非法 JSON，单次格式纠错/严格校验仍生效；报错会附提取来源。网站 DOM 变化可能需要继续适配，不能将 Markdown 测试视作真实网站已验证。
+
+### 新增 DOM/Markdown 回归测试
+
+仅开发者运行这些测试需要 Node 开发依赖，正常使用模型端点不需要安装 npm 包：
+
+```sh
+npm ci --prefix cursor-web/tests
+npm test --prefix cursor-web/tests
+```

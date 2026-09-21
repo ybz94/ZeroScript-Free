@@ -459,6 +459,7 @@ const ZSProvider = (() => {
     const mds = [...item.querySelectorAll(S.reply)];
     return {
       present: true,
+      replyRoots: mds,
       reply: mds.map((m) => textWithout(m, ".zs-chip")).join("\n").trim(),
       thinking: "", // reasoning is gated by the stop button, not parsed as text
       item,

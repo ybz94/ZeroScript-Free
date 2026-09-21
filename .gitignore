@@ -24,3 +24,4 @@ cursor-web/.bridge-token
 cursor-web/extension/providers/
 .venv/
 cursor-web/.endpoint-token
+cursor-web/tests/node_modules/

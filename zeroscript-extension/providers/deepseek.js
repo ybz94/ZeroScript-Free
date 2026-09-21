@@ -609,6 +609,7 @@ const ZSProvider = (() => {
     const mds = [...item.querySelectorAll(S.markdown)].filter((m) => !m.closest(S.thinking));
     return {
       present: true,
+      replyRoots: mds,
       reply: mds.map((m) => m.textContent).join("\n").trim(),
       thinking: th ? th.textContent.trim() : "",
       item,

@@ -83,7 +83,8 @@ async def handle(ws):
                                      'created': time.time(), 'owner': owner}
                         try:
                             await owner.send(json.dumps({'type': 'dispatch', 'job_id': jid,
-                                                        'session_id': sid, 'prompt': prompt}))
+                                                        'session_id': sid, 'prompt': prompt,
+                                                        'response_format': msg.get('response_format')}))
                             result = {'job_id': jid, 'status': 'running'}
                         except Exception:
                             jobs[jid].update(status='error', error='Browser disconnected; delivery uncertain. Do not automatically resend.')

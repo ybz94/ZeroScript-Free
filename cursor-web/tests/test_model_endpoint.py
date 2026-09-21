@@ -85,6 +85,12 @@ class EndpointTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(r.status_code, 404)
         self.assertIn('error', r.json())
 
+    async def test_protocol_requests_fenced_literal_extraction(self):
+        r = await self.post()
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(self.web.sent[0]['response_format'], 'json_code_block')
+        self.assertIn('code fence is mandatory', self.web.sent[0]['prompt'])
+
     async def test_text_and_exact_retry_cached(self):
         r = await self.post()
         self.assertEqual(r.status_code, 200)

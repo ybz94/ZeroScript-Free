@@ -23,7 +23,7 @@ function content(options = {}) {
     }
   };
   vm.runInNewContext(fs.readFileSync(path.join(root,'content.js'),'utf8'), {
-    ZSProvider:provider, crypto:{randomUUID}, document, location:{href:'https://site/c/1'},
+    ZSProvider:provider, ZSWebProtocol:{read:()=>options.protocol || {text:'',source:'code_block_unavailable',error:'Protocol code block missing'}}, crypto:{randomUUID}, document, location:{href:'https://site/c/1'},
     chrome:{runtime:{sendMessage:async msg=>{messages.push(msg);},onMessage:{addListener:fn=>listener=fn}}},
     MutationObserver:class {observe(){} disconnect(){}}, clearTimeout(){},
     Date:{now:()=>now}, setInterval:fn=>intervals.push(fn),
@@ -127,4 +127,17 @@ test('ChatGPT line guard and UTF-16 guard prevent silent truncation',()=>{
   assert.match(c.dispatch({prompt:'\n'.repeat(600)}).error,/safety budget/);
   assert.match(c.dispatch({prompt:'😀'.repeat(60001)}).error,/safety budget/);
   assert.equal(c.sent,0);
+});
+
+test('model protocol returns code block extraction rather than rendered reply',async()=>{
+  const raw=JSON.stringify({path:String.raw`E:\project\file.js`});
+  const c=content({answer:'json Copy corrupted prose',protocol:{text:raw,source:'code_text'}});
+  c.dispatch({response_format:'json_code_block'});
+  const r=await c.result();assert.equal(r.error,undefined);assert.equal(r.text,raw);
+  assert.equal(r.diagnostics.extraction,'code_text');
+});
+test('model protocol never returns missing code block as successful prose',async()=>{
+  const c=content({answer:'plain reply'});c.dispatch({response_format:'json_code_block'});
+  const r=await c.result();assert.match(r.error,/code block missing/);
+  assert.equal(r.diagnostics.extraction,'code_block_unavailable');
 });
