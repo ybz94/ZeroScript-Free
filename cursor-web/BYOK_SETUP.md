@@ -157,3 +157,27 @@ function greet(name) {
 更新后必须：停止并重启 Bridge 和 model_endpoint、重新加载浏览器插件、刷新目标网页、重新查询 session ID 并绑定。会话应显示 transportVersion=0.3.0 和 inputMaxChars。
 
 如果仍然 413，错误中的 utf16_units/limit 是完整提示的实际长度和安全预算；Breakdown 是 system/developer/user/assistant/tool/tools 的 JSON 长度分项，不包含正文。请只分享这些统计和网站名称，不分享密钥或完整代码。此修改不提供无限上下文，也不自动丢弃历史、工具或系统指令。
+
+## 编辑工具输出的兼容与诊断
+
+端点现在兼容以下等价格式，工具名、参数与代码内容不会被猜测修改：
+
+- 完整响应 JSON 外的一层 `json` Markdown 代码块（不从混杂说明文字中提取片段）。
+- `arguments` 为对象，或内容为合法 JSON 对象的字符串。
+- 紧凑 `{name, arguments}` 调用，或标准 `{type:"function", function:{name, arguments}, id:...}` 包装。网站提供的 call id 不作为客户端调用 ID 使用。
+
+请求编号、工具选择、工具名、参数 schema 和单调用限制继续严格检查。语法不完整的 JSON、原始未转义换行、多段回复、重复键不自动修复，不执行部分修改。
+
+| 新错误 code | 含义 |
+|---|---|
+| web_output_json | 完整网页输出不是合法 JSON；含行列位置，不含正文 |
+| web_envelope | 缺少或多出了顶层协议字段 |
+| web_request_identity | 回答未使用当前 request_id |
+| web_call_count | 一轮输出了多个工具调用，或 tool_calls 不是数组 |
+| web_unknown_tool | 返回了当前客户端没有提供的工具名 |
+| web_arguments_json | 字符串形式的 arguments 不是合法 JSON |
+| web_arguments_type | arguments 不是对象 |
+| web_arguments_schema | 参数不满足工具定义；指出校验规则/字段路径及缺失必填字段，不打印参数值 |
+| web_tool_choice | 不符合客户端的工具选择要求 |
+
+如果读文件成功、修改时报错，不能仅凭旧的笼统报错认定是某一具体原因。升级后重启 model_endpoint.py，再用小型可丢弃示例测试，提供新的 code 和错误说明即可。不需要上传真实文件内容。原生编辑/撤回能力仍须实机确认。

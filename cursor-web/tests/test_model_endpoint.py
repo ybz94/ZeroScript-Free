@@ -224,8 +224,8 @@ class AnswerValidationTests(unittest.TestCase):
                     endpoint.parse_answer(json.dumps(case), 'r', body, catalog)
         with self.assertRaises(endpoint.AdapterError):
             endpoint.parse_answer(json.dumps(valid), 'r', {**body, 'tool_choice': 'none'}, catalog)
-        with self.assertRaises(endpoint.AdapterError):
-            endpoint.parse_answer('```json\n' + json.dumps(valid) + '\n```', 'r', body, catalog)
+        wrapped = endpoint.parse_answer('```json\n' + json.dumps(valid) + '\n```', 'r', body, catalog)
+        self.assertEqual(wrapped['choices'][0]['finish_reason'], 'tool_calls')
 
 
 class InputBudgetTests(unittest.TestCase):
@@ -240,3 +240,65 @@ class InputBudgetTests(unittest.TestCase):
         self.assertIsNotNone(size_error('x' * 120001, {'provider': 'chatgpt'}))
         self.assertIsNotNone(size_error('\n' * 600, {'provider': 'chatgpt'}))
         self.assertIsNotNone(size_error('x' * 60001, {}))
+
+
+class EditOutputDiagnosticsTests(unittest.TestCase):
+    def setUp(self):
+        self.tool = {'type': 'function', 'function': {'name': 'edit_file', 'parameters': {
+            'type': 'object', 'properties': {'path': {'type': 'string'}, 'content': {'type': 'string'}},
+            'required': ['path', 'content'], 'additionalProperties': False}}}
+        self.body = {**BODY, 'tools': [self.tool]}
+        self.catalog = endpoint.validate_request(self.body)
+        self.code = 'const s = "quoted";\nconst p = "C:\\tmp";\n// 中文 😀\n'
+
+    def parse(self, calls, **overrides):
+        value = {'request_id': 'r', 'content': None, 'tool_calls': calls, **overrides}
+        return endpoint.parse_answer(json.dumps(value), 'r', self.body, self.catalog)
+
+    def test_edit_payload_preserved_in_both_function_formats(self):
+        args = {'path': 'demo.js', 'content': self.code}
+        for call in [
+            {'name': 'edit_file', 'arguments': args},
+            {'name': 'edit_file', 'arguments': json.dumps(args)},
+            {'id': 'ignored-web-id', 'type': 'function', 'function': {'name': 'edit_file', 'arguments': json.dumps(args)}}
+        ]:
+            result = self.parse([call])
+            actual = json.loads(result['choices'][0]['message']['tool_calls'][0]['function']['arguments'])
+            self.assertEqual(actual, args)
+
+    def test_schema_error_reports_missing_key_not_code(self):
+        with self.assertRaises(endpoint.AdapterError) as caught:
+            self.parse([{'name': 'edit_file', 'arguments': {'content': 'PRIVATE-CODE'}}])
+        self.assertEqual(caught.exception.code, 'web_arguments_schema')
+        self.assertIn('path', str(caught.exception))
+        self.assertNotIn('PRIVATE-CODE', str(caught.exception))
+        self.assertEqual(endpoint.error_body(caught.exception)['error']['code'], 'web_arguments_schema')
+
+    def test_error_stages_are_distinct_and_fail_closed(self):
+        cases = [
+            ('web_request_identity', [], {'request_id': 'old', 'content': 'answer'}),
+            ('web_unknown_tool', [{'name': 'made_up_edit', 'arguments': {}}], {}),
+            ('web_arguments_json', [{'name': 'edit_file', 'arguments': '{invalid'}], {}),
+            ('web_arguments_schema', [{'name': 'edit_file', 'arguments': {'path': 123, 'content': 'secret'}}], {}),
+            ('web_call_count', [{}, {}], {}),
+        ]
+        for code, calls, kwargs in cases:
+            with self.subTest(code=code):
+                with self.assertRaises(endpoint.AdapterError) as caught:
+                    self.parse(calls, **kwargs)
+                self.assertEqual(caught.exception.code, code)
+
+    def test_prose_partial_and_duplicate_json_remain_rejected(self):
+        valid = json.dumps({'request_id':'r','content':'ok','tool_calls':[]})
+        for text in ['Here is the edit: '+valid, valid+valid, valid[:-1],
+                     '{"request_id":"r","request_id":"r","content":"ok","tool_calls":[]}']:
+            with self.assertRaises(endpoint.AdapterError) as caught:
+                endpoint.parse_answer(text, 'r', self.body, self.catalog)
+            self.assertEqual(caught.exception.code, 'web_output_json')
+
+    def test_unescaped_edit_newline_reports_position_without_payload(self):
+        text = '{"request_id":"r","content":"PRIVATE\nCODE","tool_calls":[]}'
+        with self.assertRaises(endpoint.AdapterError) as caught:
+            endpoint.parse_answer(text, 'r', self.body, self.catalog)
+        self.assertIn('line 1, column', str(caught.exception))
+        self.assertNotIn('PRIVATE', str(caught.exception))

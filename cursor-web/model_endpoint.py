@@ -8,12 +8,14 @@ from contextlib import asynccontextmanager
 import hashlib
 import json
 import os
+import re
 from pathlib import Path
 import secrets
 import time
 import uuid
 
 from jsonschema.validators import validator_for
+from jsonschema.exceptions import ValidationError
 from referencing import Registry
 from starlette.applications import Starlette
 from starlette.exceptions import HTTPException
@@ -28,9 +30,10 @@ MAX_CACHE = 128
 
 
 class AdapterError(Exception):
-    def __init__(self, message, status=502):
+    def __init__(self, message, status=502, code='web_adapter_error'):
         super().__init__(message)
         self.status = status
+        self.code = code
 
 
 def dumps(value):
@@ -151,7 +154,7 @@ You cannot directly access local files. To inspect or edit files, request exactl
 If tools are absent or tool_choice is none, give a final text answer. Honor required or forced tool_choice. For final answers, tool_calls is [].
 Return ONLY one JSON object, no markdown fences or extra text, with this exact shape:
 {"request_id":"COPY_CURRENT_REQUEST_ID","content":"answer or null","tool_calls":[{"name":"exact supplied tool name","arguments":{}}]}
-Use null or a string for content. Use at most one tool call. Do not send shell commands or edits as plain prose when a tool invocation is needed.
+Use null or a string for content. Use at most one tool call. For edits, copy the exact current tool name and satisfy every required parameter in its schema. Encode code strings with valid JSON escaping for newlines, quotes and backslashes; never put raw multiline code inside a JSON string. Copy only the CURRENT_REQUEST request_id. Do not send shell commands or edits as plain prose when a tool invocation is needed.
 CURRENT_REQUEST:
 '''
     prompt += dumps(envelope)
@@ -167,51 +170,93 @@ CURRENT_REQUEST:
     return prompt
 
 
-def parse_answer(text, request_id, body, catalog):
+def output_error(code, detail):
+    return AdapterError(f'[{code}] {detail} No tool call was returned; no files were changed by this endpoint. '
+                        'Inspect the original webpage response. Do not blindly retry an editing task.', code=code)
+
+
+def decode_output_json(text, stage):
     try:
-        value = strict_json(text.strip())
-        if not isinstance(value, dict) or set(value) != {'request_id', 'content', 'tool_calls'}:
-            raise ValueError('Invalid envelope')
-        if value['request_id'] != request_id:
-            raise ValueError('Request identity mismatch')
-        content, calls = value['content'], value['tool_calls']
-        if content is not None and not isinstance(content, str):
-            raise ValueError('Invalid content')
-        if not isinstance(calls, list) or len(calls) > 1:
-            raise ValueError('Expected zero or one call')
-        choice = body.get('tool_choice', 'auto')
-        if choice == 'none' and calls:
-            raise ValueError('Tools forbidden')
-        if (choice == 'required' or isinstance(choice, dict)) and not calls:
-            raise ValueError('Tool required')
-        if not calls and not content:
-            raise ValueError('Empty answer')
-        mapped = []
-        for call in calls:
-            if not isinstance(call, dict) or set(call) != {'name', 'arguments'}:
-                raise ValueError('Invalid call')
-            name, arguments = call['name'], call['arguments']
-            if not isinstance(name, str) or name not in catalog or not isinstance(arguments, dict):
-                raise ValueError('Unknown tool or invalid arguments')
-            if isinstance(choice, dict) and name != choice['function']['name']:
-                raise ValueError('Wrong forced tool')
+        return strict_json(text)
+    except json.JSONDecodeError as exc:
+        raise output_error(f'web_{stage}_json',
+                           f'Invalid JSON at line {exc.lineno}, column {exc.colno}: {exc.msg}. '
+                           'Code strings must escape quotes, backslashes and newlines; truncated JSON is not repaired.') from exc
+    except (ValueError, TypeError, RecursionError) as exc:
+        raise output_error(f'web_{stage}_json', 'Expected strict JSON without duplicate keys or non-finite numbers.') from exc
+
+
+def parse_answer(text, request_id, body, catalog):
+    if not isinstance(text, str):
+        raise output_error('web_output_type', 'Webpage answer must be text.')
+    text = text.strip()
+    # Accept ONE wrapper around the ENTIRE response, never search prose for a
+    # tool call or execute a partial JSON fragment. This does not alter code.
+    fence = re.fullmatch(r'```(?:json)?[ \t]*\r?\n(.*)\r?\n```', text, flags=re.DOTALL | re.IGNORECASE)
+    if fence:
+        text = fence.group(1).strip()
+    value = decode_output_json(text, 'output')
+    if not isinstance(value, dict) or set(value) != {'request_id', 'content', 'tool_calls'}:
+        raise output_error('web_envelope', 'Expected exactly request_id, content and tool_calls at the top level.')
+    if value['request_id'] != request_id:
+        raise output_error('web_request_identity', 'request_id is missing/incorrect or belongs to an earlier webpage turn.')
+    content, calls = value['content'], value['tool_calls']
+    if content is not None and not isinstance(content, str):
+        raise output_error('web_content_type', 'content must be a string or null.')
+    if not isinstance(calls, list) or len(calls) > 1:
+        raise output_error('web_call_count', 'tool_calls must be a list with zero or one call; split edits across turns.')
+    choice = body.get('tool_choice', 'auto')
+    if choice == 'none' and calls:
+        raise output_error('web_tool_choice', 'The client forbids tool calls for this request.')
+    if (choice == 'required' or isinstance(choice, dict)) and not calls:
+        raise output_error('web_tool_choice', 'The client requires a tool call, but the webpage returned none.')
+    if not calls and not content:
+        raise output_error('web_empty_answer', 'Neither an answer nor a tool call was returned.')
+    mapped = []
+    for index, call in enumerate(calls):
+        if isinstance(call, dict) and call.get('type') == 'function' and set(call) <= {'id', 'type', 'function'}:
+            # Also accept the standard OpenAI function wrapper, preserving the
+            # tool name and arguments exactly rather than asking a second model.
+            call = call.get('function')
+        if not isinstance(call, dict) or set(call) != {'name', 'arguments'}:
+            raise output_error('web_call_shape', f'tool_calls[{index}] must contain name and arguments.')
+        name, arguments = call['name'], call['arguments']
+        if not isinstance(name, str) or name not in catalog:
+            raise output_error('web_unknown_tool', 'Tool name is not in the current client tool catalog; do not invent edit tools.')
+        if isinstance(arguments, str):
+            arguments = decode_output_json(arguments, 'arguments')
+        if not isinstance(arguments, dict):
+            raise output_error('web_arguments_type', 'arguments must decode to a JSON object.')
+        if isinstance(choice, dict) and name != choice['function']['name']:
+            raise output_error('web_tool_choice', 'Webpage chose a different tool from the client-forced tool.')
+        try:
             catalog[name].validate(arguments)
-            mapped.append({'id': 'call_' + uuid.uuid4().hex, 'type': 'function',
-                           'function': {'name': name, 'arguments': dumps(arguments)}})
-        message = {'role': 'assistant', 'content': content}
-        if mapped:
-            message['tool_calls'] = mapped
-        return {'id': 'chatcmpl-' + uuid.uuid4().hex, 'object': 'chat.completion',
-                'created': int(time.time()), 'model': MODEL,
-                'choices': [{'index': 0, 'message': message,
-                             'finish_reason': 'tool_calls' if mapped else 'stop'}]}
-    except Exception as exc:
-        # Never repair arguments using another model or execute a partial parse.
-        raise AdapterError('Webpage output failed JSON, request identity, tool choice or argument schema validation. No tool call was returned. Inspect the webpage; there is no model fallback.') from exc
+        except ValidationError as exc:
+            # Report schema field names, NOT argument values, file contents or
+            # jsonschema's default message (which can quote entire source files).
+            location = '/'.join(str(part) for part in exc.absolute_path)[:160] or '(root)'
+            detail = f'Tool {name}: schema rule={exc.validator}, argument path={location}.'
+            if exc.validator == 'required' and isinstance(exc.instance, dict):
+                missing = [key for key in exc.validator_value if key not in exc.instance]
+                detail += ' Missing fields=' + dumps(missing)[:300] + '.'
+            elif exc.validator == 'type':
+                detail += ' Expected type=' + dumps(exc.validator_value)[:100] + '.'
+            raise output_error('web_arguments_schema', detail) from exc
+        except Exception as exc:
+            raise output_error('web_schema_evaluation', 'Could not evaluate the supplied tool schema; inspect the tool definition.') from exc
+        mapped.append({'id': 'call_' + uuid.uuid4().hex, 'type': 'function',
+                       'function': {'name': name, 'arguments': dumps(arguments)}})
+    message = {'role': 'assistant', 'content': content}
+    if mapped:
+        message['tool_calls'] = mapped
+    return {'id': 'chatcmpl-' + uuid.uuid4().hex, 'object': 'chat.completion',
+            'created': int(time.time()), 'model': MODEL,
+            'choices': [{'index': 0, 'message': message,
+                         'finish_reason': 'tool_calls' if mapped else 'stop'}]}
 
 
 def error_body(exc):
-    return {'error': {'message': str(exc), 'type': 'web_adapter_error', 'code': 'web_adapter_error'}}
+    return {'error': {'message': str(exc), 'type': 'web_adapter_error', 'code': exc.code}}
 
 
 def sse_completion(result):
