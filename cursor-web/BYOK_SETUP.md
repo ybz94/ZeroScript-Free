@@ -261,3 +261,13 @@ npm test --prefix cursor-web/tests
 - 遇到"busy"或任务卡住时，**重启 `model_endpoint.py` 即可清空进程内缓存**，然后重新 `--sessions` 绑定、重测。
 
 升级步骤同 0.4.1（停止 Bridge/端点 → 拉取 → `prepare_extension.py` → 重新加载插件确认 **0.4.2** → 刷新网页 → 重启 Bridge → 重新绑定会话）。DeepSeek 页验证值变为 `2026-09-21_site-error-fastfail`。
+
+**任务生命周期日志（端点终端）**：`model_endpoint.py` 现在会在终端打印每个专用页任务：
+
+```text
+[a1b2c3d4] task started on dedicated webpage
+[a1b2c3d4] task completed after 47s        ← 或 task failed after 5s: Webpage showed an error and produced no reply: ...
+[a1b2c3d4] reusing existing task for identical request
+```
+
+出现 409 "busy" 时看端点终端：如果上一条还在 `started` 之后没有 completed/failed，说明任务仍在等待网页（最长约 4.5 分钟）；等待期间**不要重发**，或 `Ctrl+C` 重启端点清除后再发。

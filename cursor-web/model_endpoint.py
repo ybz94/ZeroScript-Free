@@ -387,6 +387,7 @@ def create_app(api_key, session_id, rpc=bridge_rpc, poll_interval=1, heartbeat=1
         entry = cache.get(fingerprint)
         if entry is not None:
             task = entry[0]
+            print(f'[{rid[:8]}] reusing existing task for identical request', flush=True)
         else:
             running = [(t, started) for t, started in cache.values() if not t.done()]
             if running:
@@ -397,10 +398,23 @@ def create_app(api_key, session_id, rpc=bridge_rpc, poll_interval=1, heartbeat=1
                     'Wait for it to finish, or restart model_endpoint.py to clear it before retrying.', 409)
             if len(cache) >= MAX_CACHE:
                 raise AdapterError('Request cache full; finish the session before restarting the endpoint', 503)
+            start = time.monotonic()
+            print(f'[{rid[:8]}] task started on dedicated webpage', flush=True)
             task = asyncio.create_task(complete(body, catalog, prompt, rid))
+
+            def _task_done(t, _tag=rid[:8], _start=start):
+                # Suppression via .exception() also feeds the console log.
+                if t.cancelled():
+                    print(f'[{_tag}] task cancelled after {int(time.monotonic() - _start)}s', flush=True)
+                    return
+                exc = t.exception()
+                if exc is not None:
+                    print(f'[{_tag}] task failed after {int(time.monotonic() - _start)}s: {str(exc)[:300]}', flush=True)
+                else:
+                    print(f'[{_tag}] task completed after {int(time.monotonic() - _start)}s', flush=True)
             # Retain outcome even if HTTP caller disconnects; never blindly resend.
-            task.add_done_callback(lambda t: t.exception() if not t.cancelled() else None)
-            cache[fingerprint] = (task, time.monotonic())
+            task.add_done_callback(_task_done)
+            cache[fingerprint] = (task, start)
         if body.get('stream', False):
             async def stream():
                 yield ': waiting for webpage; no generated tokens yet\n\n'

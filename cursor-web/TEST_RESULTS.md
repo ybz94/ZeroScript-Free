@@ -113,6 +113,7 @@ git diff --check
 - 实机依据：Arena Agent mode 下网站报 `model channel not available` 后，任务在端点内最长挂起约 4 分钟（扩展等待 240s / 端点 270s），期间所有不同内容的新请求 409；用户日志中 17:21:50→17:22:07 连续多次调用即此现象。
 - 新增 provider 接口 `errorText()`（arena/deepseek/chatgpt）：返回可见站点错误提示文本（排除聊天内容区域），扩展等待循环中若无新回答且该文本持续约 3 秒则立即失败并带回网站原文；回答开始后错误提示被忽略（模拟测试覆盖两种路径）。
 - 端点 409 现包含运行秒数与"重启 model_endpoint.py 清除"提示（Python 测试断言消息内容）；任务缓存改存 (task, 开始时间)。
+- 端点终端新增任务生命周期日志（started / completed after Ns / failed after Ns: 原因 / reusing existing task），便于在出现 busy 时判断任务是否仍在等待网页（新增 1 项 Python 测试；总计 46 Python + 39 Node = 85 项通过）。
 - 仍是模拟浏览器/HTTP 回归，非三家网站在线实机验证；网站错误提示的 DOM 形态变化可能仍需适配。
 
 ## 0.4.1 整轮回退与诊断（2026-09-21）

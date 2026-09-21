@@ -145,6 +145,22 @@ class EndpointTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual((await self.post()).status_code, 502)
         self.assertEqual(len(self.web.sent), 1)
 
+    async def test_task_lifecycle_is_logged(self):
+        import contextlib
+        import io
+        self.web.waiting = True
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            first = asyncio.create_task(self.post())
+            async with asyncio.timeout(2):
+                while not self.web.sent:
+                    await asyncio.sleep(.001)
+            self.web.waiting = False
+            await first
+        out = buf.getvalue()
+        self.assertIn('task started on dedicated webpage', out)
+        self.assertRegex(out, r'task completed after \d+s')
+
     async def test_parse_error_includes_extraction_scope_diagnostics(self):
         self.web.mode = 'bad'
         self.web.diagnostics = {'extraction': 'code_text',
