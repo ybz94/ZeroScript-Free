@@ -7,7 +7,7 @@
   const inputMaxLines = P.id === 'chatgpt' ? 600 : null;
   P.init({diag: () => {}});
   let id = crypto.randomUUID(), key = P.conversationKey(), busy = false;
-  const VERSION = '0.4.3';
+  const VERSION = '0.4.4';
   const seen = new Set();
   // DOM events can wake the watcher even when background timers are throttled.
   // Keep a timer fallback for generation-state changes without DOM mutations.
@@ -53,6 +53,29 @@
       const beforeText = P.readAssistant().reply;
       diagnostics.phase = 'sending';
       await P.typeAndSend(msg.prompt);
+      // Fail fast if the send did not actually take. All three providers'
+      // typeAndSend return normally (without throwing) when the composer
+      // refuses the message - send button disabled, page busy, or still
+      // generating - which would otherwise stall the 240s reply wait with no
+      // visible activity on the page. A successful send clears the composer
+      // within ~1-2s, so if our text is still there after a short grace
+      // period, the send failed.
+      let leftover = '';
+      for (let i = 0; i < 25; i++) {
+        try { leftover = (P.editorText ? P.editorText() : '') || ''; } catch { break; }
+        if (leftover.trim() === '') break;
+        await new Promise(r => setTimeout(r, 200));
+      }
+      diagnostics.sendConfirmed = leftover.trim() === '';
+      diagnostics.leftoverLen = leftover.length;
+      if (leftover.trim() !== '') {
+        let busy2 = false;
+        try { busy2 = !!(P.isHardGenerating && P.isHardGenerating()); } catch {}
+        throw new Error('Message was not sent: ' + leftover.length +
+          ' characters are still in the composer' +
+          (busy2 ? ' and the page shows a Stop button (it is still generating)' : '') +
+          '. The send button is probably disabled or the page is busy. Check the dedicated webpage - stop any in-progress generation, clear the composer, confirm the send button is enabled - then retry.');
+      }
       diagnostics.phase = 'waiting_new_reply';
       const deadline = Date.now() + 240000;
       let last = '', changed = Date.now(), idleSince = null, fresh = false, complete = false;

@@ -279,3 +279,15 @@ npm test --prefix cursor-web/tests
 0.4.3：专用页上遇到残留草稿时**记录（diagnostics `composerDraftCleared`/`composerDraftLen`）并继续**，因为 `typeAndSend` 本来就会覆盖输入框内容。这样失败发送的残留不再阻塞后续任务。
 
 **注意**：专用页在执行任务期间不要手动输入/发送——残留文字会被当作可清理项覆盖，手动消息也会被当作任务结果。升级步骤同上（确认 **0.4.3**）。
+
+## 0.4.4：发送未被接受时快速失败，不再空等 240 秒（2026-09-21）
+
+实机反馈（Arena）：消息**根本没发出去**，但 Cursor 一直不返回——因为三个网站的 `typeAndSend` 在"发不出去"时（发送按钮禁用、页面忙碌、仍在生成）是**静默返回而不报错**，插件误以为已发送，然后干等一个不会来的回复最长 240 秒。
+
+0.4.4：发送后插件会确认**输入框是否被清空**（网站接受消息即清空输入框）。若约 5 秒后文字仍在，立即失败并给出可操作原因，例如：
+`Message was not sent: 123 characters are still in the composer and the page shows a Stop button (it is still generating). The send button is probably disabled or the page is busy. ...`
+不再空等 4 分钟。诊断新增 `sendConfirmed`（发送是否被接受）与 `leftoverLen`（输入框残留字符数）。
+
+**遇到该报错时的处理**：到专用网页上 ① 点掉/等待"停止"结束任何进行中的生成；② 清空输入框；③ 确认发送按钮是亮的（可发新消息）；再重发任务。若页面状态混乱，刷新网页并重新 `--sessions` 绑定。
+
+升级步骤同前（确认 **0.4.4**）。

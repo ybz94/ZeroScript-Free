@@ -9,17 +9,21 @@ const root = path.join(__dirname, '..', 'extension');
 function content(options = {}) {
   const messages = [], intervals = [];
   let listener, now = 0, sent = 0, old = {}, item = old, text = 'old answer', count = 1, key = '/c/1';
+  let editorContent = options.draft || '';
   const document = {hidden:!!options.hidden, title:'Chat', addEventListener(){}};
   const provider = {
     id:options.provider || 'mock', init(){}, conversationKey:()=>key, isFreshChat:()=>false,
     isBusyNow:()=>!!options.busy, isGenerating:()=>!!options.generating,
-    editorText:()=>options.draft || '', lastAssistant:()=>item, lastAssistantId:()=>item===old?'old':'new',
+    isHardGenerating:()=>!!options.hardGenerating,
+    editorText:()=>editorContent, lastAssistant:()=>item, lastAssistantId:()=>item===old?'old':'new',
     assistantCount:()=>count, readAssistant:()=>({reply:text,item}),
     errorText:()=>options.siteError || null,
     findContinueBtn:()=>!!options.truncated, turnHalted:()=>!!options.halted,
-    async typeAndSend(){sent++; if(options.sendError) throw Error('send failed');
+    async typeAndSend(t){sent++; if(options.sendError) throw Error('send failed');
       if(options.navigate) key='/c/2';
       if(options.hideAfterSend) document.hidden=true;
+      editorContent = t;                       // typed into the composer
+      if(!options.sendNotConfirmed) editorContent = '';  // accepted -> cleared
       if(!options.noReply){item={};text=options.answer || 'new answer';count++;}
     }
   };
@@ -52,6 +56,23 @@ test('leftover composer draft is recorded and replaced, not a hard failure',asyn
   assert.equal(r.diagnostics.composerDraftCleared,'unsent manual work');
   assert.equal(r.diagnostics.composerDraftLen,'unsent manual work'.length);
   assert.equal(c.sent,1);
+});
+test('unconfirmed send (text stays in composer) fails fast, not after 240s',async()=>{
+  const c=content({sendNotConfirmed:true, hardGenerating:true});c.dispatch();
+  const r=await c.result();
+  assert.match(r.error,/Message was not sent/);
+  assert.match(r.error,/Stop button/);
+  assert.equal(r.diagnostics.phase,'sending');
+  assert.equal(r.diagnostics.sendConfirmed,false);
+  assert.ok(r.diagnostics.leftoverLen>0);
+  assert.equal(c.sent,1);
+});
+test('confirmed send (composer cleared) proceeds to wait for the reply',async()=>{
+  const c=content();c.dispatch();
+  const r=await c.result();
+  assert.equal(r.error,undefined);
+  assert.equal(r.diagnostics.sendConfirmed,true);
+  assert.equal(r.diagnostics.leftoverLen,0);
 });
 test('content rejects duplicate submission',async()=>{
   const c=content();c.dispatch();assert.match(c.dispatch().error,/Busy|duplicate/);await c.result();assert.match(c.dispatch().error,/duplicate/);assert.equal(c.sent,1);
@@ -146,7 +167,7 @@ test('model protocol returns code block extraction rather than rendered reply',a
   const r=await c.result();assert.equal(r.error,undefined);assert.equal(r.text,raw);
   assert.equal(r.diagnostics.extraction,'code_text');
   assert.equal(r.diagnostics.extraction_detail,'roots=1 scope=answer_roots turn_blocks=1');
-  assert.equal(r.diagnostics.version,'0.4.3');
+  assert.equal(r.diagnostics.version,'0.4.4');
 });
 test('site error with no reply fails the task in seconds, not 240s',async()=>{
   const c=content({noReply:true,siteError:'model channel not available'});
