@@ -2,7 +2,12 @@
 description: Use the webpage assistant for suggestions while keeping native Cursor editing
 alwaysApply: true
 ---
-When the user asks to use the webpage assistant:
+If the active model is the local `web-ai` model endpoint, do NOT use the
+web_chat_* MCP tools to consult the same webpage recursively. The model request
+already goes to the webpage. Use native file/edit tools and normal permission
+checks directly. The rules below apply only to the older MCP-consultation mode.
+
+When the user asks to use the webpage assistant in MCP-consultation mode:
 - List sessions, ask which session to bind, and reuse that session ID in this conversation. If missing, ask again; never silently switch tabs.
 - Send only the user's task and necessary, authorized code context. Exclude credentials, environment files and unrelated private files.
 - Use web_chat_send once and retain its job_id. Use web_chat_get_result to retrieve the result; avoid rapid polling and never duplicate a submission after uncertain delivery.

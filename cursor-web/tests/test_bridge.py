@@ -165,3 +165,67 @@ class BridgeTests(unittest.IsolatedAsyncioTestCase):
                 await browser.send(json.dumps({'type': 'result', 'job_id': jid, 'text': 'answer from browser'}))
                 received = await session.call_tool('web_chat_get_result', {'job_id': jid})
                 self.assertEqual(json.loads(received.content[0].text)['result'], 'answer from browser')
+
+
+    async def test_model_endpoint_real_http_bridge_tool_loop(self):
+        import socket
+        import httpx
+        import uvicorn
+        spec = importlib.util.spec_from_file_location('endpoint_live', ROOT / 'model_endpoint.py')
+        endpoint = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(endpoint)
+        browser = await self.browser()
+        env = patch.dict(os.environ, {'CURSOR_WEB_PORT': str(self.port),
+                                     'CURSOR_WEB_TOKEN_FILE': str(self.token_path)})
+        env.start()
+        sock = socket.socket()
+        sock.bind(('127.0.0.1', 0))
+        port = sock.getsockname()[1]
+        server = uvicorn.Server(uvicorn.Config(endpoint.create_app('test-key', 'session-1', poll_interval=.001),
+                                              log_level='error', access_log=False))
+        serving = asyncio.create_task(server.serve(sockets=[sock]))
+
+        async def webpage():
+            for turn in range(2):
+                dispatch = json.loads(await browser.recv())
+                request = json.loads(dispatch['prompt'].split('CURRENT_REQUEST:\n')[1])
+                if turn == 0:
+                    answer = {'request_id': request['request_id'], 'content': None,
+                              'tool_calls': [{'name': 'read_file', 'arguments': {'path': 'demo.js'}}]}
+                else:
+                    self.assertEqual(request['messages'][-1]['content'], 'function demo() {}')
+                    answer = {'request_id': request['request_id'], 'content': 'Reviewed actual tool result', 'tool_calls': []}
+                await browser.send(json.dumps({'type': 'result', 'job_id': dispatch['job_id'],
+                                               'text': json.dumps(answer)}))
+        worker = asyncio.create_task(webpage())
+        try:
+            async with asyncio.timeout(5):
+                while not server.started:
+                    if serving.done():
+                        await serving
+                        self.fail('HTTP server did not start')
+                    await asyncio.sleep(.001)
+            async with httpx.AsyncClient(base_url=f'http://127.0.0.1:{port}',
+                                         headers={'Authorization': 'Bearer test-key'}, timeout=5) as client:
+                body = {'model': 'web-ai', 'messages': [{'role': 'user', 'content': 'Review demo.js'}],
+                        'tools': [{'type': 'function', 'function': {'name': 'read_file',
+                                  'parameters': {'type': 'object', 'properties': {'path': {'type': 'string'}}, 'required': ['path']}}}]}
+                first = await client.post('/v1/chat/completions', json=body)
+                self.assertEqual(first.status_code, 200, first.text)
+                message = first.json()['choices'][0]['message']
+                self.assertEqual(message['tool_calls'][0]['function']['name'], 'read_file')
+                body['messages'] += [message, {'role': 'tool', 'tool_call_id': message['tool_calls'][0]['id'],
+                                               'content': 'function demo() {}'}]
+                body['stream'] = True
+                second = await client.post('/v1/chat/completions', json=body)
+                self.assertEqual(second.status_code, 200)
+                self.assertIn('Reviewed actual tool result', second.text)
+                self.assertIn('data: [DONE]', second.text)
+                await worker
+        finally:
+            worker.cancel()
+            await asyncio.gather(worker, return_exceptions=True)
+            server.should_exit = True
+            await serving
+            sock.close()
+            env.stop()

@@ -1,0 +1,151 @@
+# 网页模型端点 → cursor-byok（实验接入）
+
+## 架构与验证边界
+
+```
+Cursor 原生 Agent / 工具执行链
+        ↕
+cursor-byok 的 OpenAI 兼容模型配置
+        ↕ HTTP Chat Completions
+model_endpoint.py（普通程序，无本地模型）
+        ↕ WebSocket
+bridge.py ↔ 浏览器扩展 ↔ 网页 AI
+```
+
+端点没有备用模型、不读写项目文件、不执行 shell 命令。它将模型请求的完整 messages 和 tools 转交网页，把网页输出校验后转换成普通答案或工具调用。实际工具执行仍交给客户端现有执行链。
+
+已检查 ybz94/cursor-byok 的配置结构和 OpenAI 流式适配代码，具有 BaseURL / ModelID / OpenAIEndpoint 及 tool_calls 接入点。但**尚未在真实 cursor-byok + Cursor 桌面客户端上验证**。原生修改高亮、确认、撤回及工具执行兼容性必须实测；HTTP 协议测试通过不等于桌面流程已通过。
+
+## 前置条件
+
+- 已完成浏览器插件 0.2.0 的发送/取回答案实测。
+- cursor-byok 安装在本地，可配置自定义 OpenAI 兼容服务；不是另一个容器/远程机器中的 localhost。
+- 测试时**禁用旧 web-assistant MCP 服务**，不要把网页再作为咨询工具嵌套调用。端点就是模型入口，不需要 MCP 中转。项目规则已增加模式区分，但禁用旧服务更可靠。
+- 一个专用网页会话，只绑定一个 Cursor 对话。不要让其他工具或人工同时在该网页输入。
+- Cursor 发送的 messages 可能包含文件、系统提示、工具输出；这些都会发给目标网站。只在授权的代码范围内使用，排除密钥与其他敏感内容。
+
+## Windows 配置
+
+### 1. 更新并安装依赖
+
+在仓库根目录：
+
+```powershell
+git pull --ff-only origin arena/01a0b7a2-zeroscript-free
+.\.venv\Scripts\python.exe -m pip install -r cursor-web\requirements.txt
+```
+
+如果已有本地修改导致拉取失败，不要强制覆盖。
+
+### 2. 保持 Bridge 与网页扩展在线
+
+终端 A：
+
+```powershell
+.\.venv\Scripts\python.exe cursor-web\bridge.py
+```
+
+如已有 Bridge 运行，不要重复启动。打开已登录的目标 AI 网页，建议新建专用会话，手动问候一次并等它回答，清空未发送草稿。
+
+### 3. 查询网页会话 ID
+
+终端 B：
+
+```powershell
+.\.venv\Scripts\python.exe cursor-web\model_endpoint.py --sessions
+```
+
+根据 provider/title/url 选择正确会话，复制它的 `id`。不要复制 Bridge 的 job_id。
+
+### 4. 启动模型端点
+
+将下面的占位内容替换为上一步的真实会话 ID：
+
+```powershell
+.\.venv\Scripts\python.exe cursor-web\model_endpoint.py --session "网页会话ID"
+```
+
+保持终端 B 运行。默认地址是 `http://127.0.0.1:17615/v1`，模型名 `web-ai`。
+
+首次启动生成 `cursor-web/.endpoint-token`。这是 API Key，和插件配对的 `.bridge-token` **不是同一个令牌**。用本地文本编辑器打开并复制，不要发送给 AI 或分享截图。两种令牌都已 Git 忽略。
+
+### 5. 在 cursor-byok 添加模型
+
+按当前版本对应的模型配置页面填写（界面标签可能不同）：
+
+| 配置 | 值 |
+|---|---|
+| Provider / 类型 | OpenAI 兼容 |
+| Base URL | `http://127.0.0.1:17615/v1` |
+| API Key | `.endpoint-token` 的内容 |
+| Model ID | `web-ai` |
+| 显示名称 | 网页 AI |
+| OpenAI endpoint | Chat Completions，不选 Responses |
+| 并行工具调用 | 关闭 / `parallel_tool_calls=false` |
+| 额外响应格式 | 不设置 JSON schema / JSON mode |
+
+端点已经提供 SSE 响应，不需要关闭流式请求。网页完整回答通过校验后才作为 SSE 数据返回，不是逐 token 转播网页文字。等待期间只有 SSE 注释心跳；它不保证所有客户端都会延长自己的超时，可在助手配置中适当提高 provider 等待上限，并实测。
+
+在 Cursor 中选择这条模型配置。移除“先调用 web_chat_send”的旧指令；现在直接提需求。
+
+## 三步验收
+
+### A. 普通问答
+
+在新的 Cursor 对话输入：
+
+> 请只回复“网页模型端点测试成功”，不要调用工具。
+
+检查网页收到的请求与 Cursor 回答是否对应。网页侧看到协议 JSON 是正常的；Cursor 应显示其中的 content，而不是把整个 JSON 原样展示出来。
+
+### B. 读取文件
+
+准备不含敏感信息的测试文件，输入：
+
+> 请使用可用的原生工具读取 cursor-web-demo.js，概括其作用。不要修改文件，不要执行命令。
+
+检查 Cursor 是否出现真实读文件工具调用，以及网页下一轮是否收到实际工具结果。不能把网页声称“已读取”当成通过。
+
+### C. 原生编辑与撤回
+
+使用可丢弃的示例文件：
+
+```javascript
+function greet(name) {
+  return "Hello, " + name;
+}
+```
+
+输入：
+
+> 只修改这个示例文件，让 greet 没传入名字时返回 Hello, world。使用可用的编辑工具，不执行命令、不运行测试。
+
+检查实际文件 diff、原生文件列表、确认/拒绝/撤回。不要开启命令自动批准；网页 AI 的工具请求仍需服从本地权限策略。确认真实原生流程后再用于正式项目。
+
+## 第一版的明确限制
+
+- 只实现 `GET /v1/models` 和 `POST /v1/chat/completions`。不支持 Responses、Embeddings、图像/音频、旧 functions API、并行工具、强制 JSON response_format。
+- 每轮最多一个工具调用。工具定义来自客户端，参数按其 JSON Schema 校验；拒绝外部 schema 引用。不自行发明工具、不猜测修复参数、不自动执行网页指令。
+- 网页必须返回带本轮 request_id 的 JSON；不合规会失败，不自动转交其他模型。网站对结构化输出的遵循能力需要实测。
+- 单次完整请求序列化为提示后最多 60,000 字符（包括工具定义和包装指令）。超限返回 413，**不会静默删减上下文**。真实 Cursor 系统提示/工具列表可能很长；若超限，先禁用无关工具和 MCP、缩小上下文，必要时再设计显式上下文管理，不宣称当前已支持大型项目。
+- temperature、max_tokens 等生成调节不映射为网站模型原生采样控制；本版不能保证这些参数生效。不返回虚构 token usage。
+- 同进程内相同语义请求共享结果/失败和 tool_call ID，客户端断连不会自动重发网页消息；不同请求在忙碌时返回 409。最多缓存 128 个请求。缓存仅内存，不保证跨重启去重，不保证客户端修改重试请求后仍被识别。
+- 相同完整请求在缓存期内返回相同结果，不提供独立“重新生成”语义。需要不同回答时明确追加用户消息；若前一次仍在网页执行，先处理它。
+- 不支持多 Cursor 对话隔离。换对话请换专用网页会话并重启端点。每轮发送完整客户端历史，但旧网页历史依然存在；指令要求只参考当前历史不等于模型层面的强隔离。
+- 刷新网页使 session ID 变化时，端点明确报错，不自动挑选另一个标签页。重新执行 --sessions 并用新 ID 启动。
+- 页面登录失效、冻结、截断、Bridge 断线等照常可能导致失败。不实现验证码绕过。
+- 只绑定本机，不接受带 Origin 的浏览器 API 请求。不要公开端口。Windows 上需同时保护令牌所在目录的访问权限。
+
+## 错误定位
+
+| 错误 | 处理 |
+|---|---|
+| 401 | 使用 `.endpoint-token`，不是 `.bridge-token` |
+| 404 / Responses not supported | 在助手中选 Chat Completions，确认最终路径 `/v1/chat/completions` |
+| 400 | 查看错误信息，关闭不支持的并行工具、结构化输出或非文本请求 |
+| 409 | 当前会话忙碌或绑定失效；不要盲目重新发送 |
+| 413 | 完整上下文超限，减少不相关工具/消息；原请求未发往网页 |
+| 502 / output failed validation | 查看网页是否按协议返回 JSON，工具名、参数与 request_id 是否正确；任何失败都不会返回可执行工具调用 |
+| 504 / 网页超时 | 检查原网页任务是否仍在运行，恢复页面后再决定；不要直接重复提交 |
+
+流式响应开始后的失败会通过 SSE `data: {"error": ...}` 返回（HTTP 状态可能仍是 200），不能只凭 HTTP 200 判定成功。

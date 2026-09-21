@@ -1,5 +1,7 @@
 # Cursor 网页助手（第一版）
 
+**新：无需第二个模型的网页模型端点 → cursor-byok 接入见 [BYOK_SETUP.md](BYOK_SETUP.md)。** 以下正文是仍然保留的 MCP 咨询模式；两种模式不要嵌套调用。
+
 保留 Cursor 原生 Agent 对话及代码编辑流程。网页 AI 通过 MCP 提供答案和修改建议，**由 Cursor 的原生编辑工具应用修改**，不通过 Bridge 写入项目文件。原生差异、确认、撤回和文件列表的具体行为取决于 Cursor 版本及工作模式。
 
 这是独立入口，不使用仓库根目录的旧 Bridge 或旧启动脚本。第一版复用现有 DeepSeek、ChatGPT、Arena 网站适配器，但不加载旧核心、工具执行循环或旧界面。Cursor 自身模型仍参与工具调度及编辑，不能用此方案完全替代 Cursor 模型。

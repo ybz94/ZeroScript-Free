@@ -1,2 +1,5 @@
 mcp>=1.12,<2
 websockets>=14,<16
+starlette>=0.40,<2
+uvicorn>=0.31,<1
+jsonschema>=4.20,<5
