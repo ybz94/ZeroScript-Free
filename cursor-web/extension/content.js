@@ -7,6 +7,7 @@
   const inputMaxLines = P.id === 'chatgpt' ? 600 : null;
   P.init({diag: () => {}});
   let id = crypto.randomUUID(), key = P.conversationKey(), busy = false;
+  const VERSION = '0.4.1';
   const seen = new Set();
   // DOM events can wake the watcher even when background timers are throttled.
   // Keep a timer fallback for generation-state changes without DOM mutations.
@@ -27,13 +28,13 @@
     // our own submission keeps the same binding for subsequent turns.
     if (current !== key) {if (!busy) id = crypto.randomUUID(); key = current;}
     notify({type:'session', id, key, provider:P.id, title:document.title,
-            url:location.href, visible:!document.hidden, busy, transportVersion:'0.4.0', inputMaxChars, inputMaxLines});
+            url:location.href, visible:!document.hidden, busy, transportVersion:VERSION, inputMaxChars, inputMaxLines});
   }
   async function run(msg) {
     busy = true;
     const sessionId = id;
     let text = '', failure;
-    const diagnostics = {version:'0.4.0', startedHidden:document.hidden, sawHidden:document.hidden, phase:'preflight'};
+    const diagnostics = {version:VERSION, startedHidden:document.hidden, sawHidden:document.hidden, phase:'preflight'};
     try {
       if (P.isBusyNow() || P.isGenerating()) throw new Error('Webpage is already generating');
       if (P.editorText().trim()) throw new Error('Composer contains a draft; send or clear it manually first');
@@ -68,6 +69,7 @@
         const extracted = msg.response_format === 'json_code_block'
           ? ZSWebProtocol.read(result) : {text:result.reply || '', source:'rendered_reply'};
         diagnostics.extraction = extracted.source;
+        diagnostics.extraction_detail = extracted.detail || '';
         // Use rendered text only to determine settling when extraction failed;
         // never return that text as a successful protocol response.
         text = extracted.error ? (result.reply || '') : extracted.text;

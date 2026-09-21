@@ -16,7 +16,9 @@ function reader(html) {
   const ctx = vm.createContext({document, CustomEvent});
   vm.runInContext(source,ctx);
   const api = vm.runInContext('ZSWebProtocol',ctx);
-  return {document,read:roots=>api.read({replyRoots:roots || [document.querySelector('main')]})};
+  const main = document.querySelector('main');
+  return {document,
+    read:(roots,item,extra={})=>api.read(Object.assign({replyRoots:roots || [main], item}, extra))};
 }
 
 test('reproduces Markdown collapsing JSON backslashes into Invalid escape',()=>{
@@ -78,4 +80,59 @@ test('pre without code preserves source and strips only UI buttons',()=>{
   r.document.querySelector('span').textContent=raw;
   assert.equal(r.read().text,raw);
   assert.equal(r.document.querySelector('button').textContent,'Copy');
+});
+
+test('turn fallback finds a code block that is a sibling of the answer roots',()=>{
+  // DeepSeek layout: answer prose in .ds-markdown, .md-code-block as a
+  // sibling inside the same .ds-message turn.
+  const r=reader('<div class="ds-message">' +
+    '<div class="ds-markdown">Here is the JSON.</div>' +
+    '<div class="md-code-block"><div class="md-code-block-banner">json</div><pre><code></code></pre></div>' +
+    '</div>');
+  r.document.querySelector('.md-code-block code').textContent=raw;
+  const res=r.read([r.document.querySelector('.ds-markdown')], r.document.querySelector('.ds-message'));
+  assert.equal(res.source,'code_text');
+  assert.equal(res.text,raw);
+  assert.match(res.detail,/^roots=1 scope=answer_turn turn_blocks=1$/);
+  assert.deepEqual(JSON.parse(res.text),payload);
+});
+
+test('reasoning code blocks are excluded from the turn fallback',()=>{
+  const r=reader('<div class="ds-message">' +
+    '<div class="ds-think-content"><div class="ds-markdown">thinking</div>' +
+    '<div class="md-code-block"><pre><code>not the answer</code></pre></div></div>' +
+    '<div class="ds-markdown">answer prose only</div></div>');
+  const res=r.read([r.document.querySelectorAll('.ds-markdown')[1]],
+    r.document.querySelector('.ds-message'), {thinkingSel:'.ds-think-content'});
+  assert.equal(res.source,'code_block_unavailable');
+  assert.match(res.error,/found 0/);
+  assert.match(res.detail,/thinking_blocks=1/);
+});
+
+test('snapshot without replyRoots (older provider build) still reads the turn',()=>{
+  const r=reader('<div class="ds-message"><div class="md-code-block"><pre><code></code></pre></div></div>');
+  r.document.querySelector('code').textContent=raw;
+  const res=r.read(undefined, r.document.querySelector('.ds-message'), {replyRoots:[]});
+  assert.equal(res.source,'code_text');
+  assert.equal(res.text,raw);
+  assert.match(res.detail,/scope=answer_turn/);
+});
+
+test('multiple code blocks in the turn fail safely instead of guessing',()=>{
+  const r=reader('<div class="ds-message">' +
+    '<div class="md-code-block"><pre><code>a</code></pre></div>' +
+    '<div class="md-code-block"><pre><code>b</code></pre></div></div>');
+  const res=r.read(undefined, r.document.querySelector('.ds-message'), {replyRoots:[]});
+  assert.equal(res.source,'code_block_unavailable');
+  assert.match(res.error,/found 2/);
+});
+
+test('ZeroScript UI injections are never treated as answer code',()=>{
+  const r=reader('<div class="ds-message">' +
+    '<div class="ds-markdown">prose</div>' +
+    '<div id="zs-root"><pre><code>injected</code></pre></div>' +
+    '<div class="md-code-block"><pre><code></code></pre></div></div>');
+  r.document.querySelector('.md-code-block code').textContent=raw;
+  const res=r.read([r.document.querySelector('.ds-markdown')], r.document.querySelector('.ds-message'));
+  assert.equal(res.text,raw);
 });

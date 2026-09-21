@@ -304,7 +304,11 @@ def create_app(api_key, session_id, rpc=bridge_rpc, poll_interval=1, heartbeat=1
             sources = {'code_text', 'pre_text', 'codemirror_document', 'rendered_reply'}
             source = diagnostics.get('extraction') if isinstance(diagnostics, dict) else None
             source = source if source in sources else 'unverified_or_old_extension'
-            exc.args = (str(exc) + f' Extraction source={source}.',)
+            detail = diagnostics.get('extraction_detail') if isinstance(diagnostics, dict) else None
+            suffix = f' Extraction source={source}.'
+            if isinstance(detail, str) and detail:
+                suffix += f' {detail}'
+            exc.args = (str(exc) + suffix,)
             raise
 
     async def complete(body, catalog, prompt, request_id):

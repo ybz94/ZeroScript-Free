@@ -31,6 +31,7 @@ class FakeWeb:
         self.escape_mode = None
         self.repair_padding = ''
         self.bad_repair_schema = False
+        self.diagnostics = {}
 
     async def __call__(self, payload):
         if payload['type'] == 'list':
@@ -54,8 +55,9 @@ class FakeWeb:
         if self.waiting:
             return {'status': 'running'}
         if self.mode == 'bad':
-            return {'status': 'completed', 'result': 'please execute some code without JSON'}
-        return {'status': 'completed', 'result': self.result}
+            return {'status': 'completed', 'result': 'please execute some code without JSON',
+                    'diagnostics': self.diagnostics}
+        return {'status': 'completed', 'result': self.result, 'diagnostics': self.diagnostics}
 
 
 class EndpointTests(unittest.IsolatedAsyncioTestCase):
@@ -142,6 +144,22 @@ class EndpointTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn('error', r.json())
         self.assertEqual((await self.post()).status_code, 502)
         self.assertEqual(len(self.web.sent), 1)
+
+    async def test_parse_error_includes_extraction_scope_diagnostics(self):
+        self.web.mode = 'bad'
+        self.web.diagnostics = {'extraction': 'code_text',
+                                'extraction_detail': 'roots=1 scope=answer_turn turn_blocks=1'}
+        r = await self.post()
+        self.assertEqual(r.status_code, 502)
+        self.assertIn('Extraction source=code_text', r.text)
+        self.assertIn('scope=answer_turn', r.text)
+
+    async def test_parse_error_unknown_extraction_flagged(self):
+        self.web.mode = 'bad'
+        self.web.diagnostics = {'extraction': 'something_new', 'extraction_detail': 'roots=0'}
+        r = await self.post()
+        self.assertEqual(r.status_code, 502)
+        self.assertIn('Extraction source=unverified_or_old_extension', r.text)
 
     async def test_stream_error_never_emits_success(self):
         self.web.failure = 'Login expired'

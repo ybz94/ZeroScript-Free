@@ -131,13 +131,16 @@ test('ChatGPT line guard and UTF-16 guard prevent silent truncation',()=>{
 
 test('model protocol returns code block extraction rather than rendered reply',async()=>{
   const raw=JSON.stringify({path:String.raw`E:\project\file.js`});
-  const c=content({answer:'json Copy corrupted prose',protocol:{text:raw,source:'code_text'}});
+  const c=content({answer:'json Copy corrupted prose',protocol:{text:raw,source:'code_text',detail:'roots=1 scope=answer_roots turn_blocks=1'}});
   c.dispatch({response_format:'json_code_block'});
   const r=await c.result();assert.equal(r.error,undefined);assert.equal(r.text,raw);
   assert.equal(r.diagnostics.extraction,'code_text');
+  assert.equal(r.diagnostics.extraction_detail,'roots=1 scope=answer_roots turn_blocks=1');
+  assert.equal(r.diagnostics.version,'0.4.1');
 });
 test('model protocol never returns missing code block as successful prose',async()=>{
   const c=content({answer:'plain reply'});c.dispatch({response_format:'json_code_block'});
   const r=await c.result();assert.match(r.error,/code block missing/);
   assert.equal(r.diagnostics.extraction,'code_block_unavailable');
+  assert.equal(r.diagnostics.extraction_detail,'');
 });

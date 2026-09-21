@@ -612,6 +612,8 @@ const ZSProvider = (() => {
       replyRoots: mds,
       reply: mds.map((m) => m.textContent).join("\n").trim(),
       thinking: th ? th.textContent.trim() : "",
+      // Protocol reader: whole-turn fallback must skip the reasoning area.
+      thinkingSel: S.thinking,
       item,
     };
   }
@@ -973,7 +975,7 @@ const ZSProvider = (() => {
       // Version beacon: stamp the loaded build onto <html> so a reload can be
       // confirmed from the page (read document.documentElement.dataset.zsDsVer).
       // BUMP DS_VER on meaningful deepseek.js changes worth verifying live.
-      try { document.documentElement.setAttribute("data-zs-ds-ver", "2026-09_unified-model"); } catch {}
+      try { document.documentElement.setAttribute("data-zs-ds-ver", "2026-09-21_protocol-fallback"); } catch {}
     },
     // turns
     allItems, isUserItem, isAssistantItem, itemText, classifyText,

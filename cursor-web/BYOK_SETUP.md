@@ -220,3 +220,26 @@ function greet(name) {
 npm ci --prefix cursor-web/tests
 npm test --prefix cursor-web/tests
 ```
+
+## 0.4.1：整轮回答回退搜索与可诊断失败（2026-09-21）
+
+实机反馈：DeepSeek 已把回答显示成 `json` 代码块，但插件仍报 `found 0`。原因是代码块可能不在插件原先只搜索的非思考 `.ds-markdown` 回答根节点内（网站 2026-08 重构了 Markdown 渲染器，旧 DOM 假设不再可靠）。
+
+0.4.1 的行为：
+
+1. 仍优先在回答根节点内找“恰好一个”代码块（保持原有严格范围）。
+2. 只有根节点内**一个块都没有**时，才回退到整个回答轮次（`.ds-message`）搜索；排除网站思考区（DeepSeek `.ds-think-content`）和 ZeroScript 自身注入的 UI。
+3. 代码块容器（如 DeepSeek `.md-code-block`）与其内部 `pre`/`code` 只计一次。
+4. 仍拒绝：找不到块、多个块、CodeMirror 原文不可用。绝不回退到渲染段落。
+5. 失败信息现在自带诊断，例如 `found 0 in answer_turn (roots=1 scope=answer_turn turn_blocks=0 thinking_blocks=0)`：可区分“整个回答里没有任何代码块”“块只在思考区”还是“有多个块”。端点解析错误也会附带该诊断。
+
+**升级步骤（与 0.4.0 相同，只是版本变为 0.4.1）：**
+
+1. 停止 Bridge 和模型端点，拉取更新。
+2. 运行 `python cursor-web/prepare_extension.py`，同步网站适配器。
+3. 浏览器扩展管理页重新加载，确认 **0.4.1**，然后刷新 AI 网页。
+4. 重启 Bridge，重新查询 session ID，再启动模型端点。
+5. cursor-byok 配置/API Key 不变。用可丢弃文件验证路径、代码和原生 diff。
+
+验证新插件已加载：在 AI 网页按 `F12` 控制台输入
+`document.documentElement.dataset.zsDsVer`，DeepSeek 页应显示 `2026-09-21_protocol-fallback`。

@@ -106,3 +106,12 @@ git diff --check
 - 覆盖复制按钮/语言标签排除、多块拒绝、回答根节点隔离、CodeMirror 完整文档优先和原文缺失拒绝；扩展主流程仅在协议模式使用新采集路径，MCP 普通问答不变。
 - 真实 HTTP/Bridge 测试验证 json_code_block 指令到浏览器连接的传播。
 - 这些是 Markdown/DOM 与模拟浏览器回归测试，不是三家网站的在线实机验证。用户反复同列报错与此机制相符，但未获得其原始响应，不能宣称根因已完全确认。
+
+## 0.4.1 整轮回退与诊断（2026-09-21）
+
+- Python 45 项、JavaScript 37 项，总计 82 项通过（`unittest discover` + `npm test`）。
+- 实机反馈依据：DeepSeek 显示 `json` 代码块但旧采集报 `found 0`；且 DeepSeek 官方仓库 2026-08 换用了增量 mdast 渲染器，旧 DOM 嵌套假设不可靠。
+- 新逻辑：回答根节点恰好一个块时直接使用（原有严格范围不变）；根节点零块时才回退整轮 `.ds-message` 搜索，排除思考区（DeepSeek `.ds-think-content`）与 `#zs-root`/`.zs-chip` 注入 UI。
+- 新增协议回归测试：代码块作为 `.ds-markdown` 的兄弟节点（DeepSeek `.md-code-block` 结构）可被回退找到；思考区代码块被排除并计入 `thinking_blocks`；无 `replyRoots` 的旧版 provider 快照仍可经整轮读取；多个块安全失败；注入 UI 中的 `pre` 被忽略。
+- `extraction_detail`（`roots=… scope=… turn_blocks=… thinking_blocks=…`）随结果诊断传到 Bridge/端点；解析错误信息附带它，端点对未知提取来源仍标记 `unverified_or_old_extension`（新增 2 项 Python 测试）。
+- 仍是模拟 DOM 回归，不是三家网站在线实机验证。
