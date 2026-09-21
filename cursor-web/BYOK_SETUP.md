@@ -243,3 +243,21 @@ npm test --prefix cursor-web/tests
 
 验证新插件已加载：在 AI 网页按 `F12` 控制台输入
 `document.documentElement.dataset.zsDsVer`，DeepSeek 页应显示 `2026-09-21_protocol-fallback`。
+
+## 0.4.2：网站报错快速失败与可操作的 409（2026-09-21）
+
+实机反馈（Arena Agent mode）：网站显示 `model channel not available` 这类错误时，没有生成正常回答，插件会一直等到 240 秒超时；期间端点里该任务未结束，再发任何新请求都得到 409 `Dedicated webpage is busy with another request`，页面看起来"卡死"。
+
+0.4.2 的行为：
+
+1. **网站报错快速失败**：等待回答期间，若页面出现可见错误提示（toast/alert，不含聊天内容本身）且持续约 3 秒、始终没有新回答，任务立即失败，错误信息带上网站原文，例如：
+   `Webpage showed an error and produced no reply: model channel not available`
+   不再空等 240 秒。回答一旦开始生成，之前的错误提示即被忽略。
+2. **409 可操作**：忙碌报错现在说明已有任务运行了多久、单任务最长约 4.5 分钟，并明确"等待其结束，或重启 model_endpoint.py 清除后再试"。
+
+**两条使用规则（重要）：**
+
+- **任务执行期间不要手动操作专用网页**（不要在里面输入/发送/删除消息）。专用页在任务期间归 Cursor 使用，手动产生的回答会被当作任务结果，手动输入也会与新请求冲突。
+- 遇到"busy"或任务卡住时，**重启 `model_endpoint.py` 即可清空进程内缓存**，然后重新 `--sessions` 绑定、重测。
+
+升级步骤同 0.4.1（停止 Bridge/端点 → 拉取 → `prepare_extension.py` → 重新加载插件确认 **0.4.2** → 刷新网页 → 重启 Bridge → 重新绑定会话）。DeepSeek 页验证值变为 `2026-09-21_site-error-fastfail`。

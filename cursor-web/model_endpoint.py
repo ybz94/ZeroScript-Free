@@ -278,7 +278,7 @@ def sse_completion(result):
 
 
 def create_app(api_key, session_id, rpc=bridge_rpc, poll_interval=1, heartbeat=10):
-    cache = {}  # exact payload retries share a task, including its failures
+    cache = {}  # fingerprint -> (task, started_monotonic); exact payload retries share a task, including its failures
 
     async def exchange(prompt):
         submitted = await rpc({'type': 'send', 'session_id': session_id, 'prompt': prompt, 'response_format': 'json_code_block'})
@@ -384,16 +384,23 @@ def create_app(api_key, session_id, rpc=bridge_rpc, poll_interval=1, heartbeat=1
         # Transport choices do not change the generation or tool-call IDs.
         semantic = {k: v for k, v in body.items() if k not in ('stream', 'stream_options')}
         fingerprint = hashlib.sha256(dumps(semantic).encode()).hexdigest()
-        task = cache.get(fingerprint)
-        if task is None:
-            if any(not t.done() for t in cache.values()):
-                raise AdapterError('Dedicated webpage is busy with another request', 409)
+        entry = cache.get(fingerprint)
+        if entry is not None:
+            task = entry[0]
+        else:
+            running = [(t, started) for t, started in cache.values() if not t.done()]
+            if running:
+                oldest = min(running, key=lambda e: e[1])[1]
+                wait_s = int(time.monotonic() - oldest)
+                raise AdapterError(
+                    f'Dedicated webpage is busy with another request (running {wait_s}s; a task can wait up to ~4.5 min). '
+                    'Wait for it to finish, or restart model_endpoint.py to clear it before retrying.', 409)
             if len(cache) >= MAX_CACHE:
                 raise AdapterError('Request cache full; finish the session before restarting the endpoint', 503)
             task = asyncio.create_task(complete(body, catalog, prompt, rid))
             # Retain outcome even if HTTP caller disconnects; never blindly resend.
             task.add_done_callback(lambda t: t.exception() if not t.cancelled() else None)
-            cache[fingerprint] = task
+            cache[fingerprint] = (task, time.monotonic())
         if body.get('stream', False):
             async def stream():
                 yield ': waiting for webpage; no generated tokens yet\n\n'
@@ -422,9 +429,9 @@ def create_app(api_key, session_id, rpc=bridge_rpc, poll_interval=1, heartbeat=1
     @asynccontextmanager
     async def lifespan(app):
         yield
-        for task in cache.values():
+        for task, _ in cache.values():
             task.cancel()
-        await asyncio.gather(*cache.values(), return_exceptions=True)
+        await asyncio.gather(*(t for t, _ in cache.values()), return_exceptions=True)
 
     return Starlette(routes=[Route('/v1/models', models), Route('/v1/chat/completions', chat, methods=['POST'])],
                      exception_handlers={AdapterError: handle_error, HTTPException: unsupported}, lifespan=lifespan)

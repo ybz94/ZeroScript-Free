@@ -15,6 +15,7 @@ function content(options = {}) {
     isBusyNow:()=>!!options.busy, isGenerating:()=>!!options.generating,
     editorText:()=>options.draft || '', lastAssistant:()=>item, lastAssistantId:()=>item===old?'old':'new',
     assistantCount:()=>count, readAssistant:()=>({reply:text,item}),
+    errorText:()=>options.siteError || null,
     findContinueBtn:()=>!!options.truncated, turnHalted:()=>!!options.halted,
     async typeAndSend(){sent++; if(options.sendError) throw Error('send failed');
       if(options.navigate) key='/c/2';
@@ -136,7 +137,22 @@ test('model protocol returns code block extraction rather than rendered reply',a
   const r=await c.result();assert.equal(r.error,undefined);assert.equal(r.text,raw);
   assert.equal(r.diagnostics.extraction,'code_text');
   assert.equal(r.diagnostics.extraction_detail,'roots=1 scope=answer_roots turn_blocks=1');
-  assert.equal(r.diagnostics.version,'0.4.1');
+  assert.equal(r.diagnostics.version,'0.4.2');
+});
+test('site error with no reply fails the task in seconds, not 240s',async()=>{
+  const c=content({noReply:true,siteError:'model channel not available'});
+  c.dispatch();
+  const r=await c.result();
+  assert.match(r.error, /Webpage showed an error and produced no reply: model channel not available$/);
+  assert.equal(r.diagnostics.phase,'waiting_new_reply');
+  assert.equal(c.sent,1);
+});
+test('site error is ignored once a real reply has started',async()=>{
+  const c=content({siteError:'model channel not available',answer:'new answer'});
+  c.dispatch();
+  const r=await c.result();
+  assert.equal(r.error,undefined);
+  assert.equal(r.text,'new answer');
 });
 test('model protocol never returns missing code block as successful prose',async()=>{
   const c=content({answer:'plain reply'});c.dispatch({response_format:'json_code_block'});

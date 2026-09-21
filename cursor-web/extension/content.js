@@ -7,7 +7,7 @@
   const inputMaxLines = P.id === 'chatgpt' ? 600 : null;
   P.init({diag: () => {}});
   let id = crypto.randomUUID(), key = P.conversationKey(), busy = false;
-  const VERSION = '0.4.1';
+  const VERSION = '0.4.2';
   const seen = new Set();
   // DOM events can wake the watcher even when background timers are throttled.
   // Keep a timer fallback for generation-state changes without DOM mutations.
@@ -49,6 +49,7 @@
       diagnostics.phase = 'waiting_new_reply';
       const deadline = Date.now() + 240000;
       let last = '', changed = Date.now(), idleSince = null, fresh = false, complete = false;
+      let errorSince = null;
       while (Date.now() < deadline) {
         await waitForChange();
         diagnostics.sawHidden ||= document.hidden;
@@ -64,7 +65,23 @@
         const result = P.readAssistant();
         fresh ||= P.assistantCount() > count || (beforeId != null && P.lastAssistantId?.() !== beforeId) ||
           (result.item !== before && result.reply !== beforeText);
-        if (!fresh) continue;
+        if (!fresh) {
+          // A visible site error (toast/alert) with no reply means the page
+          // rejected the request; fail in seconds instead of blocking the
+          // dedicated page for the full 240s wait. A reply that starts after
+          // the error cancels it (the error was about something else).
+          const errText = P.errorText ? P.errorText() : null;
+          if (errText) {
+            if (errorSince === null) errorSince = Date.now();
+            else if (Date.now() - errorSince > 3000) {
+              throw new Error('Webpage showed an error and produced no reply: ' + errText.slice(0, 300));
+            }
+          } else {
+            errorSince = null;
+          }
+          continue;
+        }
+        errorSince = null;
         diagnostics.phase = 'reading_reply';
         const extracted = msg.response_format === 'json_code_block'
           ? ZSWebProtocol.read(result) : {text:result.reply || '', source:'rendered_reply'};

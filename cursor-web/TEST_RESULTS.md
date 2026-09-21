@@ -107,6 +107,14 @@ git diff --check
 - 真实 HTTP/Bridge 测试验证 json_code_block 指令到浏览器连接的传播。
 - 这些是 Markdown/DOM 与模拟浏览器回归测试，不是三家网站的在线实机验证。用户反复同列报错与此机制相符，但未获得其原始响应，不能宣称根因已完全确认。
 
+## 0.4.2 网站报错快速失败与 409 可操作化（2026-09-21）
+
+- Python 45 项、JavaScript 39 项，总计 84 项通过（`unittest discover` + `npm test`）。
+- 实机依据：Arena Agent mode 下网站报 `model channel not available` 后，任务在端点内最长挂起约 4 分钟（扩展等待 240s / 端点 270s），期间所有不同内容的新请求 409；用户日志中 17:21:50→17:22:07 连续多次调用即此现象。
+- 新增 provider 接口 `errorText()`（arena/deepseek/chatgpt）：返回可见站点错误提示文本（排除聊天内容区域），扩展等待循环中若无新回答且该文本持续约 3 秒则立即失败并带回网站原文；回答开始后错误提示被忽略（模拟测试覆盖两种路径）。
+- 端点 409 现包含运行秒数与"重启 model_endpoint.py 清除"提示（Python 测试断言消息内容）；任务缓存改存 (task, 开始时间)。
+- 仍是模拟浏览器/HTTP 回归，非三家网站在线实机验证；网站错误提示的 DOM 形态变化可能仍需适配。
+
 ## 0.4.1 整轮回退与诊断（2026-09-21）
 
 - Python 45 项、JavaScript 37 项，总计 82 项通过（`unittest discover` + `npm test`）。

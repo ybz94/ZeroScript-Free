@@ -743,6 +743,21 @@ const ZSProvider = (() => {
     if (!getEditor()) return "The input box disappeared (session ended?).";
     return null;
   }
+  // Any visible site-side error text (toast/alert chrome, never chat content).
+  // The standalone Cursor Web Assistant uses this to fail a task in seconds
+  // when the page rejects a request instead of waiting for a reply that
+  // will never arrive. Returns null when nothing is visible.
+  function errorText() {
+    try {
+      for (const el of document.querySelectorAll(S.errorSurfaces)) {
+        if (el.offsetParent === null) continue;
+        if (el.closest(S.chatItem)) continue; // inside a chat turn ⇒ model content
+        const t = (el.innerText || "").trim();
+        if (t.length >= 8 && t.length < 600) return t;
+      }
+    } catch {}
+    return null;
+  }
 
   // Short SYSTEM-message shapes the site renders as an assistant reply.
   const isTooLongMsg = (text) => RE.tooLong.test(text);
@@ -975,7 +990,7 @@ const ZSProvider = (() => {
       // Version beacon: stamp the loaded build onto <html> so a reload can be
       // confirmed from the page (read document.documentElement.dataset.zsDsVer).
       // BUMP DS_VER on meaningful deepseek.js changes worth verifying live.
-      try { document.documentElement.setAttribute("data-zs-ds-ver", "2026-09-21_protocol-fallback"); } catch {}
+      try { document.documentElement.setAttribute("data-zs-ds-ver", "2026-09-21_site-error-fastfail"); } catch {}
     },
     // turns
     allItems, isUserItem, isAssistantItem, itemText, classifyText,
@@ -987,7 +1002,7 @@ const ZSProvider = (() => {
     isGenerating, isBusyNow, isHardGenerating, genDebug,
     enforceComposer, ensureComposerReady,
     turnHalted, findContinueBtn, clickContinueBtn,
-    scanError, isTooLongMsg, isBusyMsg,
+    scanError, errorText, isTooLongMsg, isBusyMsg,
     // actions
     attachImages, clearAttachments, conversationKey,
     installSendHooks, findToolBlockSpot,

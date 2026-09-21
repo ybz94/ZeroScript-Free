@@ -704,6 +704,21 @@ const ZSProvider = (() => {
     if (!getEditor()) return "The input box disappeared (session ended?).";
     return null;
   }
+  // Any visible site-side error text (alert/error chrome, never chat content).
+  // The standalone Cursor Web Assistant uses this to fail a task in seconds
+  // when the page rejects a request instead of waiting for a reply that
+  // will never arrive. Returns null when nothing is visible.
+  function errorText() {
+    try {
+      for (const el of document.querySelectorAll(S.errorSurfaces)) {
+        if (el.offsetParent === null) continue;
+        if (el.closest(S.msg)) continue; // model content, not UI chrome
+        const t = (el.innerText || "").trim();
+        if (t.length >= 8 && t.length < 600) return t;
+      }
+    } catch {}
+    return null;
+  }
   const isTooLongMsg = (text) => RE.tooLong.test(text);
   const isBusyMsg = (text) => RE.busy.test(text);
 
@@ -961,7 +976,7 @@ const ZSProvider = (() => {
     isGenerating, isBusyNow, isHardGenerating,
     enforceComposer, ensureComposerReady,
     turnHalted, findContinueBtn, clickContinueBtn,
-    scanError, isTooLongMsg, isBusyMsg,
+    scanError, errorText, isTooLongMsg, isBusyMsg,
     // actions
     attachImages, clearAttachments, openNewChat, conversationKey,
     installSendHooks, findToolBlockSpot,

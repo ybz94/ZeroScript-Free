@@ -177,6 +177,10 @@ class EndpointTests(unittest.IsolatedAsyncioTestCase):
                     await asyncio.sleep(.001)
             other = await self.post(messages=[{'role': 'user', 'content': 'different request'}])
             self.assertEqual(other.status_code, 409)
+            msg = other.json()['error']['message']
+            self.assertIn('busy with another request', msg)
+            self.assertRegex(msg, r'running \d+s')
+            self.assertIn('restart model_endpoint.py', msg)
             retry = asyncio.create_task(self.post())
             await asyncio.sleep(.01)
             self.assertEqual(len(self.web.sent), 1)
