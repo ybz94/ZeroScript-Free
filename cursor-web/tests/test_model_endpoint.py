@@ -28,6 +28,9 @@ class FakeWeb:
         self.waiting = False
         self.mode = 'text'
         self.provider = 'unknown'
+        self.escape_mode = None
+        self.repair_padding = ''
+        self.bad_repair_schema = False
 
     async def __call__(self, payload):
         if payload['type'] == 'list':
@@ -37,7 +40,14 @@ class FakeWeb:
             envelope = json.loads(payload['prompt'].split('CURRENT_REQUEST:\n')[1])
             calls = [{'name': 'read_file', 'arguments': {'path': 'src/main.js'}}] if self.mode == 'tool' else []
             answer = {'request_id': envelope['request_id'], 'content': None if calls else '网页回答', 'tool_calls': calls}
+            if self.escape_mode:
+                answer['content'] = self.repair_padding or None
+                answer['tool_calls'] = [{'name': 'read_file', 'arguments': {'path': r'C:\project\file.js'}}]
+                if len(self.sent) > 1 and self.bad_repair_schema:
+                    answer['tool_calls'][0]['arguments'] = {}
             self.result = json.dumps(answer, ensure_ascii=False)
+            if self.escape_mode and (len(self.sent) == 1 or self.escape_mode == 'always'):
+                self.result = self.result.replace(r'\\project', r'\project')
             return {'job_id': 'job-1'}
         if self.failure:
             return {'status': 'error', 'error': self.failure}
@@ -191,6 +201,43 @@ class EndpointTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn('Breakdown', r.json()['error']['message'])
         self.assertNotIn('SECRET-MARKER', r.text)
         self.assertFalse(self.web.sent)
+
+    async def test_invalid_escape_one_shot_repair_and_retry_cache(self):
+        self.web.escape_mode = 'once'
+        r = await self.post(tools=[TOOL])
+        self.assertEqual(r.status_code, 200, r.text)
+        call = r.json()['choices'][0]['message']['tool_calls'][0]
+        self.assertEqual(json.loads(call['function']['arguments'])['path'], r'C:\project\file.js')
+        self.assertEqual(len(self.web.sent), 2)
+        self.assertIn('FORMAT REPAIR ONLY', self.web.sent[1]['prompt'])
+        self.assertIn('previous_output', self.web.sent[1]['prompt'])
+        again = await self.post(tools=[TOOL])
+        self.assertEqual(again.json(), r.json())
+        self.assertEqual(len(self.web.sent), 2)
+
+    async def test_invalid_escape_repair_stops_after_one_attempt(self):
+        self.web.escape_mode = 'always'
+        r = await self.post(tools=[TOOL], stream=True)
+        self.assertIn('Single format-repair attempt failed', r.text)
+        self.assertIn('web_output_json', r.text)
+        self.assertNotIn('"finish_reason":"tool_calls"', r.text)
+        self.assertEqual(len(self.web.sent), 2)
+
+    async def test_format_repair_still_requires_valid_tool_arguments(self):
+        self.web.escape_mode = 'once'
+        self.web.bad_repair_schema = True
+        r = await self.post(tools=[TOOL])
+        self.assertEqual(r.status_code, 502)
+        self.assertEqual(r.json()['error']['code'], 'web_arguments_schema')
+        self.assertEqual(len(self.web.sent), 2)
+
+    async def test_oversized_repair_is_not_sent(self):
+        self.web.escape_mode = 'once'
+        self.web.repair_padding = 'x' * 60000
+        r = await self.post(tools=[TOOL])
+        self.assertEqual(r.status_code, 413)
+        self.assertEqual(r.json()['error']['code'], 'web_repair_budget')
+        self.assertEqual(len(self.web.sent), 1)
 
     async def test_invalid_json_and_duplicate_keys(self):
         for text in ('{', '{"model":"web-ai","model":"another"}', '{"x":NaN}'):
