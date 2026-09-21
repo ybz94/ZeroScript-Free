@@ -15,7 +15,7 @@ async def request(payload):
         return {'error': 'Start cursor-web/bridge.py and pair the browser extension first'}
     try:
         port = int(os.getenv('CURSOR_WEB_PORT', '17614'))
-        async with connect(f'ws://127.0.0.1:{port}', open_timeout=5, close_timeout=2) as ws:
+        async with connect(f'ws://127.0.0.1:{port}', open_timeout=5, close_timeout=2, max_size=2_000_000) as ws:
             await ws.send(json.dumps({'role': 'cursor', 'token': path.read_text().strip()}))
             import asyncio
             await asyncio.wait_for(ws.recv(), 5)

@@ -111,3 +111,7 @@ MCP 还支持通过 `CURSOR_WEB_TOKEN_FILE` 指向本地令牌文件，默认仍
 使用原 job_id 查询每个任务。记录 status、error 和 diagnostics。后两项成功且 `diagnostics.sawHidden` 为 true，才说明该网站本机环境的后台链路实际通过。失败时恢复窗口、检查网页有没有收到原问题；不要立即重复发送。
 
 结果诊断包括 `version`、`startedHidden`、`sawHidden`、`endedHidden`、`phase`。这些描述扩展观察到的状态，不是网站确认回执。浏览器彻底冻结页面或断线时可能无法获得诊断，需结合 Bridge 错误查看。
+
+## 输入长度保护（0.3.0）
+
+原统一 60,000 字符预算已改为按网站选择：DeepSeek 160,000、ChatGPT 120,000、Arena 118,000 UTF-16 单位；ChatGPT 另外限制 600 行。未知网站回退 60,000。新版插件、Bridge 和模型端点会拒绝超限输入，不进入旧网站适配器的自动截断路径。升级后重新加载插件并重启服务；旧版测试步骤中的版本号改为 0.3.0。

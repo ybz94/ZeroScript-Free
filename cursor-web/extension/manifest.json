@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Cursor Web Assistant",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Send Cursor MCP tasks to a paired webpage and return suggestions without editing local files.",
   "permissions": ["storage", "alarms"],
   "host_permissions": ["http://127.0.0.1/*", "ws://127.0.0.1/*"],

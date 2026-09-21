@@ -8,6 +8,7 @@ import uuid
 from pathlib import Path
 
 from websockets.asyncio.server import serve
+from input_limits import size_error
 
 TOKEN_FILE = Path(__file__).with_name('.bridge-token')
 PORT = int(os.getenv('CURSOR_WEB_PORT', '17614'))
@@ -61,15 +62,19 @@ async def handle(ws):
                 result = {'sessions': [s for sessions in clients.values() for s in sessions]}
             elif kind == 'send':
                 sid, prompt = msg.get('session_id'), msg.get('prompt')
-                if not isinstance(prompt, str) or not prompt.strip() or len(prompt) > 60000:
-                    result = {'error': 'Prompt must contain 1–60000 characters'}
+                if not isinstance(prompt, str) or not prompt.strip() :
+                    result = {'error': 'Prompt must be a nonempty string'}
                 elif any(j['session_id'] == sid and j['status'] == 'running' for j in jobs.values()):
                     result = {'error': 'Session busy; query the existing task instead of resending'}
                 else:
                     owner = next((w for w, sessions in clients.items()
                                   if any(s.get('id') == sid for s in sessions)), None)
+                    session = next((s for s in clients.get(owner, []) if s.get('id') == sid), {})
+                    oversize = size_error(prompt, session)
                     if owner is None:
                         result = {'error': 'Session unavailable; list sessions again'}
+                    elif oversize:
+                        result = {'error': oversize}
                     elif len(jobs) >= 500:
                         result = {'error': 'Task capacity reached; restart bridge after collecting results'}
                     else:
@@ -103,7 +108,7 @@ async def main():
     print(f'Pairing token file: {TOKEN_FILE} (keep private)')
     # Browser extensions have their own origin; ordinary websites are rejected.
     import re
-    async with serve(handle, '127.0.0.1', PORT, max_size=1_000_000,
+    async with serve(handle, '127.0.0.1', PORT, max_size=2_000_000,
                      origins=[None, re.compile(r'chrome-extension://[a-p]{32}')]):
         await asyncio.Future()
 

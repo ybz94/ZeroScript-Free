@@ -1,6 +1,10 @@
 /* Isolated from the old agent loop: webpage output is never executed. */
 (() => {
   const P = ZSProvider;
+  // Mirror input_limits.py. Never enter a provider's legacy truncation path.
+  const inputCaps = {deepseek:160000, chatgpt:120000, arena:118000};
+  const inputMaxChars = inputCaps[P.id] || 60000;
+  const inputMaxLines = P.id === 'chatgpt' ? 600 : null;
   P.init({diag: () => {}});
   let id = crypto.randomUUID(), key = P.conversationKey(), busy = false;
   const seen = new Set();
@@ -23,13 +27,13 @@
     // our own submission keeps the same binding for subsequent turns.
     if (current !== key) {if (!busy) id = crypto.randomUUID(); key = current;}
     notify({type:'session', id, key, provider:P.id, title:document.title,
-            url:location.href, visible:!document.hidden, busy, transportVersion:'0.2.0'});
+            url:location.href, visible:!document.hidden, busy, transportVersion:'0.3.0', inputMaxChars, inputMaxLines});
   }
   async function run(msg) {
     busy = true;
     const sessionId = id;
     let text = '', failure;
-    const diagnostics = {version:'0.2.0', startedHidden:document.hidden, sawHidden:document.hidden, phase:'preflight'};
+    const diagnostics = {version:'0.3.0', startedHidden:document.hidden, sawHidden:document.hidden, phase:'preflight'};
     try {
       if (P.isBusyNow() || P.isGenerating()) throw new Error('Webpage is already generating');
       if (P.editorText().trim()) throw new Error('Composer contains a draft; send or clear it manually first');
@@ -89,6 +93,10 @@
     if (msg.type !== 'dispatch') return;
     if (msg.session_id !== id || msg.expectedKey !== P.conversationKey()) {
       reply({error:'Conversation changed; list and bind the session again'}); return;
+    }
+    if (typeof msg.prompt !== 'string' || msg.prompt.length > inputMaxChars ||
+        (inputMaxLines !== null && msg.prompt.split('\n').length > inputMaxLines)) {
+      reply({error:`Input exceeds ${P.id} adapter safety budget (${inputMaxChars} UTF-16 units, ${inputMaxLines ?? 'unlimited'} lines); nothing sent or truncated`}); return;
     }
     if (busy || seen.has(msg.job_id)) {reply({error:'Busy or duplicate task'}); return;}
     seen.add(msg.job_id);

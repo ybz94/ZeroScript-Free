@@ -11,7 +11,7 @@ function content(options = {}) {
   let listener, now = 0, sent = 0, old = {}, item = old, text = 'old answer', count = 1, key = '/c/1';
   const document = {hidden:!!options.hidden, title:'Chat', addEventListener(){}};
   const provider = {
-    id:'mock', init(){}, conversationKey:()=>key, isFreshChat:()=>false,
+    id:options.provider || 'mock', init(){}, conversationKey:()=>key, isFreshChat:()=>false,
     isBusyNow:()=>!!options.busy, isGenerating:()=>!!options.generating,
     editorText:()=>options.draft || '', lastAssistant:()=>item, lastAssistantId:()=>item===old?'old':'new',
     assistantCount:()=>count, readAssistant:()=>({reply:text,item}),
@@ -110,4 +110,21 @@ test('background no reply returns actionable timeout without resend',async()=>{
   const c=content({hidden:true,noReply:true});c.dispatch();const r=await c.result();
   assert.match(r.error,/Activate the webpage/);assert.equal(c.sent,1);
   assert.equal(r.diagnostics.phase,'waiting_new_reply');
+});
+
+for (const [provider, limit] of [['deepseek',160000],['chatgpt',120000],['arena',118000]]) {
+  test(`${provider} accepts budget boundary and blocks legacy truncation`, async()=>{
+    const c=content({provider});
+    assert.match(c.dispatch({prompt:'x'.repeat(limit+1)}).error,/safety budget/);
+    assert.equal(c.sent,0);
+    assert.equal(c.dispatch({prompt:'x'.repeat(limit)}).accepted,true);
+    assert.equal((await c.result()).error,undefined);
+    assert.equal(c.sent,1);
+  });
+}
+test('ChatGPT line guard and UTF-16 guard prevent silent truncation',()=>{
+  const c=content({provider:'chatgpt'});
+  assert.match(c.dispatch({prompt:'\n'.repeat(600)}).error,/safety budget/);
+  assert.match(c.dispatch({prompt:'😀'.repeat(60001)}).error,/safety budget/);
+  assert.equal(c.sent,0);
 });

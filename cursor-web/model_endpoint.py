@@ -20,10 +20,10 @@ from starlette.exceptions import HTTPException
 from starlette.responses import JSONResponse, StreamingResponse
 from starlette.routing import Route
 from websockets.asyncio.client import connect
+from input_limits import size_error, utf16_units
 
 MODEL = 'web-ai'
 MAX_BODY = 1_000_000
-MAX_PROMPT = 60000
 MAX_CACHE = 128
 
 
@@ -140,7 +140,7 @@ def validate_request(body):
     return catalog
 
 
-def make_prompt(body, request_id):
+def make_prompt(body, request_id, session=None):
     # All state is explicit: never heuristically truncate code or tool results.
     envelope = {'request_id': request_id, 'messages': body['messages'],
                 'tools': body.get('tools', []), 'tool_choice': body.get('tool_choice', 'auto')}
@@ -155,8 +155,15 @@ Use null or a string for content. Use at most one tool call. Do not send shell c
 CURRENT_REQUEST:
 '''
     prompt += dumps(envelope)
-    if len(prompt) > MAX_PROMPT:
-        raise AdapterError('Full context exceeds the 60000-character webpage limit; shorten the conversation/context. Nothing was sent or silently truncated.', 413)
+    error = size_error(prompt, session or {})
+    if error:
+        # Sizes only: never log or include code/system-prompt contents in errors.
+        sizes = {}
+        for message in body['messages']:
+            role = message['role']
+            sizes[role] = sizes.get(role, 0) + utf16_units(dumps(message))
+        sizes['tools'] = utf16_units(dumps(body.get('tools', [])))
+        raise AdapterError(error + ' Breakdown (UTF-16 JSON units): ' + dumps(sizes), 413)
     return prompt
 
 
@@ -273,7 +280,13 @@ def create_app(api_key, session_id, rpc=bridge_rpc, poll_interval=1, heartbeat=1
             raise AdapterError('Invalid JSON body', 400)
         catalog = validate_request(body)
         rid = uuid.uuid4().hex
-        prompt = make_prompt(body, rid)
+        listing = await rpc({'type': 'list'})
+        if listing.get('error'):
+            raise AdapterError(listing['error'])
+        bound = next((s for s in listing.get('sessions', []) if s.get('id') == session_id), None)
+        if bound is None:
+            raise AdapterError('Bound webpage session unavailable. Re-list sessions and restart endpoint with an explicit session ID.', 409)
+        prompt = make_prompt(body, rid, bound)
         # Transport choices do not change the generation or tool-call IDs.
         semantic = {k: v for k, v in body.items() if k not in ('stream', 'stream_options')}
         fingerprint = hashlib.sha256(dumps(semantic).encode()).hexdigest()

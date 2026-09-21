@@ -16,6 +16,7 @@ from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
 
 ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
 spec = importlib.util.spec_from_file_location('web_bridge', ROOT / 'bridge.py')
 bridge = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(bridge)
@@ -229,3 +230,17 @@ class BridgeTests(unittest.IsolatedAsyncioTestCase):
             await serving
             sock.close()
             env.stop()
+
+
+    async def test_bridge_provider_budget_above_old_limit_and_utf16_guard(self):
+        browser = await self.browser()
+        next(iter(bridge.clients.values()))[0]['provider'] = 'deepseek'
+        cursor = await self.client()
+        bad = await self.request(cursor, type='send', session_id='session-1', prompt='😀' * 80001)
+        self.assertIn('limit=160000', bad['error'])
+        self.assertEqual(len(bridge.jobs), 0)
+        prompt = 'x' * 90000
+        job = await self.request(cursor, type='send', session_id='session-1', prompt=prompt)
+        self.assertEqual(job['status'], 'running')
+        dispatched = json.loads(await browser.recv())
+        self.assertEqual(dispatched['prompt'], prompt)
