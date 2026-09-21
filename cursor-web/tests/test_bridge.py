@@ -101,7 +101,7 @@ class BridgeTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_roundtrip_and_duplicate_result(self):
         browser, cursor, job = await self.submit()
-        result = dict(type='result', job_id=job['job_id'], text='建议：新增函数。')
+        result = dict(type='result', job_id=job['job_id'], text='建议：新增函数。', diagnostics={'sawHidden': True, 'version': '0.2.0'})
         await browser.send(json.dumps(result))
         async with asyncio.timeout(3):
             while bridge.jobs[job['job_id']]['status'] == 'running':
@@ -111,6 +111,7 @@ class BridgeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(answer['status'], 'completed')
         self.assertEqual(answer['result'], '建议：新增函数。')
         self.assertNotIn('owner', answer)
+        self.assertTrue(answer['diagnostics']['sawHidden'])
 
     async def test_busy_session(self):
         _, cursor, _ = await self.submit()

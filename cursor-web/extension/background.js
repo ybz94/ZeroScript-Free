@@ -4,7 +4,7 @@ const routes = new Map();
 const send = data => { if (authenticated && ws?.readyState === WebSocket.OPEN) ws.send(JSON.stringify(data)); };
 function publish() {
   const now = Date.now();
-  for (const [id, s] of sessions) if (now - s.seen > 45000) sessions.delete(id);
+  for (const [id, s] of sessions) if (now - s.seen > 180000) sessions.delete(id);
   send({type:'sessions', sessions:[...sessions.values()].map(({tabId, seen, ...s}) => s)});
 }
 async function connect() {

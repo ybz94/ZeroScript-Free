@@ -58,3 +58,12 @@ node --test cursor-web/tests/extension.test.cjs
 find cursor-web/extension -name '*.js' -print0 | xargs -0 -n1 node --check
 git diff --check
 ```
+
+## 0.2.0 后台传输修改复测（2026-09-21）
+
+- Python 集成测试：14/14 通过。
+- 扩展 VM 模拟测试：17/17 通过，共 31 项。
+- 删除旧的“隐藏页面必须拒绝”测试；新增“发送前隐藏仍成功”“发送后隐藏仍成功”“后台无回答超时且不重发”3 项。
+- 取消主动隐藏状态拒绝；用 MutationObserver + 定时兜底等待网页变化；增加连续空闲完成判断、可见性诊断与插件版本标记。
+- 会话心跳过期窗口由 45 秒延长至 180 秒，减少后台定时器节流造成的误清理；这不能防止浏览器真正丢弃页面。
+- 本次测试仍是网页适配器/浏览器 API 模拟，不是实际网站后台成功证明。尚未验证 Windows Chrome/Edge 的最小化、冻结或真实登录状态。请按照 README 的三组对照测试验证。

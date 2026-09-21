@@ -54,7 +54,8 @@ async def handle(ws):
                     job = jobs.get(msg.get('job_id'))
                     if job and job['owner'] == ws and job['status'] == 'running':
                         job.update(status='error' if msg.get('error') else 'completed',
-                                   result=msg.get('text', ''), error=msg.get('error'))
+                                   result=msg.get('text', ''), error=msg.get('error'),
+                                   diagnostics=msg.get('diagnostics', {}))
                 continue
             if kind == 'list':
                 result = {'sessions': [s for sessions in clients.values() for s in sessions]}

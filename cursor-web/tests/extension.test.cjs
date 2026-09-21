@@ -18,12 +18,14 @@ function content(options = {}) {
     findContinueBtn:()=>!!options.truncated, turnHalted:()=>!!options.halted,
     async typeAndSend(){sent++; if(options.sendError) throw Error('send failed');
       if(options.navigate) key='/c/2';
+      if(options.hideAfterSend) document.hidden=true;
       if(!options.noReply){item={};text=options.answer || 'new answer';count++;}
     }
   };
   vm.runInNewContext(fs.readFileSync(path.join(root,'content.js'),'utf8'), {
     ZSProvider:provider, crypto:{randomUUID}, document, location:{href:'https://site/c/1'},
     chrome:{runtime:{sendMessage:async msg=>{messages.push(msg);},onMessage:{addListener:fn=>listener=fn}}},
+    MutationObserver:class {observe(){} disconnect(){}}, clearTimeout(){},
     Date:{now:()=>now}, setInterval:fn=>intervals.push(fn),
     setTimeout:(fn, ms)=>{now+=ms;setImmediate(fn);}
   });
@@ -36,7 +38,7 @@ test('content returns completed new response, not previous answer',async()=>{
   const c=content();assert.equal(c.dispatch().accepted,true);assert.equal((await c.result()).text,'new answer');assert.equal(c.sent,1);
 });
 for(const [name,options,pattern] of [
-  ['hidden page',{hidden:true},/active/],['busy page',{busy:true},/already generating/],
+  ['busy page',{busy:true},/already generating/],
   ['draft',{draft:'unsent work'},/draft/],['send failure',{sendError:true},/send failed/],
   ['truncated answer',{truncated:true},/truncated/],['stopped answer',{halted:true},/stopped/],
   ['no new reply',{noReply:true},/Timed out/],
@@ -94,4 +96,18 @@ test('background closing a tab fails pending task',async()=>{
 test('background removes old session on page refresh',async()=>{
   const b=await background();b.message({type:'session',id:'old',key:'/c/1'});b.message({type:'session',id:'new',key:'/c/1'});
   assert.equal(b.socket.out.at(-1).sessions.length,1);assert.equal(b.socket.out.at(-1).sessions[0].id,'new');
+});
+
+for (const options of [{hidden:true}, {hideAfterSend:true}]) {
+  test(`background reply completes without activation: ${JSON.stringify(options)}`, async()=>{
+    const c=content(options);c.dispatch();const r=await c.result();
+    assert.equal(r.error,undefined);assert.equal(r.text,'new answer');
+    assert.equal(r.diagnostics.sawHidden,true);assert.equal(r.diagnostics.phase,'completed');
+    assert.equal(c.sent,1);
+  });
+}
+test('background no reply returns actionable timeout without resend',async()=>{
+  const c=content({hidden:true,noReply:true});c.dispatch();const r=await c.result();
+  assert.match(r.error,/Activate the webpage/);assert.equal(c.sent,1);
+  assert.equal(r.diagnostics.phase,'waiting_new_reply');
 });
