@@ -107,6 +107,14 @@ git diff --check
 - 真实 HTTP/Bridge 测试验证 json_code_block 指令到浏览器连接的传播。
 - 这些是 Markdown/DOM 与模拟浏览器回归测试，不是三家网站的在线实机验证。用户反复同列报错与此机制相符，但未获得其原始响应，不能宣称根因已完全确认。
 
+## 0.4.3 残留输入草稿不再卡死专用页（2026-09-21）
+
+- Python 46 项、JavaScript 39 项，总计 85 项通过（`unittest discover` + `npm test`）。
+- 实机依据：任务在预检报 `Composer contains a draft; send or clear it manually first` 后失败，且专用页输入框残留会让后续每个任务都失败，直到手动清空。
+- 原设计在"看到草稿就抛错"，对"上次发送失败残留"这种场景会永久卡住专用页。改为：专用页遇到残留草稿时记录 `composerDraftCleared`（前 200 字）与 `composerDraftLen` 到 diagnostics 并继续，因为 `typeAndSend` 用 `setTextareaValue` 覆盖输入框。
+- 移除原"reject draft"用例，新增"leftover composer draft is recorded and replaced, not a hard failure"（断言草稿被记录、任务成功、仅发送一次）。
+- 仍是模拟浏览器回归，非在线实机验证；专用页执行期间仍不应手动输入/发送。
+
 ## 0.4.2 网站报错快速失败与 409 可操作化（2026-09-21）
 
 - Python 45 项、JavaScript 39 项，总计 84 项通过（`unittest discover` + `npm test`）。

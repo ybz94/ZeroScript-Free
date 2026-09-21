@@ -7,7 +7,7 @@
   const inputMaxLines = P.id === 'chatgpt' ? 600 : null;
   P.init({diag: () => {}});
   let id = crypto.randomUUID(), key = P.conversationKey(), busy = false;
-  const VERSION = '0.4.2';
+  const VERSION = '0.4.3';
   const seen = new Set();
   // DOM events can wake the watcher even when background timers are throttled.
   // Keep a timer fallback for generation-state changes without DOM mutations.
@@ -37,7 +37,14 @@
     const diagnostics = {version:VERSION, startedHidden:document.hidden, sawHidden:document.hidden, phase:'preflight'};
     try {
       if (P.isBusyNow() || P.isGenerating()) throw new Error('Webpage is already generating');
-      if (P.editorText().trim()) throw new Error('Composer contains a draft; send or clear it manually first');
+      // Dedicated page: a leftover draft (from manual typing or a prior send
+      // that never registered) must not wedge the workflow. typeAndSend below
+      // replaces the composer content, so record the draft and proceed.
+      const draft = P.editorText();
+      if (draft.trim()) {
+        diagnostics.composerDraftCleared = draft.slice(0, 200);
+        diagnostics.composerDraftLen = draft.length;
+      }
       let taskKey = P.conversationKey();
       let mayCreateChat = P.isFreshChat();
       const before = P.lastAssistant();

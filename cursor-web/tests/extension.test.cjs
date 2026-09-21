@@ -40,10 +40,19 @@ test('content returns completed new response, not previous answer',async()=>{
 });
 for(const [name,options,pattern] of [
   ['busy page',{busy:true},/already generating/],
-  ['draft',{draft:'unsent work'},/draft/],['send failure',{sendError:true},/send failed/],
+  ['send failure',{sendError:true},/send failed/],
   ['truncated answer',{truncated:true},/truncated/],['stopped answer',{halted:true},/stopped/],
   ['no new reply',{noReply:true},/Timed out/],
 ]) test(`content rejects ${name}`,async()=>{const c=content(options);c.dispatch();assert.match((await c.result()).error,pattern);});
+test('leftover composer draft is recorded and replaced, not a hard failure',async()=>{
+  const c=content({draft:'unsent manual work'});c.dispatch();
+  const r=await c.result();
+  assert.equal(r.error,undefined);
+  assert.equal(r.text,'new answer');
+  assert.equal(r.diagnostics.composerDraftCleared,'unsent manual work');
+  assert.equal(r.diagnostics.composerDraftLen,'unsent manual work'.length);
+  assert.equal(c.sent,1);
+});
 test('content rejects duplicate submission',async()=>{
   const c=content();c.dispatch();assert.match(c.dispatch().error,/Busy|duplicate/);await c.result();assert.match(c.dispatch().error,/duplicate/);assert.equal(c.sent,1);
 });
@@ -137,7 +146,7 @@ test('model protocol returns code block extraction rather than rendered reply',a
   const r=await c.result();assert.equal(r.error,undefined);assert.equal(r.text,raw);
   assert.equal(r.diagnostics.extraction,'code_text');
   assert.equal(r.diagnostics.extraction_detail,'roots=1 scope=answer_roots turn_blocks=1');
-  assert.equal(r.diagnostics.version,'0.4.2');
+  assert.equal(r.diagnostics.version,'0.4.3');
 });
 test('site error with no reply fails the task in seconds, not 240s',async()=>{
   const c=content({noReply:true,siteError:'model channel not available'});
