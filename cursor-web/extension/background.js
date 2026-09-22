@@ -43,7 +43,12 @@ async function connect() {
   };
 }
 chrome.runtime.onMessage.addListener((msg, sender, reply) => {
-  if (msg.type === 'reconnect' && !sender.tab) {
+  if (msg.type === 'snapshot' && !sender.tab) {
+    // Popup UI: current connection state + all known dedicated-page sessions.
+    reply({connected: authenticated && ws && ws.readyState === WebSocket.OPEN,
+           version: chrome.runtime.getManifest().version,
+           sessions: [...sessions.values()].map(({tabId, seen, ...s}) => s)});
+  } else if (msg.type === 'reconnect' && !sender.tab) {
     authenticated = false;
     if (ws) { ws.onclose = null; ws.close(); }
     ws = null; routes.clear(); connect(); reply({ok:true});

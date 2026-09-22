@@ -1,7 +1,80 @@
-<!doctype html><html lang="zh-CN"><meta charset="utf-8"><title>Cursor Web Assistant</title>
-<style>body{font:14px system-ui;width:310px;padding:16px}input{box-sizing:border-box;width:100%;margin:8px 0;padding:8px}button{padding:8px 16px}p{line-height:1.6}#status{overflow-wrap:anywhere}</style>
-<h3>连接本地 Bridge</h3><p>仅连接本机。输入 cursor-web/.bridge-token 文件中的令牌，请勿分享。</p>
-<label>配对令牌<input id="token" type="password" autocomplete="off"></label>
-<label>端口<input id="port" type="number" value="17614" min="1024" max="65535"></label>
-<button id="save">保存并连接</button><p id="status" role="status"></p>
-<p>支持 DeepSeek、ChatGPT、Arena。请关闭旧扩展，刷新网页，后台收发为实验功能；超时时请激活网页检查原任务，不要重复发送。</p><script src="popup.js"></script></html>
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<style>
+:root{
+  --bg:#f5f6f8; --card:#ffffff; --text:#191c20; --muted:#68707c; --line:#e4e7ec;
+  --accent:#2563eb; --ok:#16a34a; --bad:#dc2626;
+}
+@media (prefers-color-scheme: dark){
+  :root{--bg:#0f1115; --card:#171a21; --text:#e6e8ec; --muted:#9aa1ad; --line:#262b35;
+        --accent:#5b9bff; --ok:#4ade80; --bad:#f87171;}
+}
+*{box-sizing:border-box;margin:0}
+body{font:13px/1.5 system-ui,-apple-system,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif;
+     width:340px;background:var(--bg);color:var(--text);padding:12px}
+header{display:flex;align-items:center;gap:9px;margin-bottom:10px}
+.dot{width:9px;height:9px;border-radius:50%;background:var(--muted);flex:none;transition:background .3s}
+.dot.on{background:var(--ok);box-shadow:0 0 7px var(--ok)}
+h1{font-size:14px;font-weight:650}
+.sub{font-size:11px;color:var(--muted)}
+.card{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:10px 11px;margin-bottom:10px}
+.card h2{font-size:10.5px;font-weight:650;color:var(--muted);text-transform:uppercase;letter-spacing:.05em;margin-bottom:7px}
+.session{padding:7px 0;border-top:1px solid var(--line)}
+.session:first-of-type{border-top:0;padding-top:1px}
+.s-title{display:flex;justify-content:space-between;align-items:center;gap:8px;font-weight:600;font-size:12.5px}
+.badge{font-size:10px;font-weight:650;padding:1px 8px;border-radius:99px;flex:none}
+.badge.ok{color:var(--ok);background:rgba(22,163,74,.12)}
+.badge.bad{color:var(--bad);background:rgba(220,38,38,.12)}
+.s-meta{font-size:11px;color:var(--muted);word-break:break-all;margin-top:2px}
+.empty{font-size:12px;color:var(--muted);padding:2px 0}
+a.site{display:flex;align-items:center;gap:8px;padding:5px 7px;border-radius:8px;color:var(--text);text-decoration:none;font-size:12.5px}
+a.site:hover{background:rgba(37,99,235,.09)}
+.glyph{width:20px;height:20px;border-radius:6px;display:flex;align-items:center;justify-content:center;
+       font-size:10px;font-weight:750;color:#fff;flex:none}
+a.site .pid{margin-left:auto;font-size:10px;color:var(--muted);font-family:ui-monospace,Consolas,monospace}
+.hint{font-size:10.5px;color:var(--muted);margin-top:7px;line-height:1.45}
+details{margin-bottom:10px}
+summary{cursor:pointer;font-size:12px;color:var(--muted);user-select:none;padding:2px 0}
+summary:hover{color:var(--text)}
+label{display:block;font-size:11px;color:var(--muted);margin-top:8px}
+input{width:100%;margin-top:3px;padding:6px 8px;border:1px solid var(--line);border-radius:7px;
+      background:var(--bg);color:var(--text);font-size:12px}
+input:focus{outline:1.5px solid var(--accent);border-color:transparent}
+button{width:100%;margin-top:10px;padding:7px;border:0;border-radius:8px;background:var(--accent);
+       color:#fff;font-size:12.5px;font-weight:650;cursor:pointer}
+button:hover{filter:brightness(1.08)}
+#status{font-size:11.5px;color:var(--muted);margin-top:8px;min-height:15px;line-height:1.4}
+</style>
+</head>
+<body>
+<header>
+  <span class="dot" id="dot"></span>
+  <div><h1>Cursor Web Assistant</h1><div class="sub" id="conn">检查连接…</div></div>
+</header>
+
+<div class="card">
+  <h2>专用页会话</h2>
+  <div id="sessions"><div class="empty">等待专用网页…</div></div>
+</div>
+
+<div class="card">
+  <h2>支持的 AI 网站</h2>
+  <div id="sites"></div>
+  <div class="hint">点击新开标签页。把要接入的站点设为专用标签页并刷新，然后在一键启动器里绑定会话即可。</div>
+</div>
+
+<details>
+  <summary>设置（令牌 / 端口）</summary>
+  <div class="card" style="margin:8px 0 0">
+    <div class="hint" style="margin-top:0">令牌 = <b>cursor-web/.bridge-token</b> 文件内容，仅本机使用，请勿分享。</div>
+    <label>配对令牌<input id="token" type="password" autocomplete="off"></label>
+    <label>端口<input id="port" type="number" value="17614" min="1024" max="65535"></label>
+    <button id="save">保存并连接</button>
+    <p id="status" role="status"></p>
+  </div>
+</details>
+<script src="popup.js"></script>
+</body>
+</html>

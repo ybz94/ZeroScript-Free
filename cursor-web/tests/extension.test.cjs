@@ -10,7 +10,7 @@ function content(options = {}) {
   const messages = [], intervals = [];
   let listener, now = 0, sent = 0, old = {}, item = old, text = 'old answer', count = 1, key = '/c/1';
   let editorContent = options.draft || '', userCountVar = 1, turnAt = Infinity; // fake-time when OUR user turn becomes visible
-  let followupClicked = false;
+  let followupClicked = false, lastPrompt = '';
   const markerText = options.markerText || '';
   const markerBlock = { // fake fenced code block for the 0.4.16 marker fallback
     textContent: markerText,
@@ -21,7 +21,7 @@ function content(options = {}) {
     querySelectorAll: sel => (options.markerBlocks && sel && sel.indexOf('pre') !== -1) ? [markerBlock] : []};
   const provider = {
     id:options.provider || 'mock',
-    version:options.providerVersion === undefined ? '0.4.19' : options.providerVersion, // null => pre-0.4.9 (no version field)
+    version:options.providerVersion === undefined ? '0.4.20' : options.providerVersion, // null => pre-0.4.9 (no version field)
     init(){}, conversationKey:()=>key, isFreshChat:()=>false,
     isBusyNow:()=>!!options.busy, isGenerating:()=>!!options.generating && sent>0, // generating only AFTER our send (post-reply prompt state)
     isHardGenerating:()=>!!options.hardGenerating,
@@ -33,7 +33,7 @@ function content(options = {}) {
     readAssistant:()=>({reply:options.staleReads?'old answer':text,item:options.staleReads?old:item}),
     errorText:()=>options.siteError || null,
     findContinueBtn:()=>!!options.truncated, turnHalted:()=>!!options.halted,
-    async typeAndSend(t){sent++; if(options.sendError) throw Error('send failed');
+    async typeAndSend(t){sent++; lastPrompt=t; if(options.sendError) throw Error('send failed');
       if(options.navigate) key='/c/2';
       if(options.hideAfterSend) document.hidden=true;
       const accepted = !options.sendNotConfirmed && !options.sendDropped;
@@ -50,6 +50,7 @@ function content(options = {}) {
   };
   vm.runInNewContext(fs.readFileSync(path.join(root,'content.js'),'utf8'), {
     ZSProvider:provider, ZSWebProtocol:{read:()=>options.protocol || {text:'',source:'code_block_unavailable',error:'Protocol code block missing'}}, crypto:{randomUUID}, document, location:{href:'https://site/c/1'},
+    navigator:{language:options.language||'en-US', languages:[options.language||'en-US']},
     chrome:{runtime:{sendMessage:async msg=>{messages.push(msg);},onMessage:{addListener:fn=>listener=fn}}},
     MutationObserver:class {observe(){} disconnect(){}}, clearTimeout(){},
     Date:{now:()=>now}, setInterval:fn=>intervals.push(fn),
@@ -58,7 +59,7 @@ function content(options = {}) {
   const first = messages[0];
   const dispatch = (extra={}) => {let ack;listener({type:'dispatch', job_id:'j1',session_id:first.id,expectedKey:'/c/1',prompt:'hi',...extra},{},v=>ack=v);return ack;};
   async function result(){for(let i=0;i<1000;i++){const r=messages.find(m=>m.type==='result');if(r)return r;await new Promise(setImmediate);}throw Error('No result');}
-  return {messages, dispatch, result, get sent(){return sent;}, get followupClicked(){return followupClicked;}, intervals};
+  return {messages, dispatch, result, get sent(){return sent;}, get followupClicked(){return followupClicked;}, get lastPrompt(){return lastPrompt;}, intervals};
 }
 test('content returns completed new response, not previous answer',async()=>{
   const c=content();assert.equal(c.dispatch().accepted,true);assert.equal((await c.result()).text,'new answer');assert.equal(c.sent,1);
@@ -130,8 +131,8 @@ test('unversioned provider (pre-0.4.9 build) is also refused, not mixed',()=>{
 test('session announcement reports provider version and sync state',()=>{
   const c=content();
   const s=c.messages.find(m=>m.type==='session');
-  assert.equal(s.transportVersion,'0.4.19');
-  assert.equal(s.providerVersion,'0.4.19');
+  assert.equal(s.transportVersion,'0.4.20');
+  assert.equal(s.providerVersion,'0.4.20');
   assert.equal(s.inSync,true);
 });
 test('stable parseable JSON reply finalizes even while page reports generating (Arena follow-up prompt)',async()=>{
@@ -233,6 +234,30 @@ test('no follow-up prompt: task completes and reports followupCleared=false',asy
   assert.equal(r.error,undefined);
   assert.equal(c.followupClicked,false);
   assert.equal(r.diagnostics.followupCleared,false);
+});
+test('Chinese browser: prompt carries the 简体中文 reply directive (0.4.20 language follow)',async()=>{
+  const c=content({language:'zh-CN'});
+  c.dispatch();
+  await c.result();
+  assert.match(c.lastPrompt, /简体中文/);
+  assert.match(c.lastPrompt, /NEVER translate request_id/);
+});
+test('non-Chinese browser: prompt carries the mirror-the-user language rule',async()=>{
+  const c=content({language:'en-US'});
+  c.dispatch();
+  await c.result();
+  assert.match(c.lastPrompt, /SAME language the user writes in/);
+  assert.doesNotMatch(c.lastPrompt, /简体中文/);
+});
+test('language rule never pushes a payload over its input budget',async()=>{
+  // Mock provider budget = 60000 UTF-16 units. A prompt at the cap must go
+  // out unchanged (the rule is skipped), never oversized.
+  const atCap='x'.repeat(59995);
+  const c=content({language:'zh-CN'});
+  c.dispatch({prompt:atCap});
+  await c.result();
+  assert.equal(c.lastPrompt.length, 59995);
+  assert.doesNotMatch(c.lastPrompt, /简体中文/);
 });
 test('scoped extraction failure is rescued by the request-id marker (0.4.18 multi-provider)',async()=>{
   // The reply turn IS visible (fresh) but the scoped block search fails (e.g.
@@ -336,7 +361,7 @@ test('model protocol returns code block extraction rather than rendered reply',a
   const r=await c.result();assert.equal(r.error,undefined);assert.equal(r.text,raw);
   assert.equal(r.diagnostics.extraction,'code_text');
   assert.equal(r.diagnostics.extraction_detail,'roots=1 scope=answer_roots turn_blocks=1');
-  assert.equal(r.diagnostics.version,'0.4.19');
+  assert.equal(r.diagnostics.version,'0.4.20');
 });
 test('site error with no reply fails the task in seconds, not 240s',async()=>{
   const c=content({noReply:true,siteError:'model channel not available'});

@@ -2,6 +2,11 @@
 
 All notable changes to ZeroScript Free are documented here.
 
+## [Unreleased]
+
+### Added
+- **Replies now follow the user's language** (ported from the 01a0a947 branch, commit 83e0f69). The extension passes the browser language into the system prompt: a Chinese browser gets an explicit "reply in 简体中文" directive, every other language gets "answer in the language the user writes in". Commands, JSON, tool names, code and paths are still never translated - only the model's prose. The same rule is applied to the Cursor BYOK pipeline (cursor-web 0.4.20).
+
 ## [1.5.5] - 2026-09-10
 
 ### Fixed

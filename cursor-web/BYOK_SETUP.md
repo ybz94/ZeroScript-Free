@@ -537,3 +537,39 @@ npm test --prefix cursor-web/tests
 | chatgpt.com | ChatGPT 账号（需可访问） | 输入预算 120000 UTF-16 / **600 行**（ProseMirror 性能限制，实机验证过） |
 
 升级步骤同 0.4.18：`git pull` → `prepare_extension.py` → 重载扩展 → 刷新专用页 → 重启 Bridge → `--sessions`（`0.4.19`/`0.4.19`/`inSync: true`）→ 换站点开新会话 → 2KB 控制 → 真实任务。
+
+## 0.4.20：一键启动 + 弹窗美化（站点跳转）+ 回复跟随用户语言（2026-09-22）
+
+### 1. 一键启动（解决"本地启动繁琐"）
+
+原来 3 步手动：`bridge.py` → `--sessions` 抄 ID → `--session <ID>`。现在**双击 `cursor-web\start.bat`**（或 `python cursor-web\launcher.py`）：
+
+1. 自动找 Python（py 启动器 → PATH → 标准安装目录；跳过商店桩）
+2. 缺依赖自动 `pip install -r requirements.txt`
+3. 自动跑 `prepare_extension.py`（刷新扩展文件）
+4. 启动 Bridge（已运行则直接复用，不重复启动）
+5. 轮询等待专用页会话（90 秒窗口，浏览器里打开聊天页并刷新即可）
+6. 唯一会话自动绑定；多个会话列出来让你选序号
+7. 启动端点 → 显示 `▶ 就绪：Cursor → http://127.0.0.1:17615/v1`
+8. **Ctrl+C 一键停掉 Bridge + 端点**
+
+版本不同步 / 会话 busy 会直接打 ⚠ 警告。手动三步法仍然可用（`bridge.py` + `model_endpoint.py`），两者不冲突。
+
+### 2. 弹窗美化 + 支持的 AI 网站点击跳转
+
+重做了扩展弹窗（popup.html/js + background `snapshot` API）：
+
+- 顶部：连接状态点（绿=已连 Bridge）+ 版本号
+- **专用页会话**卡片：provider 名、站点、`同步/版本不同步` 徽章、busy/后台状态（2 秒自动刷新）
+- **支持的 AI 网站**列表（点击新开标签页）：DeepSeek / GLM·Z.ai / Kimi·K3 / Qwen通义 / Gemini / Meta AI / ChatGPT / Arena，各带 provider ID
+- 设置（令牌/端口）收进折叠区
+- 深色模式自适应
+
+### 3. 回复跟随用户语言（合并自 01a0a947 分支 83e0f69）
+
+协议提示词是全英文的，会把网页模型带偏成英文回复。现在：
+
+- **cursor-web 管道**（content.js `withLangRule`）：发送时读浏览器语言——`zh-*` 浏览器追加"content 字段用简体中文"指令，其它语言追加"用用户所用语言回复"；**request_id/JSON 键/工具名/代码/路径永不翻译**；payload 已顶格时自动跳过该指令（绝不超预算）
+- **主 ZeroScript 扩展**（core/config.js + core/main.js）：移植 01a0a947 分支 83e0f69 的 `userLang` 系统提示规则（zh 浏览器 → 显式简体中文指令）
+
+说明：01a0a947 分支的其它提交（去 Roblox / 通用 MCP 模式 / Streamable HTTP 桥）属于旧 agent 循环架构，本分支的 cursor-web 直连管道不使用 core/ 那套，未合并。

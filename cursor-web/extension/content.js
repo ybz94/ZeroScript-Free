@@ -8,7 +8,7 @@
   const inputMaxLines = P.id === 'chatgpt' ? 600 : null;
   P.init({diag: () => {}});
   let id = crypto.randomUUID(), key = P.conversationKey(), busy = false;
-  const VERSION = '0.4.19';
+  const VERSION = '0.4.20';
   const seen = new Set();
   // DOM events can wake the watcher even when background timers are throttled.
   // Keep a timer fallback for generation-state changes without DOM mutations.
@@ -31,6 +31,23 @@
     const s = t.trim();
     if (!s.startsWith('{') && !s.startsWith('[')) return false;
     try { JSON.parse(s); return true; } catch { return false; }
+  }
+  // Reply-language rule (ported from the 01a0a947 branch): the protocol prompt
+  // is English, so without an explicit instruction the webpage model drifts
+  // into English even when the user writes Chinese. The browser language
+  // decides: zh-* → explicit 简体中文 directive, anything else → mirror the
+  // user's language. JSON keys, request_id, tool names, code and paths are
+  // NEVER translated - only the "content" prose. Never pushes a sized payload
+  // over its budget (the rule is simply skipped at the cap).
+  function withLangRule(prompt) {
+    try {
+      const lang = String(((navigator.languages && navigator.languages[0]) || navigator.language) || '');
+      const rule = lang.toLowerCase().startsWith('zh')
+        ? 'LANGUAGE: the user\'s browser is Chinese - write the "content" field of your JSON reply in 简体中文 (Simplified Chinese). If the user writes in another language, follow THEIR language instead. NEVER translate request_id, JSON keys, tool names, code or file paths.'
+        : 'LANGUAGE: write the "content" field of your JSON reply in the SAME language the user writes in (Chinese → Chinese, Japanese → Japanese, English → English). NEVER translate request_id, JSON keys, tool names, code or file paths.';
+      if (prompt.length + rule.length + 2 > inputMaxChars) return prompt;
+      return prompt + '\n' + rule;
+    } catch { return prompt; }
   }
   // Marker fallback (0.4.16): in some DOMs (fresh Agent-mode chats) the reply
   // turn does not match the provider's turn filter, so readAssistant() never
@@ -118,7 +135,7 @@
       // The provider reports its own send outcome (Arena does: verified landed
       // length + composer-cleared-after-click). Older/other providers return
       // nothing - those fall back to user-turn counting as before.
-      const sendInfo = (await P.typeAndSend(msg.prompt)) || {};
+      const sendInfo = (await P.typeAndSend(withLangRule(msg.prompt))) || {};
       const writeLanded = typeof sendInfo.landedLen === 'number' && sendInfo.landedLen > 0;
       const landedKnown = typeof sendInfo.landedLen === 'number';
       const providerSent = sendInfo.sent === true;

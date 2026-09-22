@@ -107,6 +107,16 @@ git diff --check
 - 真实 HTTP/Bridge 测试验证 json_code_block 指令到浏览器连接的传播。
 - 这些是 Markdown/DOM 与模拟浏览器回归测试，不是三家网站的在线实机验证。用户反复同列报错与此机制相符，但未获得其原始响应，不能宣称根因已完全确认。
 
+## 0.4.20 一键启动 + 弹窗美化（站点跳转）+ 回复跟随用户语言（2026-09-22）
+
+- Python 46 项、JavaScript 63 项，总计 109 项通过（`unittest discover` + `npm test`）。
+- **一键启动**：新增 `cursor-web/launcher.py` + `cursor-web/start.bat`（Windows 双击）。流程：找 Python（py 启动器/PATH/标准目录，跳过商店桩）→ 缺依赖自动 pip 安装 → prepare_extension.py → 启动 Bridge（已运行则复用）→ 轮询等待会话（90s）→ 唯一会话自动绑定/多个选序号 → 启动端点 → Ctrl+C 全停。
+  - 沙箱端到端验证：模拟扩展客户端（websockets 连接报 kimi 会话）→ 启动器 4 步全部走通，端点绑定 `sess-test-123` 并在 17615 就绪；SIGTERM 后子进程正常退出，端口释放。
+- **弹窗**：popup.html 重做（状态点/版本、会话卡片含同步徽章与 busy 状态、8 个站点点击跳转、设置折叠、深色模式）；popup.js 渲染 + 2s 刷新；background.js 新增 `snapshot` 消息（connected/version/sessions）。HTML/JS 语法校验通过。
+- **语言跟随**：content.js `withLangRule()` 按 `navigator.languages[0]` 追加指令（zh-* → 简体中文；其它 → 镜像用户语言；request_id/JSON 键/工具名/代码/路径永不翻译；顶格 payload 跳过指令不超预算）。新增测试 3 项：zh-CN 含 `简体中文` 指令；en-US 含镜像规则且无简体指令；顶格 payload（59995 字符）原样发出（长度断言 59995）。
+- **主扩展语言移植**：core/config.js `buildSystemPrompt` 增加 `userLang`（zh → 显式简体中文指令，否则镜像用户语言，命令本身永不翻译）；core/main.js 传 `navigator.languages[0]`。来自 01a0a947 分支 83e0f69（该分支其它提交属旧 agent 架构，未合并）。
+- 待用户桌面实机：一键启动器在 Windows 上的完整流程；弹窗站点跳转；中文浏览器下网页回复是否切为中文。
+
 ## 0.4.19 qwen / gemini / meta / chatgpt 逐项适配完成（2026-09-22）
 
 - Python 46 项、JavaScript 60 项，总计 106 项通过（`unittest discover` + `npm test`）。
