@@ -321,3 +321,13 @@ npm test --prefix cursor-web/tests
 **这要求重新加载插件**（改的是网站适配器）：停止 Bridge/端点 → 拉取 → `prepare_extension.py` → 重新加载扩展确认 **0.4.6** → 刷新网页 → 重启 Bridge → 重新绑定会话 → 重测。
 
 **注意**：此改动针对"当前 Arena 用 TipTap 输入框"的 DOM。若网站回退到旧的 `form textarea` 输入框，适配器会自动回退，两条路径都保留。回复读取（`readAssistant` 等）依赖聊天列表 DOM；若发送成功但取不到回复，说明 Agent 模式的聊天结构也不同，需另行适配——先确认发送这一步是否已通。
+
+## 0.4.7：放宽 Arena 输入框选择 + 等待挂载（2026-09-22）
+
+0.4.6 上线后实机仍报 `Arena input box not found`（1s 快速失败）。原因是 0.4.6 的 `getEditor()` 多了一个"排除聊天列表（`ol.flex-col-reverse`）内元素"的过滤——Agent 模式下输入框可能就在该容器里，被误跳过；另外页面刚刷新时输入框可能还没挂载完。
+
+0.4.7：
+1. `getEditor()` 去掉聊天列表过滤、放宽为任意 `contenteditable`（按 `isContentEditable` 判定），仅靠"可见 + 非 `#zs-root` + class 含 `tiptap`/`ProseMirror`"定位输入框（该类名足够特异，不会误中聊天代码块）；仍回退 `form textarea`。
+2. `typeAndSend()` 找不到输入框时**等待重试最多约 10 秒**（覆盖"输入框还没挂载完"），仍找不到才报错，且报错附带"页面可能没加载完 / 可能不是聊天页"的提示。
+
+升级步骤同 0.4.6（确认 **0.4.7**）。若仍 `input box not found`，请在报错的页面按 BYOK_SETUP/聊天里给的 F12 诊断脚本确认页面上到底有没有可见的 TipTap 输入框。

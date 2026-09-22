@@ -107,6 +107,15 @@ git diff --check
 - 真实 HTTP/Bridge 测试验证 json_code_block 指令到浏览器连接的传播。
 - 这些是 Markdown/DOM 与模拟浏览器回归测试，不是三家网站的在线实机验证。用户反复同列报错与此机制相符，但未获得其原始响应，不能宣称根因已完全确认。
 
+## 0.4.7 放宽 Arena 输入框选择 + 等待挂载（2026-09-22）
+
+- Python 46 项、JavaScript 42 项，总计 88 项通过；arena.js 通过 `node --check`。
+- 实机依据：0.4.6 上线后仍 `Arena input box not found`（1s 快速失败）。0.4.6 的 `getEditor()` 含"排除 `ol.flex-col-reverse`（聊天列表）内元素"过滤，Agent 模式下输入框可能就在该容器内而被误跳过；页面刚刷新时输入框也可能尚未挂载。
+- 改动（仅 arena.js）：
+  1. `getEditor()` 去掉聊天列表过滤，选择器放宽为任意 `[contenteditable]`（按 `isContentEditable` 判定），仅靠"可见 + 非 `#zs-root` + class 含 `tiptap`/`ProseMirror`"定位；回退 `form textarea` 保留。
+  2. `typeAndSend()` 找不到输入框时轮询重试最多 ~10s（50×200ms）再报错，错误信息附带"页面可能未加载完/可能非聊天页，请刷新后重试"。
+- 现有自动化测试用 mock provider，不直接驱动真实 arena.js，故此改动仍主要靠用户实机验证；等待重试会把"输入框缺失"场景的失败时间从 1s 延到最长 ~10s（仍属快速失败）。
+
 ## 0.4.6 Arena 目标改为可见的 TipTap 输入框（2026-09-22）
 
 - Python 46 项、JavaScript 42 项，总计 88 项通过（`unittest discover` + `npm test`）；arena.js 通过 `node --check`。

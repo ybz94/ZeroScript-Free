@@ -230,16 +230,17 @@ const ZSProvider = (() => {
   // login/OAuth pages that have no site composer.
   const getEditor = () => {
     // The composer in the current DOM (Agent mode and the current chat) is a
-    // VISIBLE TipTap/ProseMirror contenteditable DIV. A legacy `form textarea`
-    // may also be present but hidden/unused - a plain `form textarea` lookup
-    // lands in a box that is never seen and never sent (the write "succeeds"
-    // into the hidden form while the real composer stays empty). Prefer a
-    // visible TipTap composer (not our own UI, not inside the chat list);
-    // fall back to the form textarea for the old DOM.
-    for (const e of document.querySelectorAll('[contenteditable="true"], [contenteditable=""]')) {
+    // VISIBLE TipTap/ProseMirror contenteditable. A legacy `form textarea` may
+    // also be present but hidden/unused - a plain `form textarea` lookup lands
+    // in a box that is never seen and never sent. Prefer a visible
+    // TipTap/ProseMirror contenteditable (not our own UI); fall back to the
+    // form textarea for the old DOM. (No chat-list exclusion: in Agent mode the
+    // composer can sit inside the same container as the message list, and the
+    // tiptap/ProseMirror class is specific enough to avoid chat code blocks.)
+    for (const e of document.querySelectorAll("[contenteditable]")) {
+      if (!e.isContentEditable) continue;
       if (e.offsetParent === null) continue;
       if (e.closest("#zs-root")) continue;
-      if (e.closest(S.list)) continue;
       if (/tiptap|prosemirror/i.test(String(e.className || ""))) return e;
     }
     for (const e of document.querySelectorAll("form textarea")) {
@@ -459,8 +460,16 @@ const ZSProvider = (() => {
   }
 
   async function typeAndSend(text, images) {
-    const editor = getEditor();
-    if (!editor) throw new Error("Arena input box not found");
+    let editor = getEditor();
+    if (!editor) {
+      // The composer may still be mounting after a page load/refresh, or the
+      // page may be mid-navigation. Retry briefly before declaring it absent.
+      for (let i = 0; i < 50 && !editor; i++) {
+        await new Promise((r) => setTimeout(r, 200));
+        editor = getEditor();
+      }
+    }
+    if (!editor) throw new Error("Arena input box not found (no visible TipTap composer or form textarea; the page may not be fully loaded or this may not be the chat page). Refresh the dedicated page, wait for the composer, and retry.");
     editor.focus();
     setTextareaValue(editor, truncateForSend(text));
     // If the text did not land in the composer (wrong/hidden element, page
