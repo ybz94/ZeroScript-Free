@@ -7,7 +7,7 @@
   const inputMaxLines = P.id === 'chatgpt' ? 600 : null;
   P.init({diag: () => {}});
   let id = crypto.randomUUID(), key = P.conversationKey(), busy = false;
-  const VERSION = '0.4.14';
+  const VERSION = '0.4.15';
   const seen = new Set();
   // DOM events can wake the watcher even when background timers are throttled.
   // Keep a timer fallback for generation-state changes without DOM mutations.
@@ -80,24 +80,34 @@
       }
       diagnostics.editorLenBefore = (P.editorText ? P.editorText() : '').length;
       diagnostics.usersBefore = P.userCount ? P.userCount() : null;
-      await P.typeAndSend(msg.prompt);
+      // The provider reports its own send outcome (Arena does: verified landed
+      // length + composer-cleared-after-click). Older/other providers return
+      // nothing - those fall back to user-turn counting as before.
+      const sendInfo = (await P.typeAndSend(msg.prompt)) || {};
+      const writeLanded = typeof sendInfo.landedLen === 'number' && sendInfo.landedLen > 0;
+      const landedKnown = typeof sendInfo.landedLen === 'number';
+      const providerSent = sendInfo.sent === true;
       diagnostics.phase = 'confirming_send';
-      // Confirm the send actually took. A successful send submits a new user
-      // message, so a new user turn appears in the chat. If the text never
-      // landed (wrong/hidden composer, React rejected the input, or the page
-      // dropped it), no new turn appears and we would otherwise stall the 240s
-      // reply wait. Poll briefly: the new turn renders a tick after the send.
-      // 30s window (not 8s): a 100k+ char user message can take far longer to
-      // render into the chat list, and the composer clearing already proves the
-      // site accepted the send - an 8s window false-failed real sends (observed
-      // live with a 112912-char payload: "send confirmed" yet no turn in 8s).
+      // Confirm the send actually took. Three independent evidences:
+      //   1. a new user turn appears in the chat (turn count grows) - the classic
+      //      signal, but the Agent-mode fresh-chat DOM does NOT grow it (live:
+      //      composer cleared, correct JSON reply received, yet the task failed
+      //      with "no new message appeared in the chat" for a 1688-char prompt);
+      //   2. the provider confirms the send (it watched the composer clear);
+      //   3. the composer is empty although the provider verified our write -
+      //      only the site consuming the input can have cleared it.
+      // Fail fast (in ~1s) when the text is stranded in the composer, and also
+      // immediately when the provider verified the write and it is NOT there.
       let leftover = '', usersAfter = diagnostics.usersBefore, gen = false, hard = false;
       for (let i = 0; i < 150; i++) {
         try { leftover = (P.editorText ? P.editorText() : '') || ''; } catch { break; }
         try { usersAfter = P.userCount ? P.userCount() : usersAfter; } catch {}
         try { gen = !!(P.isGenerating && P.isGenerating()); hard = !!(P.isHardGenerating && P.isHardGenerating()); } catch {}
         const newTurn = usersAfter != null && diagnostics.usersBefore != null && usersAfter > diagnostics.usersBefore;
-        if (newTurn || leftover.trim() !== '') break;
+        const cleared = leftover.trim() === '';
+        if (newTurn || providerSent || (cleared && writeLanded)) break;      // accepted
+        if (landedKnown && !writeLanded && cleared) break;                   // write verified absent -> fail fast
+        if (!cleared && i >= 5) break;                                       // stranded for ~1s -> fail fast
         await new Promise(r => setTimeout(r, 200));
       }
       diagnostics.editorLenAfter = leftover.length;
@@ -109,14 +119,13 @@
       diagnostics.generatingAfter = gen;
       diagnostics.hardGeneratingAfter = hard;
       const newTurnAfter = usersAfter != null && diagnostics.usersBefore != null && usersAfter > diagnostics.usersBefore;
-      diagnostics.sendConfirmed = newTurnAfter;
+      diagnostics.sendConfirmed = newTurnAfter || providerSent || ((leftover.trim() === '') && writeLanded);
+      diagnostics.sendConfirmedBy = newTurnAfter ? 'user_turn' : (providerSent ? 'provider' : ((leftover.trim() === '') && writeLanded ? 'composer_cleared' : 'none'));
       diagnostics.leftoverLen = leftover.length;
-      if (!newTurnAfter) {
+      if (!diagnostics.sendConfirmed) {
         const why = leftover.trim() !== ''
           ? leftover.length + ' characters are still in the composer'
-          : (diagnostics.editorLenBefore > 0
-              ? 'no new user turn appeared within 30s although the composer was cleared (the send WAS accepted; the page may process very large messages slowly or may be frozen - check the dedicated page for the message/reply; if the page is unresponsive, reload it and rebind the session before the next attempt)'
-              : 'no new message appeared in the chat (the text did not land in the composer)');
+          : 'no new message appeared in the chat (the text did not land in the composer)';
         throw new Error('Message was not sent: ' + why +
           (hard ? ' and the page shows a Stop button (it is still generating)' : '') +
           '. Composer: ' + (diagnostics.editorFound

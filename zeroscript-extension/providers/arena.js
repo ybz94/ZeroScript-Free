@@ -588,6 +588,12 @@ const ZSProvider = (() => {
     }
     console.log('[zs] arena: send ' + (sent ? 'confirmed (composer cleared)' : 'NOT confirmed - composer still holds text'));
     diag("arena.tas.sent", { sent, editorLen: editorText().length, pendingAfterSend: pendingCount() });
+    // Report the outcome so the caller can confirm the send with the provider's
+    // own evidence instead of relying on user-turn counting alone (the
+    // Agent-mode fresh-chat DOM does not increment userCount for the new turn -
+    // live 2026-09-22: composer cleared, correct JSON reply received, yet the
+    // task failed with "no new message appeared in the chat").
+    return { sent, landedLen: landed.length };
   }
 
   // Arena shows "Generating…" for a beat BEFORE the native "Stop generation"
@@ -972,7 +978,7 @@ const ZSProvider = (() => {
 
   return {
     id: "arena",
-    version: "0.4\.14",
+    version: "0.4.15",
     displayName: "Arena",
     // Arena's chat composer accepts image uploads (hidden `input[type=file]` in
     // the form → staged preview card → uploaded on send; see attachImages). The

@@ -107,6 +107,16 @@ git diff --check
 - 真实 HTTP/Bridge 测试验证 json_code_block 指令到浏览器连接的传播。
 - 这些是 Markdown/DOM 与模拟浏览器回归测试，不是三家网站的在线实机验证。用户反复同列报错与此机制相符，但未获得其原始响应，不能宣称根因已完全确认。
 
+## 0.4.15 发送确认三重证据，不再依赖用户消息计数（2026-09-22）
+
+- Python 46 项、JavaScript 55 项，总计 101 项通过（`unittest discover` + `npm test`）。
+- 实机依据（决定性）：2KB 载荷、页面无卡死、`send confirmed (composer cleared)`（网站接受发送）、**网页返回正确协议 JSON** `{"request_id":"fbbe4d43…","content":"Hi! How can I help?","tool_calls":[]}`，但任务误报 `Message was not sent: no new message appeared in the chat`。根因：发送确认唯一判据是 `userCount()+1`，而新 Agent 聊天的用户轮 DOM 不匹配计数器的过滤链（`ol` 直接子级 + `mx-auto`/carousel + 含 `.prose` + `justify-end`），计数不涨。
+- 改动 1（arena.js）：`typeAndSend` 返回 `{sent, landedLen}`——provider 自报"亲眼看到输入框清空 + 写入验证长度"。其他 provider 不变（返回 undefined，content.js 回退到计数判定）。
+- 改动 2（content.js）：三重证据判定（新用户消息 / provider 确认 / 写入验证且输入框被清空，任一满足即确认）；诊断新增 `sendConfirmedBy`；快速失败保留（滞留 ~1s、写入验证缺失立即失败）。
+- 改动 3（全部 provider）：清理 0.4.14 版本字符串误入的反斜杠（`"0.4\.14"`→`"0.4.15"`；JS 的 identity escape 使原值运行时无害，但属脏数据且会破坏版本升级正则）。
+- 新增/改写测试：brokenUserCount 下由 provider 证据确认（sendConfirmedBy=provider，复现实测场景）；不报 provider 结果的慢用户消息（20s）仍被 30s 窗口覆盖（sendConfirmedBy=user_turn）；31s 窗口外失败措辞；sendDropped 快速失败保留。
+- 仍是模拟浏览器回归；新聊天中**回复读取阶段**（readAssistant 依赖同样的 DOM 过滤）是否受影响尚未实测——若下一轮失败出现在回复阶段，诊断 `extraction` 字段可直接定位。
+
 ## 0.4.14 大载荷警告带构成明细 + 卡死提示（2026-09-22）
 
 - Python 46 项、JavaScript 54 项，总计 100 项通过（`unittest discover` + `npm test`）。

@@ -439,3 +439,16 @@ npm test --prefix cursor-web/tests
   成功 = 网站本身可用、只是扛不住大消息；卡死 = 该站点/会话另有问题，需重开聊天或放弃该网页。
 
 升级步骤：停止端点（Ctrl+C）和 Bridge → `git pull --ff-only` → `prepare_extension.py` → 重新加载扩展 → 刷新专用页 → 重启 Bridge → `--sessions`（确认 `transportVersion: "0.4.14"`、`providerVersion: "0.4.14"`、`inSync: true`）→ 先跑上面的 curl 对照实验 → 再按明细决定下一步。
+
+## 0.4.15：发送确认改用三重证据，不再依赖用户消息计数（2026-09-22）
+
+**为什么要这一版（实机决定性证据）**：2KB 载荷、无卡死、网站接受发送（输入框清空）、**网页已返回正确的协议 JSON**（`{"request_id":"fbbe4d43…","content":"Hi! How can I help?","tool_calls":[]}`）——但任务仍误报 `Message was not sent: no new message appeared in the chat`。原因：发送确认只认"用户消息计数 +1"，而**新 Agent 聊天的用户轮 DOM 结构不匹配计数器的过滤条件**（`mx-auto` + `.prose` + `justify-end`），计数永远不涨 → 30 秒后误判。
+
+0.4.15 改动：
+
+1. **provider 自报发送结果**：arena.js `typeAndSend` 现在返回 `{sent, landedLen}`（它亲眼看着输入框清空、并验证过写入字符数）。其他 provider 暂不返回——自动回退到旧的计数判定。
+2. **三重独立证据判定发送成功**（满足其一即确认）：① 用户消息计数 +1（老信号）；② provider 确认（`sent: true`）；③ provider 验证过写入且输入框已被清空（只有网站消费了输入才会清空）。诊断新增 `sendConfirmedBy: user_turn / provider / composer_cleared`。
+3. **保留快速失败**：文字滞留输入框 ~1 秒内报错；provider 验证"写入不在"立即报错（不傻等）。
+4. 顺带清理 0.4.14 版本字符串里误入的反斜杠（JS 运行时无影响，但属脏数据）。
+
+升级步骤：停止端点（Ctrl+C）和 Bridge → `git pull --ff-only` → `prepare_extension.py` → 重新加载扩展 → 刷新专用页 → 重启 Bridge → `--sessions`（确认 `transportVersion: "0.4.15"`、`providerVersion: "0.4.15"`、`inSync: true`）→ 重测（curl 或 Cursor）。
