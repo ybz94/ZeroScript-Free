@@ -331,6 +331,12 @@ class InputBudgetTests(unittest.TestCase):
         self.assertIsNotNone(size_error('x' * 120001, {'provider': 'chatgpt'}))
         self.assertIsNotNone(size_error('\n' * 600, {'provider': 'chatgpt'}))
         self.assertIsNotNone(size_error('x' * 60001, {}))
+        # 0.4.18 multi-provider: conservative starting budgets for the site
+        # adapters validated in the main ZeroScript extension (100000 UTF-16
+        # units), raised once large payloads are confirmed to land intact.
+        for p in ('glm', 'kimi', 'qwen', 'gemini', 'meta'):
+            self.assertIsNone(size_error('x' * 100000, {'provider': p}))
+            self.assertIsNotNone(size_error('x' * 100001, {'provider': p}))
 
 
 class EditOutputDiagnosticsTests(unittest.TestCase):

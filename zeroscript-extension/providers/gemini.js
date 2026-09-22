@@ -410,6 +410,7 @@ const ZSProvider = (() => {
     // test compares against what we actually typed.
     text = truncateForSend(text);
     const relock = _locked;
+    let landed = 0, attempted = false;
     if (relock) ed.setAttribute("contenteditable", "true"); // injection needs it editable
     try {
       // submitAndGetBase RETRIES this whole function (up to 4x) when the send
@@ -451,14 +452,24 @@ const ZSProvider = (() => {
       }
       const btn = sendButton();
       diag("send.click", { found: !!btn, pending: hasPendingAttachment() });
-      if (btn) { btn.click(); return; }
-      // Fallback: Enter sends in Gemini's composer.
-      const o = { key: "Enter", code: "Enter", keyCode: 13, which: 13, bubbles: true, cancelable: true };
-      ed.dispatchEvent(new KeyboardEvent("keydown", o));
-      ed.dispatchEvent(new KeyboardEvent("keyup", o));
+      landed = (editorText() || "").length;
+      if (btn) { btn.click(); attempted = true; }
+      else {
+        // Fallback: Enter sends in Gemini's composer.
+        const o = { key: "Enter", code: "Enter", keyCode: 13, which: 13, bubbles: true, cancelable: true };
+        ed.dispatchEvent(new KeyboardEvent("keydown", o));
+        ed.dispatchEvent(new KeyboardEvent("keyup", o));
+        attempted = true;
+      }
     } finally {
       if (relock) { const e2 = getEditor(); if (e2) e2.setAttribute("contenteditable", "false"); }
     }
+    // Report the outcome so the caller can confirm the send with the provider's
+    // own evidence (composer cleared / generation started) instead of relying
+    // on user-turn counting alone (0.4.15 interface).
+    const sent = attempted && (await waitFor(() => isBusyNow() || (editorText() || "").trim() === "", 3000));
+    diag("sent", { sent, landedLen: landed });
+    return { sent: !!sent, landedLen: landed };
   }
 
   function stopGeneration() {
@@ -656,7 +667,7 @@ const ZSProvider = (() => {
 
   return {
     id: "gemini",
-    version: "0.4.17",
+    version: "0.4.18",
     displayName: "Gemini",
     // Gemini's web model is natively multimodal (image understanding), so
     // screen_capture is safe to expose here. Other providers default this

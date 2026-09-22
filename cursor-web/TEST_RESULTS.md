@@ -107,6 +107,20 @@ git diff --check
 - 真实 HTTP/Bridge 测试验证 json_code_block 指令到浏览器连接的传播。
 - 这些是 Markdown/DOM 与模拟浏览器回归测试，不是三家网站的在线实机验证。用户反复同列报错与此机制相符，但未获得其原始响应，不能宣称根因已完全确认。
 
+## 0.4.18 适配其它网页 AI（GLM / Kimi K3 / Qwen / Gemini / Meta / ChatGPT）（2026-09-22）
+
+- Python 46 项、JavaScript 60 项，总计 106 项通过（`unittest discover` + `npm test`）。
+- 背景：用户要求适配其它网页 AI（GLM、Kimi K3 等）。8 个站点适配器本就存在（主 ZeroScript 扩展，GLM/Kimi DOM 于 2026-06 实机验证、Kimi K3 于 2026-07-30）；0.4.15–0.4.18 的三重发送确认、request_id 标记兜底、弹窗自动应答均与站点无关，缺的是接入。
+- 改动：
+  1. cursor-web manifest 注入范围 +5 站点（chat.z.ai / kimi.ai / gemini.google.com / meta.ai / chat.qwen.ai，qwen 含 MAIN-world 网络钩子）。
+  2. 7 个旧适配器 `typeAndSend` 升级 0.4.15 接口：返回 `{sent, landedLen}`；sent = 发送后 ≤3s 内"输入框清空或开始生成"；各站多返回路径（图片轮询/禁用按钮/点击/Enter 回退）逐一补齐。
+  3. GLM/Kimi `readAssistant` 增加 `thinkingSel`（推理区代码块不计入协议块搜索）。
+  4. content.js 提取失败救援：作用域块搜索出错时先按 request_id 标记扫描再退回渲染文本（诊断 `extraction: marker_fallback`，detail 前缀 `scoped search failed`）。
+  5. 预算表 +5 站点 = 100000 UTF-16 单位（input_limits.py 与 content.js 镜像），保守起点。
+- 新增测试 3 项：glm/kimi/qwen/gemini/meta 预算边界（100000 通过 / 100001 拒绝）；作用域提取失败 → 标记救援成功（含诊断断言）。
+- 所有 8 个 provider 文件 `node --check` 通过；manifest JSON 校验通过。
+- 5 个新站点仍待用户桌面实机验证（登录会话 + 2KB 控制 + 真实任务）；预算与 DOM 选择器以实机结果为准。
+
 ## 0.4.17 任务成功后自动应答"此任务成功了吗?"弹窗（2026-09-22）
 
 - Python 46 项、JavaScript 59 项，总计 105 项通过（`unittest discover` + `npm test`）。

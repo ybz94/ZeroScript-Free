@@ -694,6 +694,7 @@ const ZSProvider = (() => {
     if (editorText().trim() === "") {
       throw new Error("DeepSeek composer did not accept the input (the text did not appear). The page may block input right now or the composer element changed. Check the dedicated webpage and retry.");
     }
+    const landed = (editorText() || "").length;
     // Attach images LAST, right before the send click - see gemini.js's
     // typeAndSend for why (attaching before retyping the text can sever the
     // site's binding between the pending upload and the message being sent).
@@ -715,9 +716,9 @@ const ZSProvider = (() => {
           try { btn.click(); } catch {}
         }
         // Editor cleared = the message left; stop square up = generation started.
-        if (await waitFor(() => editorText().trim() === "" || isHardGenerating(), 1200)) return;
+        if (await waitFor(() => editorText().trim() === "" || isHardGenerating(), 1200)) return { sent: true, landedLen: landed };
       }
-      return;
+      return { sent: false, landedLen: landed };
     }
     // Text-only: wait for React to re-enable the send button, then click.
     await waitFor(() => {
@@ -727,6 +728,12 @@ const ZSProvider = (() => {
     if (!clickSendButton() && !isBusyNow()) {
       pressEnter(editor);
     }
+    // Report the outcome so the caller can confirm the send with the provider's
+    // own evidence (composer cleared / generation started) instead of relying
+    // on user-turn counting alone (0.4.15 interface).
+    const sent = await waitFor(() => (editorText() || "").trim() === "" || isHardGenerating(), 3000);
+    diag("deepseek.sent", { sent, landedLen: landed });
+    return { sent: !!sent, landedLen: landed };
   }
 
   // Click DeepSeek's stop only if it is actually in the stop state (<rect>), so
@@ -977,7 +984,7 @@ const ZSProvider = (() => {
 
   return {
     id: "deepseek",
-    version: "0.4.17",
+    version: "0.4.18",
     displayName: "DeepSeek",
     // DYNAMIC: DeepSeek's Instant/Expert models are text-only, but the V4 UI has a
     // dedicated "Vision" model tab. When the user selects Vision we honour it (see

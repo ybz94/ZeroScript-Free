@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Cursor Web Assistant",
-  "version": "0.4.17",
+  "version": "0.4.18",
   "description": "Send Cursor MCP tasks to a paired webpage and return suggestions without editing local files.",
   "permissions": ["storage", "alarms"],
   "host_permissions": ["http://127.0.0.1/*", "ws://127.0.0.1/*"],
@@ -11,6 +11,12 @@
     {"matches": ["https://chat.deepseek.com/*"], "js": ["providers/deepseek.js", "protocol.js", "content.js"]},
     {"matches": ["https://chatgpt.com/*", "https://chat.openai.com/*"], "js": ["providers/chatgpt-cm.js"], "world": "MAIN", "run_at": "document_start"},
     {"matches": ["https://chatgpt.com/*", "https://chat.openai.com/*"], "js": ["providers/chatgpt.js", "protocol.js", "content.js"]},
-    {"matches": ["https://arena.ai/*"], "js": ["providers/arena.js", "protocol.js", "content.js"]}
+    {"matches": ["https://arena.ai/*"], "js": ["providers/arena.js", "protocol.js", "content.js"]},
+    {"matches": ["https://chat.z.ai/*"], "js": ["providers/glm.js", "protocol.js", "content.js"]},
+    {"matches": ["https://www.kimi.ai/*", "https://kimi.ai/*"], "js": ["providers/kimi.js", "protocol.js", "content.js"]},
+    {"matches": ["https://gemini.google.com/*"], "js": ["providers/gemini.js", "protocol.js", "content.js"]},
+    {"matches": ["https://www.meta.ai/*", "https://meta.ai/*"], "js": ["providers/meta.js", "protocol.js", "content.js"]},
+    {"matches": ["https://chat.qwen.ai/*"], "js": ["providers/qwen-net.js"], "world": "MAIN", "run_at": "document_start"},
+    {"matches": ["https://chat.qwen.ai/*"], "js": ["providers/qwen.js", "protocol.js", "content.js"]}
   ]
 }

@@ -305,6 +305,10 @@ const ZSProvider = (() => {
       reply: textWithout(item).trim(),
       thinking: think ? (think.textContent || "").trim() : "",
       item,
+      // Protocol reader (0.4.18): the Thought Process subtree sits INSIDE the
+      // reply root; code blocks drafted while reasoning must never count as
+      // the protocol's JSON block.
+      thinkingSel: S.thinking,
     };
   }
 
@@ -368,11 +372,18 @@ const ZSProvider = (() => {
       return false;
     }, 8000);
     diag("glm.send", { enabled, busy: isBusyNow() });
+    const landed = (editorText() || "").length;
     if (!clickSendButton() && !isBusyNow()) {
       const o = { key: "Enter", code: "Enter", keyCode: 13, which: 13, bubbles: true, cancelable: true };
       editor.dispatchEvent(new KeyboardEvent("keydown", o));
       editor.dispatchEvent(new KeyboardEvent("keyup", o));
     }
+    // Report the outcome so the caller can confirm the send with the provider's
+    // own evidence (composer cleared / generation started) instead of relying
+    // on user-turn counting alone (0.4.15 interface).
+    const sent = await waitFor(() => isBusyNow() || (editorText() || "").trim() === "", 3000);
+    diag("glm.sent", { sent, landedLen: landed });
+    return { sent: !!sent, landedLen: landed };
   }
 
   function stopGeneration() {
@@ -554,7 +565,7 @@ const ZSProvider = (() => {
 
   return {
     id: "glm",
-    version: "0.4.17",
+    version: "0.4.18",
     displayName: "GLM",
     // GLM-5.2 is multimodal and z.ai's composer accepts image uploads (png/jpg via
     // the always-mounted file input; chip staged in .chip-scroll, upload complete

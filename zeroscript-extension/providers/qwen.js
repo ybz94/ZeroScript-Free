@@ -651,6 +651,7 @@ const ZSProvider = (() => {
     rememberSentResponse();
     const wasLocked = !!ed.getAttribute("data-zs-locked");
     if (wasLocked) ed.removeAttribute("readonly");
+    let landed = 0, attempted = false;
     try {
       if (_nativeSetter) { _nativeSetter.call(ed, text); }
       else { ed.value = text; }
@@ -663,15 +664,25 @@ const ZSProvider = (() => {
       // nothing is staged yet, else each retry pastes ANOTHER duplicate copy.
       if (images && images.length && !hasPendingAttachment()) { try { await attachImages(images); } catch {} }
       await waitFor(() => !!sendButton(), 2000);
+      landed = (editorText() || "").length;
       const btn = sendButton();
-      if (btn) { btn.click(); return; }
-      // Fallback: Enter key
-      const o = { key: "Enter", code: "Enter", keyCode: 13, which: 13, bubbles: true, cancelable: true };
-      ed.dispatchEvent(new KeyboardEvent("keydown", o));
-      ed.dispatchEvent(new KeyboardEvent("keyup", o));
+      if (btn) { btn.click(); attempted = true; }
+      else {
+        // Fallback: Enter key
+        const o = { key: "Enter", code: "Enter", keyCode: 13, which: 13, bubbles: true, cancelable: true };
+        ed.dispatchEvent(new KeyboardEvent("keydown", o));
+        ed.dispatchEvent(new KeyboardEvent("keyup", o));
+        attempted = true;
+      }
     } finally {
       if (wasLocked) ed.setAttribute("readonly", "");
     }
+    // Report the outcome so the caller can confirm the send with the provider's
+    // own evidence (composer cleared / generation started) instead of relying
+    // on user-turn counting alone (0.4.15 interface).
+    const sent = attempted && (await waitFor(() => isBusyNow() || (editorText() || "").trim() === "", 3000));
+    diag("qwen.sent", { sent, landedLen: landed });
+    return { sent: !!sent, landedLen: landed };
   }
 
   function stopGeneration() {
@@ -964,7 +975,7 @@ const ZSProvider = (() => {
 
   return {
     id: "qwen",
-    version: "0.4.17",
+    version: "0.4.18",
     displayName: "Qwen",
     // DYNAMIC per selected model (see the capability section above). A getter so
     // the core always reads the CURRENT model's capability - it can change

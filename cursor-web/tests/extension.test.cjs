@@ -21,7 +21,7 @@ function content(options = {}) {
     querySelectorAll: sel => (options.markerBlocks && sel && sel.indexOf('pre') !== -1) ? [markerBlock] : []};
   const provider = {
     id:options.provider || 'mock',
-    version:options.providerVersion === undefined ? '0.4.17' : options.providerVersion, // null => pre-0.4.9 (no version field)
+    version:options.providerVersion === undefined ? '0.4.18' : options.providerVersion, // null => pre-0.4.9 (no version field)
     init(){}, conversationKey:()=>key, isFreshChat:()=>false,
     isBusyNow:()=>!!options.busy, isGenerating:()=>!!options.generating && sent>0, // generating only AFTER our send (post-reply prompt state)
     isHardGenerating:()=>!!options.hardGenerating,
@@ -130,8 +130,8 @@ test('unversioned provider (pre-0.4.9 build) is also refused, not mixed',()=>{
 test('session announcement reports provider version and sync state',()=>{
   const c=content();
   const s=c.messages.find(m=>m.type==='session');
-  assert.equal(s.transportVersion,'0.4.17');
-  assert.equal(s.providerVersion,'0.4.17');
+  assert.equal(s.transportVersion,'0.4.18');
+  assert.equal(s.providerVersion,'0.4.18');
   assert.equal(s.inSync,true);
 });
 test('stable parseable JSON reply finalizes even while page reports generating (Arena follow-up prompt)',async()=>{
@@ -234,6 +234,21 @@ test('no follow-up prompt: task completes and reports followupCleared=false',asy
   assert.equal(c.followupClicked,false);
   assert.equal(r.diagnostics.followupCleared,false);
 });
+test('scoped extraction failure is rescued by the request-id marker (0.4.18 multi-provider)',async()=>{
+  // The reply turn IS visible (fresh) but the scoped block search fails (e.g.
+  // reasoning draft added a second code block on another site). The protocol
+  // object is still findable by this send's unique request id.
+  const json='{"request_id":"abcdef123456","content":"ok","tool_calls":[]}';
+  const c=content({markerBlocks:true, markerText:json,
+    protocol:{text:'',source:'code_block_unavailable',detail:'roots=0 scope=answer_turn turn_blocks=2',error:'Protocol response requires exactly one JSON code block; found 2'}});
+  c.dispatch({prompt:'x {"request_id":"abcdef123456"} y', response_format:'json_code_block'});
+  const r=await c.result();
+  assert.equal(r.error,undefined);
+  assert.equal(r.text,json);
+  assert.equal(r.diagnostics.extraction,'marker_fallback');
+  assert.equal(r.diagnostics.fallbackRead,true);
+  assert.match(r.diagnostics.extraction_detail,/scoped search failed/);
+});
 test('navigation while running invalidates original session binding',async()=>{
   const c=content({navigate:true});c.dispatch();assert.match((await c.result()).error,/changed/);
   const sessions=c.messages.filter(m=>m.type==='session');assert.notEqual(sessions.at(-1).id,sessions[0].id);
@@ -321,7 +336,7 @@ test('model protocol returns code block extraction rather than rendered reply',a
   const r=await c.result();assert.equal(r.error,undefined);assert.equal(r.text,raw);
   assert.equal(r.diagnostics.extraction,'code_text');
   assert.equal(r.diagnostics.extraction_detail,'roots=1 scope=answer_roots turn_blocks=1');
-  assert.equal(r.diagnostics.version,'0.4.17');
+  assert.equal(r.diagnostics.version,'0.4.18');
 });
 test('site error with no reply fails the task in seconds, not 240s',async()=>{
   const c=content({noReply:true,siteError:'model channel not available'});

@@ -479,3 +479,39 @@ npm test --prefix cursor-web/tests
 **注意**：任务进行中弹窗若已出现，扩展只读不碰；点击只发生在"回复已确认完整"之后。手动点继续/否仍会触发 0.4.10 的手动操作保护（任务立即失败并提示）。
 
 升级步骤：停止端点（Ctrl+C）和 Bridge → `git pull --ff-only` → `prepare_extension.py` → 重新加载扩展 → 刷新专用页 → 重启 Bridge → `--sessions`（确认 `transportVersion: "0.4.17"`、`providerVersion: "0.4.17"`、`inSync: true`）→ 重测。预期：Cursor 收到回复 → 几秒后控制台出现 `post-reply follow-up prompt answered (是)` → 直接发下一条对话，无需点弹窗。
+
+## 0.4.18：适配其它网页 AI（GLM / Kimi K3 / Qwen / Gemini / Meta / ChatGPT）
+
+**结论：可以。** 扩展原本就带 8 个站点适配器（来自主 ZeroScript 扩展），0.4.15–0.4.18 的三重发送确认 + request_id 标记兜底 + 弹窗自动应答都是**与站点无关**的——任何适配器只要"能写进输入框、能点发送、回复带围栏 JSON 块"就能工作。0.4.18 把其余 5 个站点接入了本流水线：
+
+| provider | 站点 | 状态 | 输入预算 (UTF-16) |
+|---|---|---|---|
+| deepseek | chat.deepseek.com | 本流水线实机验证（端到端） | 160000 |
+| arena | arena.ai | 本流水线实机验证（端到端 + 弹窗自动应答） | 118000 |
+| glm | chat.z.ai | 主扩展 DOM 验证 2026-06；本流水线待实机 | 100000（保守起点） |
+| kimi | www.kimi.ai（含 K3，DOM 验证 2026-07-30） | 主扩展 DOM 验证；本流水线待实机 | 100000（保守起点） |
+| qwen | chat.qwen.ai | 主扩展适配器；本流水线待实机 | 100000（保守起点） |
+| gemini | gemini.google.com | 主扩展适配器；本流水线待实机 | 100000（保守起点） |
+| meta | www.meta.ai | 主扩展适配器；本流水线待实机 | 100000（保守起点） |
+| chatgpt | chatgpt.com | 主扩展适配器（本流水线专用页未常用） | 120000 / 600 行 |
+
+0.4.18 改动：
+
+1. **manifest**：cursor-web 扩展注入范围加入 chat.z.ai、kimi.ai、gemini.google.com、meta.ai、chat.qwen.ai（qwen 另注入 MAIN-world 的 `qwen-net.js` 网络钩子，与主扩展一致）。
+2. **全部 7 个旧适配器的 `typeAndSend` 升级到 0.4.15 接口**：返回 `{sent, landedLen}`（发送后最多等 3 秒确认"输入框清空或开始生成"，作为发送被接受的直接证据）——即使某站点的用户消息 DOM 计数不可靠，三重证据里的 provider 证据 + 写长证据仍然有效。
+3. **GLM/Kimi `readAssistant` 加 `thinkingSel`**：推理过程（Thought Process / K3 Thinking）里起草的代码块不会被误当成协议 JSON 块。
+4. **提取失败救援**（content.js）：作用域块搜索失败（如"找到 2 个代码块"）时，退回按 request_id 标记扫描，再退回渲染文本——协议 JSON 只要被围栏包裹，任何站点的意外 DOM 都有路可读。
+5. **预算表**（input_limits.py + content.js 镜像）：5 个新站点各 100000 UTF-16 单位的保守起点；实机确认大 payload 完整落地后再上调。
+
+**换站点使用步骤**（以 GLM 为例）：
+1. 专用标签页打开 chat.z.ai，登录，**开一个全新会话**
+2. `git pull` 后 `python cursor-web\prepare_extension.py`（首次接入新站点必做）→ 重载扩展 → 刷新专用页
+3. 重启 Bridge → `--sessions`：确认新会话的 provider 名（`glm`）、`0.4.18`/`0.4.18`、`inSync: true`
+4. 用新 session ID 重启 model_endpoint.py
+5. 先跑 2KB 控制测试（curl 或 Cursor 发"你好"），再跑真实 Cursor 任务
+
+**注意**：
+- 一次只有一个专用页/一个会话在工作；切换网站 = 换专用标签页 + 重新绑定会话
+- 新站点的输入预算是保守起点：若真实任务被 413 拒绝，先试"新会话"（去掉历史），仍不行再按需上调该站预算
+- 某站点若把输入截断，0.4.11 的中途截断报错会直接指出（wrote N, holds M），按提示调预算
+- 站点的"任务成功了吗?"类后续弹窗目前只有 Arena 有自动应答；其它站点若出现同类弹窗且挡住下一次对话，告诉我站点名，按同样方式加

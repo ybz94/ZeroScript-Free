@@ -598,6 +598,7 @@ const ZSProvider = (() => {
     if (!ed) throw new Error("ChatGPT input box not found");
     text = truncateForSend(text);
     const relock = _locked;
+    let landed = 0, attempted = false;
     if (relock) ed.setAttribute("contenteditable", "true"); // injection needs it editable
     try {
       await setEditorText(ed, text);
@@ -607,6 +608,7 @@ const ZSProvider = (() => {
       if (editorText().trim() === "") {
         throw new Error("ChatGPT composer did not accept the input (the text did not appear). The page may block input right now or the composer element changed. Check the dedicated webpage and retry.");
       }
+      landed = (editorText() || "").length;
       // Attach images LAST, right before the send click - see gemini.js/deepseek.js
       // typeAndSend for why (attaching first and then retyping the text can sever
       // the site's binding between the pending upload and the message sent).
@@ -618,9 +620,9 @@ const ZSProvider = (() => {
         while (Date.now() - t0 < 25000) {
           const b = sendButton();
           if (b && !b.disabled) { try { b.click(); } catch {} }
-          if (await waitFor(() => editorText().trim() === "" || !!stopButton(), 1200)) return;
+          if (await waitFor(() => editorText().trim() === "" || !!stopButton(), 1200)) return { sent: true, landedLen: landed };
         }
-        return;
+        return { sent: false, landedLen: landed };
       }
       // Wait for the control to be in its SEND role (proof ProseMirror registered
       // the text, and that no generation is in flight).
@@ -633,15 +635,24 @@ const ZSProvider = (() => {
       // Disabled send = a quota wall, not a wedge. Clicking it does nothing and
       // Enter is refused too, so return now and let scanError surface the reason
       // instead of burning the caller's retries in silence.
-      if (btn && btn.disabled) { diag("send.disabled", {}); return; }
-      if (btn) { btn.click(); return; }
-      // Fallback: Enter sends in ChatGPT's composer.
-      const o = { key: "Enter", code: "Enter", keyCode: 13, which: 13, bubbles: true, cancelable: true };
-      ed.dispatchEvent(new KeyboardEvent("keydown", o));
-      ed.dispatchEvent(new KeyboardEvent("keyup", o));
+      if (btn && btn.disabled) { diag("send.disabled", {}); return { sent: false, landedLen: landed }; }
+      if (btn) { btn.click(); attempted = true; }
+      else {
+        // Fallback: Enter sends in ChatGPT's composer.
+        const o = { key: "Enter", code: "Enter", keyCode: 13, which: 13, bubbles: true, cancelable: true };
+        ed.dispatchEvent(new KeyboardEvent("keydown", o));
+        ed.dispatchEvent(new KeyboardEvent("keyup", o));
+        attempted = true;
+      }
     } finally {
       if (relock) { const e2 = getEditor(); if (e2) e2.setAttribute("contenteditable", "false"); }
     }
+    // Report the outcome so the caller can confirm the send with the provider's
+    // own evidence (composer cleared / generation started) instead of relying
+    // on user-turn counting alone (0.4.15 interface).
+    const sent = attempted && (await waitFor(() => (editorText() || "").trim() === "" || !!stopButton(), 3000));
+    diag("sent", { sent, landedLen: landed });
+    return { sent: !!sent, landedLen: landed };
   }
 
   function stopGeneration() {
@@ -932,7 +943,7 @@ const ZSProvider = (() => {
 
   return {
     id: "chatgpt",
-    version: "0.4.17",
+    version: "0.4.18",
     displayName: "ChatGPT",
     timings,
     // Exported for test-chatgpt.js (the Node smoke test drives it against a stub

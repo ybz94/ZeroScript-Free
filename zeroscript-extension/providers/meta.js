@@ -550,6 +550,9 @@ const ZSProvider = (() => {
       return !!b && !b.disabled && b.getAttribute("aria-disabled") !== "true";
     };
     await waitFor(sendReady, 30000);
+    // Read AFTER the mirror textarea has propagated to the visible editor; the
+    // mirror's own value covers a propagation failure (the write we attempted).
+    const landed = Math.max((editor.value || "").length, (editorText() || "").length);
     // Click and CONFIRM the send took (the composer clears - text AND any staged
     // image - the instant Meta accepts it). Re-click / fall back to Enter until it
     // clears so a swallowed click can't strand the message.
@@ -569,6 +572,9 @@ const ZSProvider = (() => {
     }
     if (sent) _attachedImages = null;
     diag("meta.tas.sent", { sent, editorLen: editorText().length });
+    // 0.4.15 interface: report the outcome so the caller can confirm the send
+    // with the provider's own evidence instead of user-turn counting alone.
+    return { sent: !!sent, landedLen: landed };
   }
 
   function stopGeneration() {
@@ -746,7 +752,7 @@ const ZSProvider = (() => {
 
   return {
     id: "meta",
-    version: "0.4.17",
+    version: "0.4.18",
     displayName: "Meta AI",
     // Meta's composer accepts image uploads (hidden multi-file input → inline
     // Lexical preview → uploaded on send; see attachImages). Vision-capable, so

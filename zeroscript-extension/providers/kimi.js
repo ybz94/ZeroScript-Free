@@ -386,6 +386,10 @@ const ZSProvider = (() => {
       reply: md ? textWithout(md, notThink()).trim() : "",
       thinking: think ? (think.textContent || "").trim() : "",
       item,
+      // Protocol reader (0.4.18): K2.6/K3 thinking renders as a SIBLING of the
+      // answer's markdown inside the turn; code blocks drafted while reasoning
+      // must never count as the protocol's JSON block.
+      thinkingSel: S.thinking,
     };
   }
 
@@ -416,6 +420,7 @@ const ZSProvider = (() => {
     const ed = getEditor();
     if (!ed) throw new Error("Kimi input box not found");
     const relock = _locked;
+    let landed = 0, attempted = false;
     if (relock) { _injecting = true; ed.setAttribute("contenteditable", "true"); } // injection needs it editable
     try {
       if (editorText() !== text) setEditorText(ed, text);
@@ -429,15 +434,25 @@ const ZSProvider = (() => {
       }
       // Wait for the send control to enable (proof Lexical registered the text).
       await waitFor(() => !!sendButton(), 1500);
+      landed = (editorText() || "").length;
       const btn = sendButton();
-      if (btn) { btn.click(); return; }
-      // Fallback: Enter sends in Lexical's composer.
-      const o = { key: "Enter", code: "Enter", keyCode: 13, which: 13, bubbles: true, cancelable: true };
-      ed.dispatchEvent(new KeyboardEvent("keydown", o));
-      ed.dispatchEvent(new KeyboardEvent("keyup", o));
+      if (btn) { btn.click(); attempted = true; }
+      else {
+        // Fallback: Enter sends in Lexical's composer.
+        const o = { key: "Enter", code: "Enter", keyCode: 13, which: 13, bubbles: true, cancelable: true };
+        ed.dispatchEvent(new KeyboardEvent("keydown", o));
+        ed.dispatchEvent(new KeyboardEvent("keyup", o));
+        attempted = true;
+      }
     } finally {
       if (relock) { const e2 = getEditor(); if (e2) e2.setAttribute("contenteditable", "false"); _injecting = false; }
     }
+    // Report the outcome so the caller can confirm the send with the provider's
+    // own evidence (composer cleared / generation started) instead of relying
+    // on user-turn counting alone (0.4.15 interface).
+    const sent = attempted && (await waitFor(() => isBusyNow() || (editorText() || "").trim() === "", 3000));
+    diag("kimi.sent", { sent, landedLen: landed });
+    return { sent: !!sent, landedLen: landed };
   }
 
   function stopGeneration() {
@@ -760,7 +775,7 @@ const ZSProvider = (() => {
 
   return {
     id: "kimi",
-    version: "0.4.17",
+    version: "0.4.18",
     displayName: "Kimi",
     // Confirmed live: Kimi (K2.6) reads attached images - it correctly described
     // a test screenshot's content. So screen_capture is exposed here (see main.js

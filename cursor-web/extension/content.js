@@ -2,12 +2,13 @@
 (() => {
   const P = ZSProvider;
   // Mirror input_limits.py. Never enter a provider's legacy truncation path.
-  const inputCaps = {deepseek:160000, chatgpt:120000, arena:118000};
+  const inputCaps = {deepseek:160000, chatgpt:120000, arena:118000,
+                     glm:100000, kimi:100000, qwen:100000, gemini:100000, meta:100000};
   const inputMaxChars = inputCaps[P.id] || 60000;
   const inputMaxLines = P.id === 'chatgpt' ? 600 : null;
   P.init({diag: () => {}});
   let id = crypto.randomUUID(), key = P.conversationKey(), busy = false;
-  const VERSION = '0.4.17';
+  const VERSION = '0.4.18';
   const seen = new Set();
   // DOM events can wake the watcher even when background timers are throttled.
   // Keep a timer fallback for generation-state changes without DOM mutations.
@@ -249,8 +250,23 @@
         }
         errorSince = null;
         diagnostics.phase = 'reading_reply';
-        const extracted = msg.response_format === 'json_code_block'
+        let extracted = msg.response_format === 'json_code_block'
           ? ZSWebProtocol.read(result) : {text:result.reply || '', source:'rendered_reply'};
+        // Rescue (0.4.18): the scoped block search failed (wrong block count or
+        // an unexpected reply DOM) - before degrading to rendered prose, locate
+        // the protocol block by this send's unique request id. Provider-agnostic;
+        // keeps every site adapter working as long as the JSON is fenced.
+        if (extracted.error && msg.response_format === 'json_code_block' && rid) {
+          const b = findMarkerBlock(rid);
+          if (b) {
+            const t = markerBlockText(b).trim();
+            if (t.startsWith('{') && isProtocolObject(rid, t)) {
+              diagnostics.fallbackRead = true;
+              extracted = {text: t, source: 'marker_fallback',
+                           detail: 'scoped search failed (' + (extracted.detail || '') + ') - request-id marker'};
+            }
+          }
+        }
         diagnostics.extraction = extracted.source;
         diagnostics.extraction_detail = extracted.detail || '';
         // Use rendered text only to determine settling when extraction failed;
