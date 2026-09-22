@@ -438,24 +438,52 @@ const ZSProvider = (() => {
   // React-controlled <textarea>: set .value via the native prototype setter so
   // React's onChange fires, dispatch an input event, wait for the submit button
   // to re-enable, then click it (Enter would insert a newline).
-  function setTextareaValue(el, v) {
-    if (el && el.isContentEditable) {
-      // TipTap/ProseMirror composer: the value setter does nothing on a
-      // contenteditable DIV. Focus, select all existing content, then insert
-      // via execCommand (fires the input events ProseMirror/React listen to,
-      // so the composer updates and the send button enables).
-      el.focus();
-      try {
-        const range = document.createRange();
-        range.selectNodeContents(el);
-        const sel = window.getSelection();
-        sel.removeAllRanges();
-        sel.addRange(range);
-        document.execCommand("insertText", false, v);
-      } catch {
+  //
+  // TipTap/ProseMirror composer: the value setter does nothing on a
+  // contenteditable DIV. Insert via execCommand (fires the input events
+  // ProseMirror/React listen to, so the composer updates and the send button
+  // enables) - but in CHUNKS. A single insertText of a 50k-118k char payload
+  // fires the site's onChange once with the whole text: one synchronous burst
+  // of React state update / character counting over 100k chars that can freeze
+  // the tab (observed 2026-09-22: composer frozen, page unresponsive). Chunked
+  // writes keep each change event small, the way fast typing looks, and surface
+  // a site-side input cap MID-write instead of after the whole payload.
+  const INSERT_CHUNK = 8000;
+  const INSERT_SETTLE_MS = 60;
+  async function insertContentEditable(el, v) {
+    el.focus();
+    const sel = window.getSelection();
+    const selectEnd = (toEnd) => {
+      const range = document.createRange();
+      range.selectNodeContents(el);
+      if (toEnd) range.collapse(false);
+      sel.removeAllRanges();
+      sel.addRange(range);
+    };
+    selectEnd(false); // first chunk replaces any existing draft
+    let written = 0;
+    for (let i = 0; i < v.length; i += INSERT_CHUNK) {
+      selectEnd(true); // deterministic append point even after a site re-render
+      const ok = document.execCommand("insertText", false, v.slice(i, i + INSERT_CHUNK));
+      if (!ok) {
+        // execCommand unavailable (very old engine): legacy one-shot fallback.
         el.textContent = v;
         el.dispatchEvent(new Event("input", { bubbles: true }));
+        return;
       }
+      written = i + Math.min(INSERT_CHUNK, v.length - i);
+      await sleep(INSERT_SETTLE_MS); // let the site's onChange settle
+      // Mid-write clamp check: the DOM should already hold ~everything written.
+      // (80% margin absorbs contenteditable newline/whitespace normalization.)
+      const have = (el.textContent || "").length;
+      if (have < written * 0.8) {
+        throw new Error(`Arena composer clamped the input mid-write: wrote ${written} characters, composer holds ${have}. The page has an input limit below this payload; shrink the request and retry.`);
+      }
+    }
+  }
+  async function setTextareaValue(el, v) {
+    if (el && el.isContentEditable) {
+      await insertContentEditable(el, v);
       return;
     }
     const proto = window.HTMLTextAreaElement && window.HTMLTextAreaElement.prototype;
@@ -480,7 +508,7 @@ const ZSProvider = (() => {
     if (!editor) throw new Error("Arena input box not found after 15s (no visible TipTap composer or visible form textarea; the page may still be loading, or this may not be the chat page). Refresh the dedicated page, wait until the input box is visible, and retry.");
     const payload = truncateForSend(text);
     editor.focus();
-    setTextareaValue(editor, payload);
+    await setTextareaValue(editor, payload);
     // If the text did not land in the composer (wrong/hidden element, page
     // blocking input, React dropped it), fail NOW instead of waiting the full
     // 60s for a send button that will never enable on an empty composer.
@@ -935,7 +963,7 @@ const ZSProvider = (() => {
 
   return {
     id: "arena",
-    version: "0.4.10",
+    version: "0.4.11",
     displayName: "Arena",
     // Arena's chat composer accepts image uploads (hidden `input[type=file]` in
     // the form → staged preview card → uploaded on send; see attachImages). The

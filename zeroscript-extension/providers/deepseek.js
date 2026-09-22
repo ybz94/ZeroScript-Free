@@ -977,7 +977,7 @@ const ZSProvider = (() => {
 
   return {
     id: "deepseek",
-    version: "0.4.10",
+    version: "0.4.11",
     displayName: "DeepSeek",
     // DYNAMIC: DeepSeek's Instant/Expert models are text-only, but the V4 UI has a
     // dedicated "Vision" model tab. When the user selects Vision we honour it (see

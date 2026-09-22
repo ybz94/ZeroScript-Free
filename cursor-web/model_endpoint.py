@@ -399,7 +399,7 @@ def create_app(api_key, session_id, rpc=bridge_rpc, poll_interval=1, heartbeat=1
             if len(cache) >= MAX_CACHE:
                 raise AdapterError('Request cache full; finish the session before restarting the endpoint', 503)
             start = time.monotonic()
-            print(f'[{rid[:8]}] task started on dedicated webpage', flush=True)
+            print(f'[{rid[:8]}] task started on dedicated webpage (prompt {len(prompt)} chars, {prompt.count(chr(10)) + 1} lines)', flush=True)
             task = asyncio.create_task(complete(body, catalog, prompt, rid))
 
             def _task_done(t, _tag=rid[:8], _start=start):

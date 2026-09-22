@@ -375,3 +375,17 @@ npm test --prefix cursor-web/tests
 **重要规则**：任务运行期间**绝不要手动操作专用页**——包括点"是/否/继续"、手动发送、编辑输入框。这些操作要么触发站点自身的 `getComputedStyle` 卡死，要么让任务快速失败（0.4.10 会明确报错）。等 Cursor 拿到结果后再做任何手动操作。
 
 升级步骤：停止端点（Ctrl+C）和 Bridge → `git pull --ff-only` → `prepare_extension.py` → 重新加载扩展 → 刷新专用页并等输入框可见后再多等几秒 → 重启 Bridge → `--sessions`（确认 `transportVersion: "0.4.10"`、`providerVersion: "0.4.10"`、`inSync: true`）→ `--session "ID"` 重测。
+
+## 0.4.11：分块写入输入框，长载荷不再一次插完导致网页卡死（2026-09-22）
+
+**为什么要这一版**：0.4.10 复测时网页直接卡死、毫无反应，怀疑是发送文本太长所致——机制上成立：旧代码把**整个载荷（5 万–11.8 万字符）用一次 `execCommand("insertText")` 插进 TipTap 输入框**，网站自己的 onChange 处理器（之前就已发现它有 `getComputedStyle` bug）被一次性塞进 10 万字符，React 状态更新/字符计数在同一个同步事件里跑完，标签页直接冻结。
+
+0.4.11 改动：
+
+1. **分块写入**：输入框写入改为每块 8,000 字符、块间停 60ms（对网站而言就像快速打字），每次写入前把光标重新锚定到末尾（防止网站重渲染挪走光标）。每块的 onChange 都是小事件，不再产生一次性的巨型同步负载。
+2. **写入中途截断检测**：每块写完后立即核对输入框实际字符数，少于已写入量的 80% 立即失败 `Arena composer clamped the input mid-write: …`——网站若有比我们预算更小的输入上限，**绝不会再发出被截断的坏 JSON**。
+3. **端点日志带载荷尺寸**：任务开始时打印 `task started on dedicated webpage (prompt N chars, M lines)`——"你好"到底发了多少字符，日志里一眼可见（长是正常的：完整上下文+工具定义原样转发，见 0.4.10 说明）。
+
+**如果页面已经卡死**：卡死无法自愈，关掉该标签页重新打开（或强制刷新）再继续；刷新后重新 `--sessions` → `--session "ID"` 绑定。
+
+升级步骤：停止端点（Ctrl+C）和 Bridge → `git pull --ff-only` → `prepare_extension.py` → 重新加载扩展 → 刷新专用页并等输入框可见后再多等几秒 → 重启 Bridge → `--sessions`（确认 `transportVersion: "0.4.11"`、`providerVersion: "0.4.11"`、`inSync: true`）→ `--session "ID"` 重测。

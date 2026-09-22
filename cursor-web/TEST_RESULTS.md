@@ -107,6 +107,16 @@ git diff --check
 - 真实 HTTP/Bridge 测试验证 json_code_block 指令到浏览器连接的传播。
 - 这些是 Markdown/DOM 与模拟浏览器回归测试，不是三家网站的在线实机验证。用户反复同列报错与此机制相符，但未获得其原始响应，不能宣称根因已完全确认。
 
+## 0.4.11 分块写入输入框：长载荷不再一次插完冻结网页（2026-09-22）
+
+- Python 46 项、JavaScript 52 项，总计 98 项通过（`unittest discover` + `npm test`）。
+- 实机依据（Arena Agent 模式，2026-09-22）：0.4.10 下任务发出后网页卡死、无反应；用户判断与发送文本过长有关。机制核对成立：旧 `setTextareaValue` 对 contenteditable 用**单次 `execCommand("insertText")` 写入全部载荷**（5 万–11.8 万字符），网站 onChange 一次性处理整段文本（React 状态/字符计数同步爆发；该处理器已知存在 `getComputedStyle` TypeError），标签页冻结。
+- 改动 1（arena.js）：`insertContentEditable` 分块写入——每块 8,000 字符、块间 60ms 让网站 onChange 消化，每块前把选区重新锚定到末尾（抗网站重渲染挪光标）；对网站的每次 change 事件都是小事件。
+- 改动 2（arena.js）：每块写入后核对 DOM 实际长度 < 已写入量 × 80% 即抛 `clamped the input mid-write`，网站输入上限小于载荷时绝不发出截断 JSON（原有写后 95% 校验保留为兜底）。
+- 改动 3（model_endpoint.py）：任务启动日志带载荷尺寸 `prompt N chars, M lines`，"你好"实际发了多少字符可直接核对。
+- 新增测试 3 项（首次为 provider DOM 逻辑建了假 DOM 测试台）：长载荷分块写入（每块 ≤8000、总量守恒、正常发送）；网站上限 12000 时在写入中途（第 2 块后）即失败且绝不点发送；短文本单次写入+遗留草稿场景。
+- 假 DOM 台模拟 execCommand 追加语义，未模拟选区替换；仍是模拟回归，网页卡死是否消除待用户桌面复测。
+
 ## 0.4.10 JSON 回复完成即返回 + 任务期间手动操作快速失败（2026-09-22）
 
 - Python 46 项、JavaScript 49 项，总计 95 项通过（`unittest discover` + `npm test`）。

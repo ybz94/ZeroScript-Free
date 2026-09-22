@@ -13,7 +13,7 @@ function content(options = {}) {
   const document = {hidden:!!options.hidden, title:'Chat', addEventListener(){}};
   const provider = {
     id:options.provider || 'mock',
-    version:options.providerVersion === undefined ? '0.4.10' : options.providerVersion, // null => pre-0.4.9 (no version field)
+    version:options.providerVersion === undefined ? '0.4.11' : options.providerVersion, // null => pre-0.4.9 (no version field)
     init(){}, conversationKey:()=>key, isFreshChat:()=>false,
     isBusyNow:()=>!!options.busy, isGenerating:()=>!!options.generating && sent>0, // generating only AFTER our send (post-reply prompt state)
     isHardGenerating:()=>!!options.hardGenerating,
@@ -114,8 +114,8 @@ test('unversioned provider (pre-0.4.9 build) is also refused, not mixed',()=>{
 test('session announcement reports provider version and sync state',()=>{
   const c=content();
   const s=c.messages.find(m=>m.type==='session');
-  assert.equal(s.transportVersion,'0.4.10');
-  assert.equal(s.providerVersion,'0.4.10');
+  assert.equal(s.transportVersion,'0.4.11');
+  assert.equal(s.providerVersion,'0.4.11');
   assert.equal(s.inSync,true);
 });
 test('stable parseable JSON reply finalizes even while page reports generating (Arena follow-up prompt)',async()=>{
@@ -237,7 +237,7 @@ test('model protocol returns code block extraction rather than rendered reply',a
   const r=await c.result();assert.equal(r.error,undefined);assert.equal(r.text,raw);
   assert.equal(r.diagnostics.extraction,'code_text');
   assert.equal(r.diagnostics.extraction_detail,'roots=1 scope=answer_roots turn_blocks=1');
-  assert.equal(r.diagnostics.version,'0.4.10');
+  assert.equal(r.diagnostics.version,'0.4.11');
 });
 test('site error with no reply fails the task in seconds, not 240s',async()=>{
   const c=content({noReply:true,siteError:'model channel not available'});
@@ -259,4 +259,75 @@ test('model protocol never returns missing code block as successful prose',async
   const r=await c.result();assert.match(r.error,/code block missing/);
   assert.equal(r.diagnostics.extraction,'code_block_unavailable');
   assert.equal(r.diagnostics.extraction_detail,'');
+});
+
+// ── arena.js composer writer (fake DOM: the 0.4.11 chunked-insert fix) ──────
+function arenaSend(options = {}) {
+  const calls = [];
+  const cap = options.cap === undefined ? Infinity : options.cap;
+  const editor = {
+    isContentEditable: true, offsetParent: {}, className: 'tiptap ProseMirror',
+    textContent: '', value: undefined, focus(){}, dispatchEvent(){},
+    closest(){ return null; },
+  };
+  let clicked = 0;
+  const sendBtn = {
+    offsetParent: {}, disabled: false,
+    getAttribute: n => (n === 'aria-label' ? 'Send message' : null),
+    click(){ clicked++; editor.textContent = ''; }, // site accepts: composer clears
+  };
+  const document = {
+    querySelectorAll(sel){
+      if (sel === '[contenteditable]') return [editor];
+      if (sel === 'button') return [sendBtn];
+      if (sel === 'form textarea') return [];
+      return [];
+    },
+    createRange(){ return { selectNodeContents(){}, collapse(){} }; },
+    execCommand(cmd){
+      if (cmd !== 'insertText') return false;
+      const val = arguments[2];
+      calls.push(val.length);
+      const t = editor.textContent + val;
+      editor.textContent = t.length > cap ? t.slice(0, cap) : t; // simulate site cap
+      return true;
+    },
+  };
+  const sandbox = {
+    document,
+    window: { getSelection(){ return { removeAllRanges(){}, addRange(){} }; } },
+    location: { pathname: '/c/1', href: 'https://arena.ai/c/1' },
+    setTimeout, clearTimeout, setInterval, clearInterval, Date,
+    KeyboardEvent: class KeyboardEvent {}, Event: class Event {},
+  };
+  const ctx = vm.createContext(sandbox);
+  vm.runInContext(fs.readFileSync(path.join(root, 'providers', 'arena.js'), 'utf8'), ctx);
+  const P = vm.runInContext('ZSProvider', ctx);
+  return { P, calls, editor, get clicked(){ return clicked; } };
+}
+test('arena writes a long payload in chunks, never one giant insertText', async () => {
+  const a = arenaSend();
+  const payload = 'x'.repeat(21000);
+  await a.P.typeAndSend(payload);
+  assert.equal(a.clicked, 1);
+  assert.equal(a.editor.textContent, ''); // accepted by the site
+  assert.ok(a.calls.length >= 3, 'expected chunked inserts, got ' + JSON.stringify(a.calls));
+  assert.ok(a.calls.every(c => c <= 8000), 'no chunk may exceed 8000 chars: ' + JSON.stringify(a.calls));
+  assert.equal(a.calls.reduce((s, c) => s + c, 0), payload.length);
+});
+test('arena detects a site-side input cap MID-write and never sends truncated JSON', async () => {
+  const a = arenaSend({ cap: 12000 });
+  let err;
+  try { await a.P.typeAndSend('x'.repeat(21000)); } catch (e) { err = e; }
+  assert.ok(err, 'expected the mid-write clamp to fail the send');
+  assert.match(err.message, /clamped the input mid-write/);
+  assert.equal(a.clicked, 0, 'must never click send with a clamped payload');
+});
+test('arena still replaces a leftover draft and sends in one chunk when short', async () => {
+  const a = arenaSend();
+  a.editor.textContent = 'leftover draft';
+  await a.P.typeAndSend('hello');
+  assert.equal(a.clicked, 1);
+  assert.equal(a.calls.length, 1);
+  assert.equal(a.calls[0], 'hello'.length);
 });
