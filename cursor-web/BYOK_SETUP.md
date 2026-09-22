@@ -464,3 +464,18 @@ npm test --prefix cursor-web/tests
 3. 诊断：`extraction: "marker_fallback"`、`finalReason: "complete_json_fallback"`、`fallbackRead: true`，控制台打印 `[zs] reply turn invisible to provider filter - reading via request-id marker fallback`。
 
 升级步骤：停止端点（Ctrl+C）和 Bridge → `git pull --ff-only` → `prepare_extension.py` → 重新加载扩展 → 刷新专用页 → 重启 Bridge → `--sessions`（确认 `transportVersion: "0.4.16"`、`providerVersion: "0.4.16"`、`inSync: true`）→ 重测。
+
+## 0.4.17：任务成功后自动应答"此任务成功了吗?"弹窗（2026-09-22）
+
+**为什么要这一版**：0.4.16 已实现 Cursor 收到网页回复（验收测试 A 跑通），但 Arena 每次返回结果后会弹出"此任务成功了吗?"（是 / 否 / 继续工作），不点就无法进行下一次对话。
+
+0.4.17 改动：
+
+1. **自动点"是"**：回复完整读取并验证之后（此时结果已在手，应答不会污染本次结果），扩展在最多 10 秒内等待弹窗出现并点击"是"（任务成功）——页面随即恢复干净，下一次任务无需任何手动操作。弹窗稍晚出现也能等到。
+2. **定位方式**（arena.js `clearFollowupPrompt`）：找文本恰为"是"的按钮，向上 4 层祖先内必须含"成功了吗"字样（防误点页面其他"是"按钮），隐藏（不可见）的按钮不点。
+3. 诊断：`diagnostics.followupCleared`（true = 已自动应答），控制台 `[zs] post-reply follow-up prompt answered (是)`。
+4. 任务失败时**不**点击弹窗（状态未知，留给你人工判断）。
+
+**注意**：任务进行中弹窗若已出现，扩展只读不碰；点击只发生在"回复已确认完整"之后。手动点继续/否仍会触发 0.4.10 的手动操作保护（任务立即失败并提示）。
+
+升级步骤：停止端点（Ctrl+C）和 Bridge → `git pull --ff-only` → `prepare_extension.py` → 重新加载扩展 → 刷新专用页 → 重启 Bridge → `--sessions`（确认 `transportVersion: "0.4.17"`、`providerVersion: "0.4.17"`、`inSync: true`）→ 重测。预期：Cursor 收到回复 → 几秒后控制台出现 `post-reply follow-up prompt answered (是)` → 直接发下一条对话，无需点弹窗。

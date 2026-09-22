@@ -7,7 +7,7 @@
   const inputMaxLines = P.id === 'chatgpt' ? 600 : null;
   P.init({diag: () => {}});
   let id = crypto.randomUUID(), key = P.conversationKey(), busy = false;
-  const VERSION = '0.4.16';
+  const VERSION = '0.4.17';
   const seen = new Set();
   // DOM events can wake the watcher even when background timers are throttled.
   // Keep a timer fallback for generation-state changes without DOM mutations.
@@ -279,6 +279,24 @@
       if (text.length > 250000) throw new Error('Answer exceeds size limit; partial text returned. Request a shorter answer');
       console.log('[zs] reply complete: ' + text.length + ' chars, reason=' + (diagnostics.finalReason || 'idle'));
       diagnostics.phase = 'completed';
+      // The site's post-reply follow-up prompt ("此任务成功了吗?" with
+      // 是/否/继续工作) blocks the next send on the page until answered. The
+      // reply is fully read and validated at this point, so answering 是 (the
+      // task succeeded) now is safe and keeps the page ready for the next task
+      // without the user touching anything. Wait up to 10s: the prompt may
+      // appear a moment after the reply finishes.
+      if (typeof P.clearFollowupPrompt === 'function') {
+        const promptDeadline = Date.now() + 10000;
+        while (Date.now() < promptDeadline) {
+          if (P.clearFollowupPrompt()) {
+            diagnostics.followupCleared = true;
+            console.log('[zs] post-reply follow-up prompt answered (是)');
+            break;
+          }
+          await new Promise(r => setTimeout(r, 1000));
+        }
+        diagnostics.followupCleared = diagnostics.followupCleared === true;
+      }
     } catch (e) {failure = String(e); console.log('[zs] task failed: ' + String(e).slice(0, 300));}
     finally {
       // Capture a fresh-chat URL before dropping busy, preserving this binding.

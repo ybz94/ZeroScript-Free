@@ -107,6 +107,17 @@ git diff --check
 - 真实 HTTP/Bridge 测试验证 json_code_block 指令到浏览器连接的传播。
 - 这些是 Markdown/DOM 与模拟浏览器回归测试，不是三家网站的在线实机验证。用户反复同列报错与此机制相符，但未获得其原始响应，不能宣称根因已完全确认。
 
+## 0.4.17 任务成功后自动应答"此任务成功了吗?"弹窗（2026-09-22）
+
+- Python 46 项、JavaScript 59 项，总计 105 项通过（`unittest discover` + `npm test`）。
+- 实机依据：0.4.16 下 Cursor 成功收到网页回复（验收测试 A 在 Arena 跑通），但每次回复后页面弹出"此任务成功了吗?"（是/否/继续工作），不选则下一次对话无法进行。
+- 改动：
+  - content.js：回复完整读取并验证之后，最多等 10s 调用 `P.clearFollowupPrompt()`；命中即止。诊断 `followupCleared`。
+  - arena.js 新增 `clearFollowupPrompt()`：文本恰为"是"的按钮 + 4 层祖先内含"成功了吗"上下文 + 按钮可见，才点击。其他 provider 无此方法（`typeof` 守卫），行为不变。
+- 设计边界：只点"是"（任务确实成功）；点"继续工作"会让网页继续干活、点"否"会让网页返工，均错误。任务失败路径不点击。手动点击仍由 0.4.10 保护拦截。
+- 新增测试 2 项：弹窗在回复后出现 → 成功返回且 `followupClicked=true`/`followupCleared=true`；无弹窗 → 成功返回且 `followupCleared=false`。
+- 弹窗真实 DOM 下的点击效果（是否解锁下一次发送）待用户桌面复测确认。
+
 ## 0.4.16 回复读取 request_id 标记兜底（2026-09-22）
 
 - Python 46 项、JavaScript 57 项，总计 103 项通过（`unittest discover` + `npm test`）。

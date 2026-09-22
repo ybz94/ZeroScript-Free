@@ -10,6 +10,7 @@ function content(options = {}) {
   const messages = [], intervals = [];
   let listener, now = 0, sent = 0, old = {}, item = old, text = 'old answer', count = 1, key = '/c/1';
   let editorContent = options.draft || '', userCountVar = 1, turnAt = Infinity; // fake-time when OUR user turn becomes visible
+  let followupClicked = false;
   const markerText = options.markerText || '';
   const markerBlock = { // fake fenced code block for the 0.4.16 marker fallback
     textContent: markerText,
@@ -20,7 +21,7 @@ function content(options = {}) {
     querySelectorAll: sel => (options.markerBlocks && sel && sel.indexOf('pre') !== -1) ? [markerBlock] : []};
   const provider = {
     id:options.provider || 'mock',
-    version:options.providerVersion === undefined ? '0.4.16' : options.providerVersion, // null => pre-0.4.9 (no version field)
+    version:options.providerVersion === undefined ? '0.4.17' : options.providerVersion, // null => pre-0.4.9 (no version field)
     init(){}, conversationKey:()=>key, isFreshChat:()=>false,
     isBusyNow:()=>!!options.busy, isGenerating:()=>!!options.generating && sent>0, // generating only AFTER our send (post-reply prompt state)
     isHardGenerating:()=>!!options.hardGenerating,
@@ -28,6 +29,7 @@ function content(options = {}) {
     editorText:()=>editorContent,
     assistantCount:()=>options.staleReads?1:count, userCount:()=>options.brokenUserCount?1:userCountVar+(turnAt!==Infinity&&now>=turnAt?1:0),
     lastAssistant:()=>options.staleReads?old:item, lastAssistantId:()=>options.staleReads?'old':(item===old?'old':'new'),
+    clearFollowupPrompt:()=>{ if(options.followupPromptAt===undefined || now<options.followupPromptAt) return false; followupClicked=true; return true; },
     readAssistant:()=>({reply:options.staleReads?'old answer':text,item:options.staleReads?old:item}),
     errorText:()=>options.siteError || null,
     findContinueBtn:()=>!!options.truncated, turnHalted:()=>!!options.halted,
@@ -56,7 +58,7 @@ function content(options = {}) {
   const first = messages[0];
   const dispatch = (extra={}) => {let ack;listener({type:'dispatch', job_id:'j1',session_id:first.id,expectedKey:'/c/1',prompt:'hi',...extra},{},v=>ack=v);return ack;};
   async function result(){for(let i=0;i<1000;i++){const r=messages.find(m=>m.type==='result');if(r)return r;await new Promise(setImmediate);}throw Error('No result');}
-  return {messages, dispatch, result, get sent(){return sent;}, intervals};
+  return {messages, dispatch, result, get sent(){return sent;}, get followupClicked(){return followupClicked;}, intervals};
 }
 test('content returns completed new response, not previous answer',async()=>{
   const c=content();assert.equal(c.dispatch().accepted,true);assert.equal((await c.result()).text,'new answer');assert.equal(c.sent,1);
@@ -128,8 +130,8 @@ test('unversioned provider (pre-0.4.9 build) is also refused, not mixed',()=>{
 test('session announcement reports provider version and sync state',()=>{
   const c=content();
   const s=c.messages.find(m=>m.type==='session');
-  assert.equal(s.transportVersion,'0.4.16');
-  assert.equal(s.providerVersion,'0.4.16');
+  assert.equal(s.transportVersion,'0.4.17');
+  assert.equal(s.providerVersion,'0.4.17');
   assert.equal(s.inSync,true);
 });
 test('stable parseable JSON reply finalizes even while page reports generating (Arena follow-up prompt)',async()=>{
@@ -213,6 +215,24 @@ test('marker fallback rejects the request envelope block (also carries the id), 
   const r=await c.result();
   assert.match(r.error,/Timed out/);
   assert.equal(r.diagnostics.fallbackRead,undefined);
+});
+test('post-reply follow-up prompt is auto-answered (是) after a successful task',async()=>{
+  // The site shows "此任务成功了吗?" (是/否/继续工作) after each reply; left open
+  // it blocks the next send. The extension must click 是 once the reply is in.
+  const c=content({followupPromptAt:3000, protocol:{text:'{"a":1}',source:'code_text',detail:'ok'}});
+  c.dispatch({response_format:'json_code_block'});
+  const r=await c.result();
+  assert.equal(r.error,undefined);
+  assert.equal(c.followupClicked,true);
+  assert.equal(r.diagnostics.followupCleared,true);
+});
+test('no follow-up prompt: task completes and reports followupCleared=false',async()=>{
+  const c=content({protocol:{text:'{"a":1}',source:'code_text',detail:'ok'}});
+  c.dispatch({response_format:'json_code_block'});
+  const r=await c.result();
+  assert.equal(r.error,undefined);
+  assert.equal(c.followupClicked,false);
+  assert.equal(r.diagnostics.followupCleared,false);
 });
 test('navigation while running invalidates original session binding',async()=>{
   const c=content({navigate:true});c.dispatch();assert.match((await c.result()).error,/changed/);
@@ -301,7 +321,7 @@ test('model protocol returns code block extraction rather than rendered reply',a
   const r=await c.result();assert.equal(r.error,undefined);assert.equal(r.text,raw);
   assert.equal(r.diagnostics.extraction,'code_text');
   assert.equal(r.diagnostics.extraction_detail,'roots=1 scope=answer_roots turn_blocks=1');
-  assert.equal(r.diagnostics.version,'0.4.16');
+  assert.equal(r.diagnostics.version,'0.4.17');
 });
 test('site error with no reply fails the task in seconds, not 240s',async()=>{
   const c=content({noReply:true,siteError:'model channel not available'});

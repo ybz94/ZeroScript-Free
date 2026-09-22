@@ -760,7 +760,7 @@ const ZSProvider = (() => {
 
   return {
     id: "kimi",
-    version: "0.4.16",
+    version: "0.4.17",
     displayName: "Kimi",
     // Confirmed live: Kimi (K2.6) reads attached images - it correctly described
     // a test screenshot's content. So screen_capture is exposed here (see main.js
