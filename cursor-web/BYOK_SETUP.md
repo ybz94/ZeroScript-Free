@@ -389,3 +389,18 @@ npm test --prefix cursor-web/tests
 **如果页面已经卡死**：卡死无法自愈，关掉该标签页重新打开（或强制刷新）再继续；刷新后重新 `--sessions` → `--session "ID"` 绑定。
 
 升级步骤：停止端点（Ctrl+C）和 Bridge → `git pull --ff-only` → `prepare_extension.py` → 重新加载扩展 → 刷新专用页并等输入框可见后再多等几秒 → 重启 Bridge → `--sessions`（确认 `transportVersion: "0.4.11"`、`providerVersion: "0.4.11"`、`inSync: true`）→ `--session "ID"` 重测。
+
+## 0.4.12：卡死定位面包屑 + 回复读取限速（2026-09-22）
+
+**为什么要这一版**：0.4.11 的分块写入后网页仍卡死，说明卡死点还没锁定（可能在写入阶段，可能在点发送/提交管线，也可能在生成回复阶段，甚至可能是我们自己的读取循环）。0.4.12 不猜——直接加阶段标记把卡死点逼出来。
+
+0.4.12 改动：
+
+1. **控制台面包屑**：任务全链路每到一个阶段就在页面 DevTools 控制台打印一行 `[zs] …`：
+   `task start（载荷字符数）→ arena: writing N chars（分几块）→ chunk i/N → write done → clicking send button → send confirmed → send confirmed, waiting for reply → reply complete（或 task failed）`。
+   **页面卡死时，控制台里最后一行 `[zs]` 就是卡死发生的阶段**——把这行（和旁边的红色报错，如有）发给我即可定位。
+2. **回复读取限速**：等待回复期间，页面每次 DOM 变化（流式生成时每个 token 都算一次）都会触发一次"读整个对话"——而对话里现在含我们 5 万+ 字符的用户消息，高频全量读取可能占满标签页 CPU。现限制为**每 250ms 最多一次完整读取**，排除我们自己的代码作为卡死嫌疑。
+
+**复测方法（重要）**：升级 0.4.12 后，**先在专用页打开 DevTools 控制台（F12 → Console）**，再从 Cursor 发任务。卡死后别关页面，把控制台里**最后一行 `[zs]`** 和任何红色报错截图/复制给我。
+
+升级步骤：停止端点（Ctrl+C）和 Bridge → `git pull --ff-only` → `prepare_extension.py` → 重新加载扩展 → 刷新专用页并等输入框可见后再多等几秒 → 重启 Bridge → `--sessions`（确认 `transportVersion: "0.4.12"`、`providerVersion: "0.4.12"`、`inSync: true`）→ `--session "ID"` 重测。

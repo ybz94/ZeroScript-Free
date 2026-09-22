@@ -451,6 +451,7 @@ const ZSProvider = (() => {
   const INSERT_CHUNK = 8000;
   const INSERT_SETTLE_MS = 60;
   async function insertContentEditable(el, v) {
+    console.log('[zs] arena: writing ' + v.length + ' chars (' + Math.ceil(v.length / INSERT_CHUNK) + ' chunks)');
     el.focus();
     const sel = window.getSelection();
     const selectEnd = (toEnd) => {
@@ -479,7 +480,13 @@ const ZSProvider = (() => {
       if (have < written * 0.8) {
         throw new Error(`Arena composer clamped the input mid-write: wrote ${written} characters, composer holds ${have}. The page has an input limit below this payload; shrink the request and retry.`);
       }
+      const nChunks = Math.ceil(v.length / INSERT_CHUNK);
+      const thisChunk = Math.floor(i / INSERT_CHUNK) + 1;
+      if (thisChunk % 5 === 0 || thisChunk === nChunks) {
+        console.log(`[zs] arena: chunk ${thisChunk}/${nChunks} (landed ${have}/${written})`);
+      }
     }
+    console.log('[zs] arena: write done, composer holds ' + (el.textContent || "").length + ' chars');
   }
   async function setTextareaValue(el, v) {
     if (el && el.isContentEditable) {
@@ -567,6 +574,7 @@ const ZSProvider = (() => {
     // Click and CONFIRM the send took (editor clears the instant Arena accepts
     // it, image AND text paths). Re-click until it clears so a single swallowed
     // click can't strand the message/attachment. No re-attach here.
+    console.log('[zs] arena: clicking send button');
     let sent = false;
     for (let i = 0; i < 6 && !sent; i++) {
       if (sendReady()) {
@@ -578,6 +586,7 @@ const ZSProvider = (() => {
       }
       sent = await waitFor(() => editorText().trim() === "", 700);
     }
+    console.log('[zs] arena: send ' + (sent ? 'confirmed (composer cleared)' : 'NOT confirmed - composer still holds text'));
     diag("arena.tas.sent", { sent, editorLen: editorText().length, pendingAfterSend: pendingCount() });
   }
 
@@ -963,7 +972,7 @@ const ZSProvider = (() => {
 
   return {
     id: "arena",
-    version: "0.4.11",
+    version: "0.4.12",
     displayName: "Arena",
     // Arena's chat composer accepts image uploads (hidden `input[type=file]` in
     // the form → staged preview card → uploaded on send; see attachImages). The

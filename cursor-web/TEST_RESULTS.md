@@ -107,6 +107,15 @@ git diff --check
 - 真实 HTTP/Bridge 测试验证 json_code_block 指令到浏览器连接的传播。
 - 这些是 Markdown/DOM 与模拟浏览器回归测试，不是三家网站的在线实机验证。用户反复同列报错与此机制相符，但未获得其原始响应，不能宣称根因已完全确认。
 
+## 0.4.12 卡死定位面包屑 + 回复读取限速（2026-09-22）
+
+- Python 46 项、JavaScript 52 项，总计 98 项通过（`unittest discover` + `npm test`）。
+- 实机依据（Arena Agent 模式，2026-09-22）：0.4.11 分块写入后网页仍卡死 → 卡死点未锁定。可能阶段：分块写入中 / 点发送与站点提交管线 / 流式生成期间 / 扩展自身的读取循环。
+- 改动 1（content.js + arena.js）：全链路控制台面包屑 `[zs] task start (N chars) → arena: writing N chars (C chunks) → chunk i/C → write done → clicking send button → send confirmed → send confirmed, waiting for reply → reply complete (N chars, reason) / task failed`。标签页冻结时，DevTools 控制台的**最后一行 `[zs]` 即卡死阶段**，无需猜。
+- 改动 2（content.js）：回复等待循环限速——流式生成时每 token 一次 DOM 变更，旧逻辑每次变更都全量重读对话（此时对话含 5 万+ 字符用户消息），可能占满标签页 CPU；现每 250ms 至多一次完整读取。
+- 测试：无新增断言（面包屑不改行为；限速在模拟时钟 1000ms 节拍下不触发额外等待，既有计时用例不受影响）；98 项全部保持通过。
+- 仍是模拟浏览器回归；卡死根因待用户桌面复测（打开 DevTools 控制台后重测，报告最后一行 `[zs]`）。
+
 ## 0.4.11 分块写入输入框：长载荷不再一次插完冻结网页（2026-09-22）
 
 - Python 46 项、JavaScript 52 项，总计 98 项通过（`unittest discover` + `npm test`）。

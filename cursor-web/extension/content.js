@@ -7,7 +7,7 @@
   const inputMaxLines = P.id === 'chatgpt' ? 600 : null;
   P.init({diag: () => {}});
   let id = crypto.randomUUID(), key = P.conversationKey(), busy = false;
-  const VERSION = '0.4.11';
+  const VERSION = '0.4.12';
   const seen = new Set();
   // DOM events can wake the watcher even when background timers are throttled.
   // Keep a timer fallback for generation-state changes without DOM mutations.
@@ -48,6 +48,9 @@
     let text = '', failure;
     const diagnostics = {version:VERSION, startedHidden:document.hidden, sawHidden:document.hidden, phase:'preflight', promptLen:msg.prompt.length};
     try {
+      // Console breadcrumbs: when the tab freezes, the LAST [zs] line in
+      // DevTools is the stage the freeze happened in.
+      console.log('[zs] task start: prompt ' + msg.prompt.length + ' chars');
       if (P.isBusyNow() || P.isGenerating()) throw new Error('Webpage is already generating');
       // Dedicated page: a leftover draft (from manual typing or a prior send
       // that never registered) must not wedge the workflow. typeAndSend below
@@ -115,12 +118,20 @@
               : 'not found') +
           '. Make sure the bound session is the tab you expect, the composer is cleared, and the page can accept a new message; then retry.');
       }
+      console.log('[zs] send confirmed, waiting for reply');
       diagnostics.phase = 'waiting_new_reply';
       const deadline = Date.now() + 240000;
       let last = '', changed = Date.now(), idleSince = null, fresh = false, complete = false;
-      let errorSince = null;
+      let errorSince = null, lastReadAt = 0;
       while (Date.now() < deadline) {
         await waitForChange();
+        // Throttle full reads: while a reply streams, DOM mutations arrive per
+        // token, and each wake would re-read a conversation that now includes
+        // our 50k+ char user turn. Cap it at one full read per 250ms so the
+        // watcher cannot saturate the tab's CPU during generation.
+        const sinceRead = Date.now() - lastReadAt;
+        if (sinceRead < 250) await new Promise(r => setTimeout(r, 250 - sinceRead));
+        lastReadAt = Date.now();
         diagnostics.sawHidden ||= document.hidden;
         // Manual operation of the dedicated page (typing, or clicking the
         // site's post-reply follow-up prompt) injects extra user turns.
@@ -188,8 +199,9 @@
       }
       if (!complete) throw new Error('Timed out waiting for a complete new reply. Background throttling, login or website state may block progress. Activate the webpage and inspect the original request before retrying; do not automatically resend');
       if (text.length > 250000) throw new Error('Answer exceeds size limit; partial text returned. Request a shorter answer');
+      console.log('[zs] reply complete: ' + text.length + ' chars, reason=' + (diagnostics.finalReason || 'idle'));
       diagnostics.phase = 'completed';
-    } catch (e) {failure = String(e);}
+    } catch (e) {failure = String(e); console.log('[zs] task failed: ' + String(e).slice(0, 300));}
     finally {
       // Capture a fresh-chat URL before dropping busy, preserving this binding.
       key = P.conversationKey();
