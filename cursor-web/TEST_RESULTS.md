@@ -107,6 +107,15 @@ git diff --check
 - 真实 HTTP/Bridge 测试验证 json_code_block 指令到浏览器连接的传播。
 - 这些是 Markdown/DOM 与模拟浏览器回归测试，不是三家网站的在线实机验证。用户反复同列报错与此机制相符，但未获得其原始响应，不能宣称根因已完全确认。
 
+## 0.4.14 大载荷警告带构成明细 + 卡死提示（2026-09-22）
+
+- Python 46 项、JavaScript 54 项，总计 100 项通过（`unittest discover` + `npm test`）。
+- 实机依据（0.4.13 数据，Arena Agent 模式）：新对话下"你好"载荷 89,762 字符；12 块分块写入全落地；`send confirmed (composer cleared)`（网站接受）；30s 内聊天列表无新用户消息 → 任务失败；页面再次卡死。结论：该 Cursor 对话基线载荷约 9 万字符，超出 Arena 站点提交管线处理能力（站点侧容量问题）。
+- 改动 1（model_endpoint.py）：>90k 警告输出各部分 UTF-16 字符数（按 role 汇总 + tools），区分"固定基线（system+tools）"与"历史累积（user/assistant）"——前者开新对话无效，后者开 Cursor 新会话可解决。
+- 改动 2（content.js）：发送已被接受但 30s 无消息的报错补充"页面可能已卡死——刷新专用页并重新绑定会话"。
+- 无新增断言（端点日志与措辞变化）；100 项保持通过。
+- 待用户侧数据：构成明细 + 2KB curl 对照实验结果（网站能力下限）。据此决定：换 DeepSeek 专用页 / 裁剪上下文（需用户确认）/ 放弃 Arena。
+
 ## 0.4.13 发送确认窗口 8s→30s + 大载荷警告（2026-09-22）
 
 - Python 46 项、JavaScript 54 项，总计 100 项通过（`unittest discover` + `npm test`）。

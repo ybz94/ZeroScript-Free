@@ -421,3 +421,21 @@ npm test --prefix cursor-web/tests
 - 正常的小任务（新对话里的普通问答/单文件操作）载荷通常在 2–5 万字符，网站可以正常处理。
 
 升级步骤：停止端点（Ctrl+C）和 Bridge → `git pull --ff-only` → `prepare_extension.py` → 重新加载扩展 → **开新对话**（Cursor 新会话 + 专用页新聊天）→ 刷新并等输入框可见 → 重启 Bridge → `--sessions`（确认 `transportVersion: "0.4.13"`、`providerVersion: "0.4.13"`、`inSync: true`）→ `--session "ID"` 重测。
+
+## 0.4.14：大载荷警告带构成明细 + 卡死提示（2026-09-22）
+
+**背景（0.4.13 实机数据）**：新对话下"你好"载荷仍有 89,762 字符；网站接受发送（输入框清空）但 30 秒内不渲染用户消息、标签页卡死。说明该 Cursor 对话的**基线载荷**（系统提示+工具定义+历史）已达 9 万字符量级，超出 Arena 网站提交管线的处理能力——这是站点侧容量问题，扩展侧已无更多可修。
+
+0.4.14 改动：
+
+1. **端点大载荷警告带构成明细**：prompt > 90,000 字符时打印各部分 UTF-16 字符数 `{"system": N, "user": N, "assistant": N, "tools": N}`——一眼看出是"系统+工具的固定基线"（开新对话也缩不掉）还是"历史累积"（开新对话可解决）。
+2. **报错措辞补充**：发送已被接受但 30s 无消息时，提示"页面可能已卡死——刷新专用页并重新绑定会话后再试"。
+
+**下一步判断（按端点明细决定）**：
+- `system`+`tools` 占大头（>6 万）→ 这是 Cursor Agent 模式的固定成本，**Arena 无法服务这个 Cursor 项目**；可选：换 DeepSeek 专用页（预算 16 万、实测链路已通）、或在 Cursor 用更轻的模式、或接受网页 AI 只拿到裁剪后的上下文（需另行确认，会降低决策质量）。
+- `user`/`assistant` 历史占大头 → 确认真的开了**Cursor 侧新会话**（载荷来自 Cursor 的对话，只刷新网页页面对载荷无影响）。
+- 无论哪种，先跑**小载荷对照实验**确认网站能力下限：端点+Bridge 运行、页面绑定后执行
+  `curl -s http://127.0.0.1:17615/v1/chat/completions -H "Authorization: Bearer $(cat cursor-web/.endpoint-token)" -H "Content-Type: application/json" -d '{"model":"web-ai","messages":[{"role":"user","content":"hi"}]}'`
+  成功 = 网站本身可用、只是扛不住大消息；卡死 = 该站点/会话另有问题，需重开聊天或放弃该网页。
+
+升级步骤：停止端点（Ctrl+C）和 Bridge → `git pull --ff-only` → `prepare_extension.py` → 重新加载扩展 → 刷新专用页 → 重启 Bridge → `--sessions`（确认 `transportVersion: "0.4.14"`、`providerVersion: "0.4.14"`、`inSync: true`）→ 先跑上面的 curl 对照实验 → 再按明细决定下一步。

@@ -964,7 +964,7 @@ const ZSProvider = (() => {
 
   return {
     id: "qwen",
-    version: "0.4.13",
+    version: "0.4\.14",
     displayName: "Qwen",
     // DYNAMIC per selected model (see the capability section above). A getter so
     // the core always reads the CURRENT model's capability - it can change

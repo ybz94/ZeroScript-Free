@@ -7,7 +7,7 @@
   const inputMaxLines = P.id === 'chatgpt' ? 600 : null;
   P.init({diag: () => {}});
   let id = crypto.randomUUID(), key = P.conversationKey(), busy = false;
-  const VERSION = '0.4.13';
+  const VERSION = '0.4.14';
   const seen = new Set();
   // DOM events can wake the watcher even when background timers are throttled.
   // Keep a timer fallback for generation-state changes without DOM mutations.
@@ -115,7 +115,7 @@
         const why = leftover.trim() !== ''
           ? leftover.length + ' characters are still in the composer'
           : (diagnostics.editorLenBefore > 0
-              ? 'no new user turn appeared within 30s although the composer was cleared (the send WAS accepted; the page may process very large messages slowly - check the dedicated page for the message/reply before assuming failure)'
+              ? 'no new user turn appeared within 30s although the composer was cleared (the send WAS accepted; the page may process very large messages slowly or may be frozen - check the dedicated page for the message/reply; if the page is unresponsive, reload it and rebind the session before the next attempt)'
               : 'no new message appeared in the chat (the text did not land in the composer)');
         throw new Error('Message was not sent: ' + why +
           (hard ? ' and the page shows a Stop button (it is still generating)' : '') +

@@ -13,7 +13,7 @@ function content(options = {}) {
   const document = {hidden:!!options.hidden, title:'Chat', addEventListener(){}};
   const provider = {
     id:options.provider || 'mock',
-    version:options.providerVersion === undefined ? '0.4.13' : options.providerVersion, // null => pre-0.4.9 (no version field)
+    version:options.providerVersion === undefined ? '0.4.14' : options.providerVersion, // null => pre-0.4.9 (no version field)
     init(){}, conversationKey:()=>key, isFreshChat:()=>false,
     isBusyNow:()=>!!options.busy, isGenerating:()=>!!options.generating && sent>0, // generating only AFTER our send (post-reply prompt state)
     isHardGenerating:()=>!!options.hardGenerating,
@@ -114,8 +114,8 @@ test('unversioned provider (pre-0.4.9 build) is also refused, not mixed',()=>{
 test('session announcement reports provider version and sync state',()=>{
   const c=content();
   const s=c.messages.find(m=>m.type==='session');
-  assert.equal(s.transportVersion,'0.4.13');
-  assert.equal(s.providerVersion,'0.4.13');
+  assert.equal(s.transportVersion,'0.4.14');
+  assert.equal(s.providerVersion,'0.4.14');
   assert.equal(s.inSync,true);
 });
 test('stable parseable JSON reply finalizes even while page reports generating (Arena follow-up prompt)',async()=>{
@@ -258,7 +258,7 @@ test('model protocol returns code block extraction rather than rendered reply',a
   const r=await c.result();assert.equal(r.error,undefined);assert.equal(r.text,raw);
   assert.equal(r.diagnostics.extraction,'code_text');
   assert.equal(r.diagnostics.extraction_detail,'roots=1 scope=answer_roots turn_blocks=1');
-  assert.equal(r.diagnostics.version,'0.4.13');
+  assert.equal(r.diagnostics.version,'0.4.14');
 });
 test('site error with no reply fails the task in seconds, not 240s',async()=>{
   const c=content({noReply:true,siteError:'model channel not available'});
