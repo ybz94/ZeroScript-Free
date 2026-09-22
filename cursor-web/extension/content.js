@@ -7,7 +7,7 @@
   const inputMaxLines = P.id === 'chatgpt' ? 600 : null;
   P.init({diag: () => {}});
   let id = crypto.randomUUID(), key = P.conversationKey(), busy = false;
-  const VERSION = '0.4.4';
+  const VERSION = '0.4.5';
   const seen = new Set();
   // DOM events can wake the watcher even when background timers are throttled.
   // Keep a timer fallback for generation-state changes without DOM mutations.
@@ -52,29 +52,52 @@
       const count = P.assistantCount();
       const beforeText = P.readAssistant().reply;
       diagnostics.phase = 'sending';
+      // Capture the composer state so a silent send failure is diagnosable:
+      // which textarea we used, whether it is visible, and whether a new user
+      // turn appears after the send.
+      let ed = null;
+      try { ed = P.getEditor ? P.getEditor() : null; } catch {}
+      diagnostics.editorFound = !!ed;
+      if (ed) {
+        diagnostics.editorTag = ed.tagName;
+        diagnostics.editorVisible = ed.offsetParent !== null;
+        diagnostics.editorPlaceholder = String(ed.placeholder || '').slice(0, 60);
+      }
+      diagnostics.editorLenBefore = (P.editorText ? P.editorText() : '').length;
+      diagnostics.usersBefore = P.userCount ? P.userCount() : null;
       await P.typeAndSend(msg.prompt);
-      // Fail fast if the send did not actually take. All three providers'
-      // typeAndSend return normally (without throwing) when the composer
-      // refuses the message - send button disabled, page busy, or still
-      // generating - which would otherwise stall the 240s reply wait with no
-      // visible activity on the page. A successful send clears the composer
-      // within ~1-2s, so if our text is still there after a short grace
-      // period, the send failed.
-      let leftover = '';
-      for (let i = 0; i < 25; i++) {
+      diagnostics.phase = 'confirming_send';
+      // Confirm the send actually took. A successful send submits a new user
+      // message, so a new user turn appears in the chat. If the text never
+      // landed (wrong/hidden composer, React rejected the input, or the page
+      // dropped it), no new turn appears and we would otherwise stall the 240s
+      // reply wait. Poll briefly: the new turn renders a tick after the send.
+      let leftover = '', usersAfter = diagnostics.usersBefore, gen = false, hard = false;
+      for (let i = 0; i < 40; i++) {
         try { leftover = (P.editorText ? P.editorText() : '') || ''; } catch { break; }
-        if (leftover.trim() === '') break;
+        try { usersAfter = P.userCount ? P.userCount() : usersAfter; } catch {}
+        try { gen = !!(P.isGenerating && P.isGenerating()); hard = !!(P.isHardGenerating && P.isHardGenerating()); } catch {}
+        const newTurn = usersAfter != null && diagnostics.usersBefore != null && usersAfter > diagnostics.usersBefore;
+        if (newTurn || leftover.trim() !== '') break;
         await new Promise(r => setTimeout(r, 200));
       }
-      diagnostics.sendConfirmed = leftover.trim() === '';
+      diagnostics.editorLenAfter = leftover.length;
+      diagnostics.usersAfter = usersAfter;
+      diagnostics.generatingAfter = gen;
+      diagnostics.hardGeneratingAfter = hard;
+      const newTurnAfter = usersAfter != null && diagnostics.usersBefore != null && usersAfter > diagnostics.usersBefore;
+      diagnostics.sendConfirmed = newTurnAfter;
       diagnostics.leftoverLen = leftover.length;
-      if (leftover.trim() !== '') {
-        let busy2 = false;
-        try { busy2 = !!(P.isHardGenerating && P.isHardGenerating()); } catch {}
-        throw new Error('Message was not sent: ' + leftover.length +
-          ' characters are still in the composer' +
-          (busy2 ? ' and the page shows a Stop button (it is still generating)' : '') +
-          '. The send button is probably disabled or the page is busy. Check the dedicated webpage - stop any in-progress generation, clear the composer, confirm the send button is enabled - then retry.');
+      if (!newTurnAfter) {
+        const why = leftover.trim() !== ''
+          ? leftover.length + ' characters are still in the composer'
+          : 'no new message appeared in the chat (the text did not land in the composer)';
+        throw new Error('Message was not sent: ' + why +
+          (hard ? ' and the page shows a Stop button (it is still generating)' : '') +
+          '. Composer: ' + (diagnostics.editorFound
+              ? diagnostics.editorTag + (diagnostics.editorVisible ? ' (visible)' : ' (HIDDEN)') + (diagnostics.editorPlaceholder ? ' placeholder="' + diagnostics.editorPlaceholder + '"' : '')
+              : 'not found') +
+          '. Make sure the bound session is the tab you expect, the composer is cleared, and the page can accept a new message; then retry.');
       }
       diagnostics.phase = 'waiting_new_reply';
       const deadline = Date.now() + 240000;

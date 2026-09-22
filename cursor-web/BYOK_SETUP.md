@@ -291,3 +291,19 @@ npm test --prefix cursor-web/tests
 **遇到该报错时的处理**：到专用网页上 ① 点掉/等待"停止"结束任何进行中的生成；② 清空输入框；③ 确认发送按钮是亮的（可发新消息）；再重发任务。若页面状态混乱，刷新网页并重新 `--sessions` 绑定。
 
 升级步骤同前（确认 **0.4.4**）。
+
+## 0.4.5：按"是否出现新消息"判定发送，并记录输入框状态（2026-09-22）
+
+实机反馈（Arena）：任务显示 running 50 多秒，但**输入框里没有文字、发送按钮是灰的、没有生成中**——说明文字根本没打进你看到的那个输入框（可能是 dispatch 发到了另一个标签页，或 `getEditor()` 选到了隐藏的 textarea，或写入被 React 丢弃）。0.4.4 的"看输入框是否残留文字"判断抓不住这种情况（输入框是空的，会被误判为"已发送"）。
+
+0.4.5 改为用**"发送后是否出现一条新的用户消息"**作为判定（网站接受消息就会在对话里新增一条用户气泡）：
+
+1. 发送前记录输入框状态：`editorFound`（是否找到 textarea）、`editorTag`、`editorVisible`（是否可见）、`editorPlaceholder`、`editorLenBefore`、`usersBefore`。
+2. `typeAndSend` 后短暂轮询（最长约 8 秒）：出现新用户消息即确认成功；否则立即失败。
+3. 失败信息区分两种：
+   - `no new message appeared in the chat (the text did not land in the composer)` —— 文字没落进输入框（你遇到的情况）；
+   - `N characters are still in the composer` —— 文字打进了但没发出去。
+   并附带 `Composer: TEXTAREA (visible/HIDDEN) placeholder="..."` 帮助定位是否选错了元素。
+4. 诊断新增 `sendConfirmed`、`usersBefore/usersAfter`、`editorLenAfter`、`generatingAfter/hardGeneratingAfter`、`phase=confirming_send`。
+
+**遇到 `did not land in the composer` 时**：几乎总是"你看的标签页 ≠ 绑定的标签页"或页面处于拒绝输入的状态。请 ① 用 `--sessions` 核对绑定会话的 URL 与你正在看的标签页是否一致；② 刷新该页、重新绑定；③ 确认页面能正常手动发消息后再重测。升级步骤同前（确认 **0.4.5**）。

@@ -107,6 +107,16 @@ git diff --check
 - 真实 HTTP/Bridge 测试验证 json_code_block 指令到浏览器连接的传播。
 - 这些是 Markdown/DOM 与模拟浏览器回归测试，不是三家网站的在线实机验证。用户反复同列报错与此机制相符，但未获得其原始响应，不能宣称根因已完全确认。
 
+## 0.4.5 按"是否出现新消息"判定发送 + 输入未落位即时失败（2026-09-22）
+
+- Python 46 项、JavaScript 42 项，总计 88 项通过（`unittest discover` + `npm test`）。
+- 实机依据（Arena）：任务 running 50 多秒，但输入框无文字、发送按钮灰、无生成中——文字根本没打进所看输入框。0.4.4 的"看输入框是否残留"判断对"输入框是空的（文字没落位）"会误判为已发送，仍会空等。
+- 两个改动：
+  1. **provider 层（arena/deepseek/chatgpt）**：`typeAndSend` 写入文字后立即校验 `editorText()` 非空；为空则**立刻抛错** `…composer did not accept the input…`，不再等待一个空输入框永远不会点亮的发送按钮（arena/deepseek 为 textarea 同步 `.value`，chatgpt 用同步 `execCommand`，均无时序风险）。三处均通过 `node --check`。
+  2. **content.js 层（0.4.5）**：改用"发送后是否出现一条新的用户消息"（`usersAfter > usersBefore`）作为发送确认；发送前记录输入框状态（`editorFound/editorTag/editorVisible/editorPlaceholder`、`editorLenBefore`、`usersBefore`），发送后短暂轮询（≤8s）。未出现新消息即失败，区分 `no new message appeared…(did not land)` 与 `N characters still in the composer`，并附 `Composer: TAG (visible/HIDDEN) placeholder="…"`。诊断新增 `sendConfirmed/usersAfter/editorLenAfter/generatingAfter/hardGeneratingAfter`，失败 `phase=confirming_send`。
+- 模拟 provider 更新为真实语义：发送被接受才清空输入框并 `userCount++`；新增 `sendDropped`（文字未落位）模式。新增 2 项测试：`unconfirmed send` 断言 `phase=confirming_send`；`send that never lands in the composer fails fast with composer state`（断言 usersBefore==usersAfter、leftoverLen==0、错误含 "did not land"）。
+- 仍是模拟浏览器回归，非在线实机验证；"输入框非空=文字已落位"与"新用户气泡=消息已提交"依赖三家网站的既有行为。
+
 ## 0.4.4 发送未被接受时快速失败（2026-09-21）
 
 - Python 46 项、JavaScript 41 项，总计 87 项通过（`unittest discover` + `npm test`）。

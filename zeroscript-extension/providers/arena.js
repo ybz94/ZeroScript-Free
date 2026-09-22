@@ -431,6 +431,12 @@ const ZSProvider = (() => {
     if (!editor) throw new Error("Arena input box not found");
     editor.focus();
     setTextareaValue(editor, truncateForSend(text));
+    // If the text did not land in the composer (wrong/hidden element, page
+    // blocking input, React dropped it), fail NOW instead of waiting the full
+    // 60s for a send button that will never enable on an empty composer.
+    if (editorText().trim() === "") {
+      throw new Error("Arena composer did not accept the input (the text did not appear). The page may block input right now or the composer element changed. Check the dedicated webpage and retry.");
+    }
     if (images && images.length) tagImages(images);
     diag("arena.tas.enter", {
       textLen: (text || "").length,

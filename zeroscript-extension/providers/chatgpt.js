@@ -601,6 +601,12 @@ const ZSProvider = (() => {
     if (relock) ed.setAttribute("contenteditable", "true"); // injection needs it editable
     try {
       await setEditorText(ed, text);
+      // If the text did not land in the composer (wrong/hidden element, page
+      // blocking input), fail NOW instead of falling through to a send that
+      // can never succeed on an empty composer.
+      if (editorText().trim() === "") {
+        throw new Error("ChatGPT composer did not accept the input (the text did not appear). The page may block input right now or the composer element changed. Check the dedicated webpage and retry.");
+      }
       // Attach images LAST, right before the send click - see gemini.js/deepseek.js
       // typeAndSend for why (attaching first and then retyping the text can sever
       // the site's binding between the pending upload and the message sent).

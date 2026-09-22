@@ -688,6 +688,12 @@ const ZSProvider = (() => {
     editor.focus();
     text = truncateForSend(text);
     setTextareaValue(editor, text);
+    // If the text did not land in the composer (wrong/hidden element, page
+    // blocking input, React dropped it), fail NOW instead of waiting for a
+    // send button that will never enable on an empty composer.
+    if (editorText().trim() === "") {
+      throw new Error("DeepSeek composer did not accept the input (the text did not appear). The page may block input right now or the composer element changed. Check the dedicated webpage and retry.");
+    }
     // Attach images LAST, right before the send click - see gemini.js's
     // typeAndSend for why (attaching before retyping the text can sever the
     // site's binding between the pending upload and the message being sent).
