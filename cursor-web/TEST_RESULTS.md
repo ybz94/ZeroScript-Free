@@ -107,6 +107,18 @@ git diff --check
 - 真实 HTTP/Bridge 测试验证 json_code_block 指令到浏览器连接的传播。
 - 这些是 Markdown/DOM 与模拟浏览器回归测试，不是三家网站的在线实机验证。用户反复同列报错与此机制相符，但未获得其原始响应，不能宣称根因已完全确认。
 
+## 0.4.6 Arena 目标改为可见的 TipTap 输入框（2026-09-22）
+
+- Python 46 项、JavaScript 42 项，总计 88 项通过（`unittest discover` + `npm test`）；arena.js 通过 `node --check`。
+- 实机定位依据（用户 F12 控制台调试）：页面只有一个 `form textarea` 且 `visible:false`（隐藏遗留表单），写入其 `.value` 成功且被保留；但真实输入框是用户点击后 `document.activeElement` 得到的**可见 `contenteditable` DIV**（class `tiptap ProseMirror prose …`、`inForm:false`）；可见可编辑元素表中该 DIV `isFocused:true`；发送键为可见按钮 `aria-label="Send message"`。
+- 根因：适配器 `getEditor()` 选 `form textarea`（隐藏框），`setTextareaValue` 用 `.value` 写入——二者都作用在隐藏框上，真实 TipTap 框始终为空，故发送键永远 disabled、任务卡在 `waitFor(sendReady)`。
+- 改动（仅 arena.js）：
+  1. `getEditor()` 优先返回可见的 TipTap/ProseMirror contenteditable（排除 `#zs-root` 与 `S.list` 聊天列表内），回退 `form textarea`。
+  2. `setTextareaValue()` 对 `isContentEditable` 元素用 `focus + selectNodeContents + execCommand("insertText")` 写入（失败回退 `textContent` + input 事件）；textarea 路径不变。
+  3. `editorText()` 对 DIV 走 `textContent`（`e.value` 为 undefined）；发送键逻辑不变（可见 + `send message` aria）。
+- 0.4.5 的"输入未落位即时失败"与"按新用户气泡判定发送"继续生效，现在作用在正确的 TipTap 框上。
+- 限制：现有自动化测试用 mock provider，不直接驱动真实 arena.js，故此改动主要靠用户实机 F12 验证；回复读取仍依赖聊天列表 DOM，Agent 模式若结构不同需另行适配（先确认发送是否已通）。
+
 ## 0.4.5 按"是否出现新消息"判定发送 + 输入未落位即时失败（2026-09-22）
 
 - Python 46 项、JavaScript 42 项，总计 88 项通过（`unittest discover` + `npm test`）。

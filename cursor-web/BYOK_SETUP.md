@@ -307,3 +307,17 @@ npm test --prefix cursor-web/tests
 4. 诊断新增 `sendConfirmed`、`usersBefore/usersAfter`、`editorLenAfter`、`generatingAfter/hardGeneratingAfter`、`phase=confirming_send`。
 
 **遇到 `did not land in the composer` 时**：几乎总是"你看的标签页 ≠ 绑定的标签页"或页面处于拒绝输入的状态。请 ① 用 `--sessions` 核对绑定会话的 URL 与你正在看的标签页是否一致；② 刷新该页、重新绑定；③ 确认页面能正常手动发消息后再重测。升级步骤同前（确认 **0.4.5**）。
+
+## 0.4.6：Arena 目标改为可见的 TipTap 输入框（2026-09-22）
+
+实机定位（F12 调试）：当前 Arena 页面的**真实输入框是一个可见的 TipTap/ProseMirror `contenteditable` DIV**（class 含 `tiptap ProseMirror`，不在 `<form>` 里），而适配器原先 `getEditor()` 选的 `form textarea` 是一个**隐藏的遗留表单**——往它写字"成功"且被保留，但你看不到、也永远不会发送；真正的发送键（可见、`aria-label="Send message"`）在 TipTap 框旁边。
+
+0.4.6 的 Arena 适配器改动：
+
+1. **`getEditor()`**：优先返回**可见的 TipTap/ProseMirror contenteditable**（排除 `#zs-root` 与聊天列表内部），找不到才回退到 `form textarea`（旧 DOM）。
+2. **`setTextareaValue()`**：对 contenteditable 用 `focus + 全选 + execCommand("insertText")` 写入（`.value` 对 DIV 无效）；textarea 仍用原生 setter。
+3. 发送键沿用现有逻辑（可见 + `aria-label` 含 `send message`），无需改动。
+
+**这要求重新加载插件**（改的是网站适配器）：停止 Bridge/端点 → 拉取 → `prepare_extension.py` → 重新加载扩展确认 **0.4.6** → 刷新网页 → 重启 Bridge → 重新绑定会话 → 重测。
+
+**注意**：此改动针对"当前 Arena 用 TipTap 输入框"的 DOM。若网站回退到旧的 `form textarea` 输入框，适配器会自动回退，两条路径都保留。回复读取（`readAssistant` 等）依赖聊天列表 DOM；若发送成功但取不到回复，说明 Agent 模式的聊天结构也不同，需另行适配——先确认发送这一步是否已通。

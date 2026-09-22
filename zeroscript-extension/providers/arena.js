@@ -229,6 +229,19 @@ const ZSProvider = (() => {
   // textarea (#zs-root) so the send hooks' "not on a chat page" guard holds on
   // login/OAuth pages that have no site composer.
   const getEditor = () => {
+    // The composer in the current DOM (Agent mode and the current chat) is a
+    // VISIBLE TipTap/ProseMirror contenteditable DIV. A legacy `form textarea`
+    // may also be present but hidden/unused - a plain `form textarea` lookup
+    // lands in a box that is never seen and never sent (the write "succeeds"
+    // into the hidden form while the real composer stays empty). Prefer a
+    // visible TipTap composer (not our own UI, not inside the chat list);
+    // fall back to the form textarea for the old DOM.
+    for (const e of document.querySelectorAll('[contenteditable="true"], [contenteditable=""]')) {
+      if (e.offsetParent === null) continue;
+      if (e.closest("#zs-root")) continue;
+      if (e.closest(S.list)) continue;
+      if (/tiptap|prosemirror/i.test(String(e.className || ""))) return e;
+    }
     for (const e of document.querySelectorAll("form textarea")) {
       if (!e.closest("#zs-root")) return e;
     }
@@ -419,6 +432,25 @@ const ZSProvider = (() => {
   // React's onChange fires, dispatch an input event, wait for the submit button
   // to re-enable, then click it (Enter would insert a newline).
   function setTextareaValue(el, v) {
+    if (el && el.isContentEditable) {
+      // TipTap/ProseMirror composer: the value setter does nothing on a
+      // contenteditable DIV. Focus, select all existing content, then insert
+      // via execCommand (fires the input events ProseMirror/React listen to,
+      // so the composer updates and the send button enables).
+      el.focus();
+      try {
+        const range = document.createRange();
+        range.selectNodeContents(el);
+        const sel = window.getSelection();
+        sel.removeAllRanges();
+        sel.addRange(range);
+        document.execCommand("insertText", false, v);
+      } catch {
+        el.textContent = v;
+        el.dispatchEvent(new Event("input", { bubbles: true }));
+      }
+      return;
+    }
     const proto = window.HTMLTextAreaElement && window.HTMLTextAreaElement.prototype;
     const setter = proto && Object.getOwnPropertyDescriptor(proto, "value");
     if (setter && setter.set) setter.set.call(el, v);
