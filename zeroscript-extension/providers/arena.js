@@ -230,13 +230,17 @@ const ZSProvider = (() => {
   // login/OAuth pages that have no site composer.
   const getEditor = () => {
     // The composer in the current DOM (Agent mode and the current chat) is a
-    // VISIBLE TipTap/ProseMirror contenteditable. A legacy `form textarea` may
-    // also be present but hidden/unused - a plain `form textarea` lookup lands
-    // in a box that is never seen and never sent. Prefer a visible
-    // TipTap/ProseMirror contenteditable (not our own UI); fall back to the
-    // form textarea for the old DOM. (No chat-list exclusion: in Agent mode the
-    // composer can sit inside the same container as the message list, and the
-    // tiptap/ProseMirror class is specific enough to avoid chat code blocks.)
+    // VISIBLE TipTap/ProseMirror contenteditable. A HIDDEN legacy `form textarea`
+    // (placeholder "Ask anything…") also sits in the DOM on the same page and is
+    // present BEFORE the TipTap editor mounts after a refresh: it is never seen
+    // and never sends. 0.4.7 returned it as a fallback, so a task dispatched
+    // right after a refresh wrote the whole payload into that invisible box and
+    // the typeAndSend mount-wait never kicked in (the fallback was non-null).
+    // Return VISIBLE editors only: TipTap/ProseMirror contenteditable first (not
+    // our own UI), then a visible form textarea for the old DOM. (No chat-list
+    // exclusion: in Agent mode the composer can sit inside the same container as
+    // the message list, and the tiptap/ProseMirror class is specific enough to
+    // avoid chat code blocks.)
     for (const e of document.querySelectorAll("[contenteditable]")) {
       if (!e.isContentEditable) continue;
       if (e.offsetParent === null) continue;
@@ -244,7 +248,9 @@ const ZSProvider = (() => {
       if (/tiptap|prosemirror/i.test(String(e.className || ""))) return e;
     }
     for (const e of document.querySelectorAll("form textarea")) {
-      if (!e.closest("#zs-root")) return e;
+      if (e.closest("#zs-root")) continue;
+      if (e.offsetParent === null) continue; // hidden legacy box: never usable
+      return e;
     }
     return null;
   };
@@ -462,21 +468,33 @@ const ZSProvider = (() => {
   async function typeAndSend(text, images) {
     let editor = getEditor();
     if (!editor) {
-      // The composer may still be mounting after a page load/refresh, or the
-      // page may be mid-navigation. Retry briefly before declaring it absent.
-      for (let i = 0; i < 50 && !editor; i++) {
+      // The composer may still be mounting after a page load/refresh (getEditor
+      // only returns VISIBLE editors, so a half-loaded page really is null here
+      // and this wait covers the mount window), or the page may be
+      // mid-navigation. Retry before declaring it absent.
+      for (let i = 0; i < 75 && !editor; i++) {
         await new Promise((r) => setTimeout(r, 200));
         editor = getEditor();
       }
     }
-    if (!editor) throw new Error("Arena input box not found (no visible TipTap composer or form textarea; the page may not be fully loaded or this may not be the chat page). Refresh the dedicated page, wait for the composer, and retry.");
+    if (!editor) throw new Error("Arena input box not found after 15s (no visible TipTap composer or visible form textarea; the page may still be loading, or this may not be the chat page). Refresh the dedicated page, wait until the input box is visible, and retry.");
+    const payload = truncateForSend(text);
     editor.focus();
-    setTextareaValue(editor, truncateForSend(text));
+    setTextareaValue(editor, payload);
     // If the text did not land in the composer (wrong/hidden element, page
     // blocking input, React dropped it), fail NOW instead of waiting the full
     // 60s for a send button that will never enable on an empty composer.
-    if (editorText().trim() === "") {
+    const landed = editorText();
+    if (landed.trim() === "") {
       throw new Error("Arena composer did not accept the input (the text did not appear). The page may block input right now or the composer element changed. Check the dedicated webpage and retry.");
+    }
+    // A site-side input cap would CLAMP the write: the composer then holds far
+    // fewer characters than we wrote, and the send would go out with a
+    // truncated (broken) payload. Detect the clamp now instead of guessing
+    // later. The 5% margin absorbs contenteditable newline/whitespace
+    // normalization (a newline rendered as a break costs its \n in textContent).
+    if (landed.length < payload.length * 0.95) {
+      throw new Error(`Arena composer clamped the input: wrote ${payload.length} characters, composer holds ${landed.length}. The page has an input limit below this payload; shrink the request and retry.`);
     }
     if (images && images.length) tagImages(images);
     diag("arena.tas.enter", {

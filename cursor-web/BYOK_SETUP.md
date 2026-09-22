@@ -331,3 +331,17 @@ npm test --prefix cursor-web/tests
 2. `typeAndSend()` 找不到输入框时**等待重试最多约 10 秒**（覆盖"输入框还没挂载完"），仍找不到才报错，且报错附带"页面可能没加载完 / 可能不是聊天页"的提示。
 
 升级步骤同 0.4.6（确认 **0.4.7**）。若仍 `input box not found`，请在报错的页面按 BYOK_SETUP/聊天里给的 F12 诊断脚本确认页面上到底有没有可见的 TipTap 输入框。
+
+## 0.4.8：Arena 永不写入隐藏的遗留输入框（2026-09-22）
+
+实机反馈（0.4.7，Arena Agent 模式）：任务失败 `Message was not sent: 105399 characters are still in the composer. Composer: TEXTAREA (HIDDEN) placeholder="Ask anything…"`——即 **105,399 字符的完整载荷被写进了那个隐藏的遗留 `form textarea`**，一个字都没进你看到的 TipTap 输入框。
+
+根因：0.4.7 的 `getEditor()` 回退"找不到可见 TipTap 就返回 `form textarea`"时**不检查可见性**。页面刚刷新时，这个隐藏框在 TipTap 挂载之前就已存在于 DOM 中，`getEditor()` 立刻返回它（非 null），于是 `typeAndSend` 里"等待挂载最多 10 秒"的重试**从未触发**；载荷写进隐藏框后，真正的发送按钮（绑定 TipTap 的状态，TipTap 为空）永不点亮，消息发不出去。
+
+0.4.8 改动（arena.js）：
+
+1. **`getEditor()` 只返回可见编辑器**：可见 TipTap/ProseMirror contenteditable 优先，其次**可见**的 `form textarea`（旧 DOM）；隐藏遗留框不再被返回。半加载页面会真正返回 null，挂载等待才有机会生效。
+2. **挂载等待从约 10 秒延长到约 15 秒**（75×200ms），仍找不到才报 `Arena input box not found after 15s (…)`。
+3. **新增截断校验**：写入后核对输入框实际字符数，少于写入量的 95% 立即失败 `Arena composer clamped the input: wrote N characters, composer holds M`——说明网站有比我们载荷更小的输入上限，需要缩小请求（防止把截断的、坏掉的 JSON 发出去）。
+
+升级步骤：停止端点（Ctrl+C）和 Bridge → `git pull --ff-only` → `prepare_extension.py` → 重新加载扩展（确认 **0.4.8**；更可靠的核对方式：`--sessions` 输出里该会话的 `transportVersion` 应为 `0.4.8`，它是页面里正在运行的脚本自报的）→ 刷新专用页并**等输入框在页面上可见后再多等几秒（页面完全加载）** → 重启 Bridge → `--sessions` → `--session "ID"` 重测。

@@ -107,6 +107,16 @@ git diff --check
 - 真实 HTTP/Bridge 测试验证 json_code_block 指令到浏览器连接的传播。
 - 这些是 Markdown/DOM 与模拟浏览器回归测试，不是三家网站的在线实机验证。用户反复同列报错与此机制相符，但未获得其原始响应，不能宣称根因已完全确认。
 
+## 0.4.8 Arena 永不写入隐藏的遗留输入框（2026-09-22）
+
+- Python 46 项、JavaScript 42 项，总计 88 项通过（`unittest discover` + `npm test`）。
+- 实机依据（Arena Agent 模式，0.4.7）：任务失败 `Message was not sent: 105399 characters are still in the composer. Composer: TEXTAREA (HIDDEN) placeholder="Ask anything…"`。代码定位：0.4.7 的 `getEditor()` 回退会返回**隐藏的**遗留 `form textarea`（未检查可见性）；该隐藏框在页面刚刷新时先于 TipTap 输入框存在于 DOM，`getEditor()` 立即返回非 null，0.4.7 的"等待挂载"重试因此从未触发；整个 105,399 字符载荷写进隐藏框（textarea 写入总是"成功"，"文字未落位"检查也随之通过），而真正的发送按钮绑定 TipTap 状态（TipTap 为空）永不点亮，消息发不出去。
+- 改动 1（arena.js `getEditor()`）：只返回**可见**编辑器（TipTap/ProseMirror contenteditable 优先，其次可见 `form textarea`），隐藏遗留框不再是候选；半加载页面真正返回 null，挂载等待才能覆盖挂载窗口。
+- 改动 2（arena.js `typeAndSend()`）：挂载等待由约 10s 延长到约 15s（75×200ms）；仍找不到时报 `Arena input box not found after 15s (…)`。
+- 改动 3（arena.js `typeAndSend()`）：写入后新增校验——输入框实际字符数 < 写入量 × 95% 时立即失败 `Arena composer clamped the input: wrote N characters, composer holds M`（网站输入上限小于载荷；5% 容差吸收 contenteditable 换行/空白归一化），防止截断的坏 JSON 载荷被发出。
+- 版本核对改用 `--sessions` 输出中会话的 `transportVersion` 字段（页面内运行脚本自报，非复制文本）。
+- 仍是模拟浏览器回归，非在线实机验证；"刷新页面→TipTap 挂载"的真实时序待用户桌面复测。
+
 ## 0.4.7 放宽 Arena 输入框选择 + 等待挂载（2026-09-22）
 
 - Python 46 项、JavaScript 42 项，总计 88 项通过；arena.js 通过 `node --check`。
