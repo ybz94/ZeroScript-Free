@@ -107,6 +107,15 @@ git diff --check
 - 真实 HTTP/Bridge 测试验证 json_code_block 指令到浏览器连接的传播。
 - 这些是 Markdown/DOM 与模拟浏览器回归测试，不是三家网站的在线实机验证。用户反复同列报错与此机制相符，但未获得其原始响应，不能宣称根因已完全确认。
 
+## 0.4.16 回复读取 request_id 标记兜底（2026-09-22）
+
+- Python 46 项、JavaScript 57 项，总计 103 项通过（`unittest discover` + `npm test`）。
+- 实机依据：0.4.15 下"网页回复了但 Cursor 没有回复"——发送确认（三重证据）已通过，断点移到回复读取：`readAssistant()` 与用户消息计数共用 DOM 过滤器（`mx-auto` + `.prose` + 类名判定），新 Agent 聊天的回复轮不被识别 → 页面上 JSON 可见但扩展 240s 超时。
+- 改动（content.js）：回复等待中若过滤器持续检测不到新回复，按本次发送的唯一 request_id 扫描全部代码块；命中"含该 id + 可 JSON.parse + 顶层键恰为 request_id/content/tool_calls"的块、稳定 4s → 判定完成（`finalReason: complete_json_fallback`）。
+- 防误认设计：用户消息的 CURRENT_REQUEST 信封同样含该 request_id（若站点把用户文本渲染成代码块会被扫到）——信封顶层键为 request_id/messages/tools/tool_choice，与协议对象三键校验不符，被拒绝。
+- 新增测试 2 项：staleReads（过滤器永远看不到新回复）下经标记兜底读到完整 JSON 并成功返回；信封块（含 id 但四键）被拒绝直至超时。
+- 仍是模拟浏览器回归；新聊天回复阶段的真实 DOM 表现待用户桌面复测（预期 `marker_fallback` 路径接管）。
+
 ## 0.4.15 发送确认三重证据，不再依赖用户消息计数（2026-09-22）
 
 - Python 46 项、JavaScript 55 项，总计 101 项通过（`unittest discover` + `npm test`）。

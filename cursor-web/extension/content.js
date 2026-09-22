@@ -7,7 +7,7 @@
   const inputMaxLines = P.id === 'chatgpt' ? 600 : null;
   P.init({diag: () => {}});
   let id = crypto.randomUUID(), key = P.conversationKey(), busy = false;
-  const VERSION = '0.4.15';
+  const VERSION = '0.4.16';
   const seen = new Set();
   // DOM events can wake the watcher even when background timers are throttled.
   // Keep a timer fallback for generation-state changes without DOM mutations.
@@ -30,6 +30,40 @@
     const s = t.trim();
     if (!s.startsWith('{') && !s.startsWith('[')) return false;
     try { JSON.parse(s); return true; } catch { return false; }
+  }
+  // Marker fallback (0.4.16): in some DOMs (fresh Agent-mode chats) the reply
+  // turn does not match the provider's turn filter, so readAssistant() never
+  // reports it as fresh and the task would time out at 240s even though the
+  // complete protocol JSON sits visible in the chat. The protocol reply is a
+  // fenced block carrying this send's UNIQUE request id, so it can be located
+  // by scanning code blocks directly - no turn structure assumptions.
+  function markerBlockText(b) {
+    const code = b.querySelector ? b.querySelector('code') : null;
+    if (code && code.textContent != null) return code.textContent;
+    const copy = b.cloneNode ? b.cloneNode(true) : null;
+    if (copy) { try { for (const ui of copy.querySelectorAll('button, [role="button"], .md-code-block-banner')) ui.remove(); } catch {} }
+    return (copy || b).textContent || '';
+  }
+  function findMarkerBlock(rid) {
+    if (!rid) return null;
+    try {
+      const blocks = [...document.querySelectorAll('pre, code, .cm-content, .md-code-block')];
+      const outer = blocks.filter(b => !blocks.some(o => o !== b && o.contains && o.contains(b)));
+      for (const b of outer) {
+        if ((b.textContent || '').includes(rid)) return b;
+      }
+    } catch {}
+    return null;
+  }
+  // The block must be the protocol object itself, not the request envelope:
+  // the user turn also carries this request id (inside CURRENT_REQUEST), and a
+  // site that fences user text would put that envelope in a code block too.
+  function isProtocolObject(rid, raw) {
+    try {
+      const v = JSON.parse(raw);
+      return !!v && typeof v === 'object' && v.request_id === rid &&
+        Object.keys(v).sort().join(',') === 'content,request_id,tool_calls';
+    } catch { return false; }
   }
   const notify = data => chrome.runtime.sendMessage(data).catch(() => {});
   function announce() {
@@ -135,9 +169,14 @@
       }
       console.log('[zs] send confirmed, waiting for reply');
       diagnostics.phase = 'waiting_new_reply';
+      // Unique id of THIS send: embedded in the payload and copied verbatim
+      // into the protocol reply. Identifies the reply block regardless of the
+      // chat's turn DOM structure.
+      const ridMatch = msg.prompt.match(/"request_id":"([0-9a-fA-F]{6,})"/);
+      const rid = ridMatch ? ridMatch[1] : null;
       const deadline = Date.now() + 240000;
       let last = '', changed = Date.now(), idleSince = null, fresh = false, complete = false;
-      let errorSince = null, lastReadAt = 0;
+      let errorSince = null, lastReadAt = 0, fbLogged = false;
       while (Date.now() < deadline) {
         await waitForChange();
         // Throttle full reads: while a reply streams, DOM mutations arrive per
@@ -181,6 +220,30 @@
             }
           } else {
             errorSince = null;
+          }
+          // Marker fallback: the reply turn is invisible to the provider's
+          // turn filter (fresh Agent-mode chat), but the complete protocol
+          // JSON is sitting in a fenced block. Require a parseable protocol
+          // object with THIS send's request id, stable for 4s.
+          let fbText = null;
+          if (msg.response_format === 'json_code_block' && rid) {
+            const b = findMarkerBlock(rid);
+            if (b) {
+              const t = markerBlockText(b).trim();
+              if (t.startsWith('{') && isProtocolObject(rid, t)) fbText = t;
+            }
+          }
+          if (fbText === null) continue;
+          if (!fbLogged) { fbLogged = true; console.log('[zs] reply turn invisible to provider filter - reading via request-id marker fallback'); }
+          diagnostics.fallbackRead = true;
+          diagnostics.phase = 'reading_reply';
+          diagnostics.extraction = 'marker_fallback';
+          text = fbText;
+          if (text !== last) {last = text; changed = Date.now();}
+          if (Date.now() - changed > 4000) {
+            complete = true;
+            diagnostics.finalReason = 'complete_json_fallback';
+            break;
           }
           continue;
         }

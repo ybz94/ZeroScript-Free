@@ -10,16 +10,25 @@ function content(options = {}) {
   const messages = [], intervals = [];
   let listener, now = 0, sent = 0, old = {}, item = old, text = 'old answer', count = 1, key = '/c/1';
   let editorContent = options.draft || '', userCountVar = 1, turnAt = Infinity; // fake-time when OUR user turn becomes visible
-  const document = {hidden:!!options.hidden, title:'Chat', addEventListener(){}};
+  const markerText = options.markerText || '';
+  const markerBlock = { // fake fenced code block for the 0.4.16 marker fallback
+    textContent: markerText,
+    contains: () => false,
+    querySelector: s => (s === 'code' ? {textContent: markerText} : null),
+  };
+  const document = {hidden:!!options.hidden, title:'Chat', addEventListener(){},
+    querySelectorAll: sel => (options.markerBlocks && sel && sel.indexOf('pre') !== -1) ? [markerBlock] : []};
   const provider = {
     id:options.provider || 'mock',
-    version:options.providerVersion === undefined ? '0.4.15' : options.providerVersion, // null => pre-0.4.9 (no version field)
+    version:options.providerVersion === undefined ? '0.4.16' : options.providerVersion, // null => pre-0.4.9 (no version field)
     init(){}, conversationKey:()=>key, isFreshChat:()=>false,
     isBusyNow:()=>!!options.busy, isGenerating:()=>!!options.generating && sent>0, // generating only AFTER our send (post-reply prompt state)
     isHardGenerating:()=>!!options.hardGenerating,
     getEditor:()=>({tagName:'TEXTAREA', offsetParent:{}, placeholder:'Message', value:editorContent}),
-    editorText:()=>editorContent, lastAssistant:()=>item, lastAssistantId:()=>item===old?'old':'new',
-    assistantCount:()=>count, userCount:()=>options.brokenUserCount?1:userCountVar+(turnAt!==Infinity&&now>=turnAt?1:0), readAssistant:()=>({reply:text,item}),
+    editorText:()=>editorContent,
+    assistantCount:()=>options.staleReads?1:count, userCount:()=>options.brokenUserCount?1:userCountVar+(turnAt!==Infinity&&now>=turnAt?1:0),
+    lastAssistant:()=>options.staleReads?old:item, lastAssistantId:()=>options.staleReads?'old':(item===old?'old':'new'),
+    readAssistant:()=>({reply:options.staleReads?'old answer':text,item:options.staleReads?old:item}),
     errorText:()=>options.siteError || null,
     findContinueBtn:()=>!!options.truncated, turnHalted:()=>!!options.halted,
     async typeAndSend(t){sent++; if(options.sendError) throw Error('send failed');
@@ -29,7 +38,7 @@ function content(options = {}) {
       if(!options.sendDropped) editorContent = t;              // text typed (unless it never landed)
       if(accepted){ editorContent=''; turnAt = now + (options.turnDelayMs||0); } // accepted -> cleared + new user turn at turnAt
       userCountVar += options.extraUserTurns || 0;             // simulate manual use of the page
-      if(!options.noReply && accepted){ item={}; text=options.answer || 'new answer'; count++; }
+      if(!options.noReply && accepted && !options.staleReads){ item={}; text=options.answer || 'new answer'; count++; }
       // Provider's own send report (0.4.15): sent = it watched the composer clear;
       // landedLen = verified write length. noProviderSent/noLandedReport model
       // providers that return nothing (older builds / other sites).
@@ -119,8 +128,8 @@ test('unversioned provider (pre-0.4.9 build) is also refused, not mixed',()=>{
 test('session announcement reports provider version and sync state',()=>{
   const c=content();
   const s=c.messages.find(m=>m.type==='session');
-  assert.equal(s.transportVersion,'0.4.15');
-  assert.equal(s.providerVersion,'0.4.15');
+  assert.equal(s.transportVersion,'0.4.16');
+  assert.equal(s.providerVersion,'0.4.16');
   assert.equal(s.inSync,true);
 });
 test('stable parseable JSON reply finalizes even while page reports generating (Arena follow-up prompt)',async()=>{
@@ -181,6 +190,29 @@ test('provider that reports nothing: turn after the 30s window fails with did-no
   assert.match(r.error,/Message was not sent/);
   assert.match(r.error,/no new message appeared in the chat/);
   assert.equal(c.sent,1);
+});
+test('reply read via request-id marker fallback when the turn filter misses the new reply',async()=>{
+  // The live case: readAssistant() never sees the new reply turn (fresh
+  // Agent-mode chat DOM), but the complete protocol JSON is visible in a
+  // fenced block carrying this send's request id.
+  const json='{"request_id":"abcdef123456","content":"Hi!","tool_calls":[]}';
+  const c=content({staleReads:true, markerBlocks:true, markerText:json});
+  c.dispatch({prompt:'preamble CURRENT_REQUEST:\n{"request_id":"abcdef123456","messages":[]}', response_format:'json_code_block'});
+  const r=await c.result();
+  assert.equal(r.error,undefined);
+  assert.equal(r.text,json);
+  assert.equal(r.diagnostics.extraction,'marker_fallback');
+  assert.equal(r.diagnostics.fallbackRead,true);
+  assert.equal(r.diagnostics.finalReason,'complete_json_fallback');
+  assert.equal(c.sent,1);
+});
+test('marker fallback rejects the request envelope block (also carries the id), not just any block',async()=>{
+  const envelope='{"request_id":"abcdef123456","messages":[{"role":"user","content":"hi"}],"tools":[],"tool_choice":"auto"}';
+  const c=content({staleReads:true, markerBlocks:true, markerText:envelope});
+  c.dispatch({prompt:'x {"request_id":"abcdef123456"} y', response_format:'json_code_block'});
+  const r=await c.result();
+  assert.match(r.error,/Timed out/);
+  assert.equal(r.diagnostics.fallbackRead,undefined);
 });
 test('navigation while running invalidates original session binding',async()=>{
   const c=content({navigate:true});c.dispatch();assert.match((await c.result()).error,/changed/);
@@ -269,7 +301,7 @@ test('model protocol returns code block extraction rather than rendered reply',a
   const r=await c.result();assert.equal(r.error,undefined);assert.equal(r.text,raw);
   assert.equal(r.diagnostics.extraction,'code_text');
   assert.equal(r.diagnostics.extraction_detail,'roots=1 scope=answer_roots turn_blocks=1');
-  assert.equal(r.diagnostics.version,'0.4.15');
+  assert.equal(r.diagnostics.version,'0.4.16');
 });
 test('site error with no reply fails the task in seconds, not 240s',async()=>{
   const c=content({noReply:true,siteError:'model channel not available'});

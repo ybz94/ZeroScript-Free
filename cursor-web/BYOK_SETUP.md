@@ -452,3 +452,15 @@ npm test --prefix cursor-web/tests
 4. 顺带清理 0.4.14 版本字符串里误入的反斜杠（JS 运行时无影响，但属脏数据）。
 
 升级步骤：停止端点（Ctrl+C）和 Bridge → `git pull --ff-only` → `prepare_extension.py` → 重新加载扩展 → 刷新专用页 → 重启 Bridge → `--sessions`（确认 `transportVersion: "0.4.15"`、`providerVersion: "0.4.15"`、`inSync: true`）→ 重测（curl 或 Cursor）。
+
+## 0.4.16：回复读取加 request_id 标记兜底（2026-09-22）
+
+**为什么要这一版**：0.4.15 下"网页回复了但 Cursor 没有回复"——发送确认已通过（三重证据），断点移到**回复读取**：`readAssistant()` 用的 DOM 过滤器和用户消息计数是同一套（`mx-auto` + `.prose` + 类名判定），新 Agent 聊天的回复轮同样"看不见"→ 扩展拿着页面上明明可见的 JSON 干等 240 秒超时。
+
+0.4.16 改动（content.js）：
+
+1. **request_id 标记兜底**：协议 JSON 块携带本次发送的**唯一 request_id**。若过滤器 4 秒以上检测不到新回复，直接扫描页面所有代码块（`pre/code/.cm-content/.md-code-block`），找到"包含该 id、可 `JSON.parse`、顶层键恰好是 `request_id/content/tool_calls`"的块，稳定 4 秒即判定完成返回。不依赖任何轮次 DOM 结构。
+2. **防误认**：用户消息里也含同一个 request_id（在 CURRENT_REQUEST 信封里）——信封顶层键是 `request_id/messages/tools/tool_choice`，与协议对象三键不符，被键校验拒绝。
+3. 诊断：`extraction: "marker_fallback"`、`finalReason: "complete_json_fallback"`、`fallbackRead: true`，控制台打印 `[zs] reply turn invisible to provider filter - reading via request-id marker fallback`。
+
+升级步骤：停止端点（Ctrl+C）和 Bridge → `git pull --ff-only` → `prepare_extension.py` → 重新加载扩展 → 刷新专用页 → 重启 Bridge → `--sessions`（确认 `transportVersion: "0.4.16"`、`providerVersion: "0.4.16"`、`inSync: true`）→ 重测。
