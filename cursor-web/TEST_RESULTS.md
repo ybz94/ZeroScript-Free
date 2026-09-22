@@ -107,6 +107,17 @@ git diff --check
 - 真实 HTTP/Bridge 测试验证 json_code_block 指令到浏览器连接的传播。
 - 这些是 Markdown/DOM 与模拟浏览器回归测试，不是三家网站的在线实机验证。用户反复同列报错与此机制相符，但未获得其原始响应，不能宣称根因已完全确认。
 
+## 0.4.9 内容脚本与 provider 版本一致性闸门（2026-09-22）
+
+- Python 46 项、JavaScript 45 项，总计 91 项通过（`unittest discover` + `npm test`）。
+- 实机依据（Arena Agent 模式）：0.4.8 已发布并确认 `transportVersion: "0.4.8"` 后复测，仍报 `Message was not sent: 104245 characters are still in the composer. Composer: TEXTAREA (HIDDEN) placeholder="Ask anything…"`——该错误在 0.4.8 的 arena.js 中不可能产生（`getEditor()` 对隐藏框有 `offsetParent === null` 跳过），证明实际运行的 provider 仍是 0.4.7 旧拷贝。
+- 根因：`cursor-web/extension/providers/` 在 .gitignore 中，`git pull` 只更新受跟踪的 `content.js`/`manifest.json`，provider 文件必须靠 `prepare_extension.py` 复制；`transportVersion` 由 content.js 自报，无法反映 provider 版本 → 出现内容脚本 0.4.8 + provider 0.4.7 的混搭，且旧代码静默写隐藏框。
+- 改动 1（8 个 provider 文件）：每个 `ZSProvider` 导出 `version: "0.4.9"`。
+- 改动 2（content.js）：会话通告新增 `providerVersion` 与 `inSync` 字段，`--sessions` 可一次性看到两个版本及一致性。
+- 改动 3（content.js dispatch 闸门）：`P.version !== VERSION` 时直接拒绝，错误信息含两边版本与修复步骤（pull → prepare_extension.py → 重载扩展 → 刷新页面）；覆盖"版本不匹配"与"旧 provider 无 version 字段"两种情况。
+- 新增测试 3 项：stale provider 拒绝（含修复指令断言）、无版本 provider 拒绝（`unversioned (stale)`）、会话通告含 `providerVersion`/`inSync`。
+- 仍是模拟浏览器回归，非在线实机验证；Arena 页面真实行为待用户桌面复测（`inSync: true` 且 `providerVersion: "0.4.9"` 后）。
+
 ## 0.4.8 Arena 永不写入隐藏的遗留输入框（2026-09-22）
 
 - Python 46 项、JavaScript 42 项，总计 88 项通过（`unittest discover` + `npm test`）。

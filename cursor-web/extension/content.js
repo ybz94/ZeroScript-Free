@@ -7,7 +7,7 @@
   const inputMaxLines = P.id === 'chatgpt' ? 600 : null;
   P.init({diag: () => {}});
   let id = crypto.randomUUID(), key = P.conversationKey(), busy = false;
-  const VERSION = '0.4.8';
+  const VERSION = '0.4.9';
   const seen = new Set();
   // DOM events can wake the watcher even when background timers are throttled.
   // Keep a timer fallback for generation-state changes without DOM mutations.
@@ -28,7 +28,9 @@
     // our own submission keeps the same binding for subsequent turns.
     if (current !== key) {if (!busy) id = crypto.randomUUID(); key = current;}
     notify({type:'session', id, key, provider:P.id, title:document.title,
-            url:location.href, visible:!document.hidden, busy, transportVersion:VERSION, inputMaxChars, inputMaxLines});
+            url:location.href, visible:!document.hidden, busy, transportVersion:VERSION,
+            providerVersion:P.version || null, inSync:P.version === VERSION,
+            inputMaxChars, inputMaxLines});
   }
   async function run(msg) {
     busy = true;
@@ -169,6 +171,13 @@
   }
   chrome.runtime.onMessage.addListener((msg, sender, reply) => {
     if (msg.type !== 'dispatch') return;
+    // providers/ is git-ignored: a bare "git pull" updates content.js but NOT
+    // the provider files. A mixed load (new content script + stale provider)
+    // previously failed with a misleading composer error. Refuse dispatch and
+    // say exactly what to fix instead.
+    if (P.version !== VERSION) {
+      reply({error:`Extension files out of sync: content script ${VERSION}, provider ${P.version || 'unversioned (stale)'}. Fix: git pull --ff-only, then run python cursor-web/prepare_extension.py, reload the extension in chrome://extensions, and refresh this page`}); return;
+    }
     if (msg.session_id !== id || msg.expectedKey !== P.conversationKey()) {
       reply({error:'Conversation changed; list and bind the session again'}); return;
     }

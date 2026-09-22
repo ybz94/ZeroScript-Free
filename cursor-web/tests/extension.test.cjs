@@ -12,7 +12,9 @@ function content(options = {}) {
   let editorContent = options.draft || '', userCountVar = 1;
   const document = {hidden:!!options.hidden, title:'Chat', addEventListener(){}};
   const provider = {
-    id:options.provider || 'mock', init(){}, conversationKey:()=>key, isFreshChat:()=>false,
+    id:options.provider || 'mock',
+    version:options.providerVersion === undefined ? '0.4.9' : options.providerVersion, // null => pre-0.4.9 (no version field)
+    init(){}, conversationKey:()=>key, isFreshChat:()=>false,
     isBusyNow:()=>!!options.busy, isGenerating:()=>!!options.generating,
     isHardGenerating:()=>!!options.hardGenerating,
     getEditor:()=>({tagName:'TEXTAREA', offsetParent:{}, placeholder:'Message', value:editorContent}),
@@ -93,6 +95,27 @@ test('content rejects duplicate submission',async()=>{
 });
 test('content rejects stale binding before sending',()=>{
   const c=content();assert.match(c.dispatch({expectedKey:'/other'}).error,/changed/);assert.equal(c.sent,0);
+});
+test('stale provider (git pull without prepare) is refused with an actionable fix',()=>{
+  const c=content({providerVersion:'0.4.8'});
+  const ack=c.dispatch();
+  assert.match(ack.error,/out of sync/);
+  assert.match(ack.error,/0\.4\.8/);
+  assert.match(ack.error,/prepare_extension\.py/);
+  assert.equal(c.sent,0);
+});
+test('unversioned provider (pre-0.4.9 build) is also refused, not mixed',()=>{
+  const c=content({providerVersion:null});
+  assert.match(c.dispatch().error,/out of sync/);
+  assert.match(c.dispatch().error,/unversioned \(stale\)/);
+  assert.equal(c.sent,0);
+});
+test('session announcement reports provider version and sync state',()=>{
+  const c=content();
+  const s=c.messages.find(m=>m.type==='session');
+  assert.equal(s.transportVersion,'0.4.9');
+  assert.equal(s.providerVersion,'0.4.9');
+  assert.equal(s.inSync,true);
 });
 test('navigation while running invalidates original session binding',async()=>{
   const c=content({navigate:true});c.dispatch();assert.match((await c.result()).error,/changed/);
@@ -181,7 +204,7 @@ test('model protocol returns code block extraction rather than rendered reply',a
   const r=await c.result();assert.equal(r.error,undefined);assert.equal(r.text,raw);
   assert.equal(r.diagnostics.extraction,'code_text');
   assert.equal(r.diagnostics.extraction_detail,'roots=1 scope=answer_roots turn_blocks=1');
-  assert.equal(r.diagnostics.version,'0.4.8');
+  assert.equal(r.diagnostics.version,'0.4.9');
 });
 test('site error with no reply fails the task in seconds, not 240s',async()=>{
   const c=content({noReply:true,siteError:'model channel not available'});

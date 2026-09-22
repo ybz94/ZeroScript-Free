@@ -345,3 +345,17 @@ npm test --prefix cursor-web/tests
 3. **新增截断校验**：写入后核对输入框实际字符数，少于写入量的 95% 立即失败 `Arena composer clamped the input: wrote N characters, composer holds M`——说明网站有比我们载荷更小的输入上限，需要缩小请求（防止把截断的、坏掉的 JSON 发出去）。
 
 升级步骤：停止端点（Ctrl+C）和 Bridge → `git pull --ff-only` → `prepare_extension.py` → 重新加载扩展（确认 **0.4.8**；更可靠的核对方式：`--sessions` 输出里该会话的 `transportVersion` 应为 `0.4.8`，它是页面里正在运行的脚本自报的）→ 刷新专用页并**等输入框在页面上可见后再多等几秒（页面完全加载）** → 重启 Bridge → `--sessions` → `--session "ID"` 重测。
+
+## 0.4.9：内容脚本与 provider 版本必须一致，否则拒绝发送（2026-09-22）
+
+**为什么要这一版**：0.4.8 修好了"永不写隐藏输入框"，但你复测仍报 `Composer: TEXTAREA (HIDDEN) placeholder="Ask anything…"`。原因是**加载目录里实际跑的 `providers/arena.js` 还是 0.4.7 旧版**——`cursor-web/extension/providers/` 被 git 忽略，`git pull` **不会**更新它，只有 `prepare_extension.py` 会。而 `transportVersion` 是 `content.js`（受 git 跟踪、pull 会更新）自报的，所以会出现"内容脚本 0.4.8 + provider 0.4.7"的**混搭**：`transportVersion` 显示 0.4.8，但真正碰输入框的 arena.js 还是旧逻辑，把整段写进了隐藏框。
+
+0.4.9 改动：
+
+1. **每个 provider 自带 `version` 字段**（arena/deepseek/chatgpt 等 8 个），内容脚本把它一起上报。
+2. **`--sessions` 现在同时显示 `transportVersion`（内容脚本）和 `providerVersion`（实际碰页面的 provider），并给出 `inSync` 布尔值**。两者不一致时一目了然。
+3. **硬闸门**：dispatch 前先比对两者，不一致直接拒绝并给出可执行的修复指令（`git pull --ff-only` → `prepare_extension.py` → 重载扩展 → 刷新页面），不再让混搭的旧 provider 把字写进错误位置、事后报一句误导性的 composer 错误。
+
+**核对方式升级**：`--sessions` 里该会话应同时满足 `transportVersion: "0.4.9"` 且 `providerVersion: "0.4.9"` 且 `inSync: true`。只要 `inSync` 是 `false` 或 `providerVersion` 不是 `0.4.9`，先别发任务——按上面三步把 provider 更新到位再测。
+
+升级步骤：停止端点（Ctrl+C）和 Bridge → `git pull --ff-only` → **`prepare_extension.py`（关键，pull 不会更新 providers 目录）** → 重新加载扩展 → 刷新专用页并等输入框可见后再多等几秒 → 重启 Bridge → `--sessions`（确认 `inSync: true` 且两版本都是 0.4.9）→ `--session "ID"` 重测。
