@@ -7,7 +7,7 @@
   const inputMaxLines = P.id === 'chatgpt' ? 600 : null;
   P.init({diag: () => {}});
   let id = crypto.randomUUID(), key = P.conversationKey(), busy = false;
-  const VERSION = '0.4.12';
+  const VERSION = '0.4.13';
   const seen = new Set();
   // DOM events can wake the watcher even when background timers are throttled.
   // Keep a timer fallback for generation-state changes without DOM mutations.
@@ -87,8 +87,12 @@
       // landed (wrong/hidden composer, React rejected the input, or the page
       // dropped it), no new turn appears and we would otherwise stall the 240s
       // reply wait. Poll briefly: the new turn renders a tick after the send.
+      // 30s window (not 8s): a 100k+ char user message can take far longer to
+      // render into the chat list, and the composer clearing already proves the
+      // site accepted the send - an 8s window false-failed real sends (observed
+      // live with a 112912-char payload: "send confirmed" yet no turn in 8s).
       let leftover = '', usersAfter = diagnostics.usersBefore, gen = false, hard = false;
-      for (let i = 0; i < 40; i++) {
+      for (let i = 0; i < 150; i++) {
         try { leftover = (P.editorText ? P.editorText() : '') || ''; } catch { break; }
         try { usersAfter = P.userCount ? P.userCount() : usersAfter; } catch {}
         try { gen = !!(P.isGenerating && P.isGenerating()); hard = !!(P.isHardGenerating && P.isHardGenerating()); } catch {}
@@ -110,7 +114,9 @@
       if (!newTurnAfter) {
         const why = leftover.trim() !== ''
           ? leftover.length + ' characters are still in the composer'
-          : 'no new message appeared in the chat (the text did not land in the composer)';
+          : (diagnostics.editorLenBefore > 0
+              ? 'no new user turn appeared within 30s although the composer was cleared (the send WAS accepted; the page may process very large messages slowly - check the dedicated page for the message/reply before assuming failure)'
+              : 'no new message appeared in the chat (the text did not land in the composer)');
         throw new Error('Message was not sent: ' + why +
           (hard ? ' and the page shows a Stop button (it is still generating)' : '') +
           '. Composer: ' + (diagnostics.editorFound

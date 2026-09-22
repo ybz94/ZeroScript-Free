@@ -746,7 +746,7 @@ const ZSProvider = (() => {
 
   return {
     id: "meta",
-    version: "0.4.12",
+    version: "0.4.13",
     displayName: "Meta AI",
     // Meta's composer accepts image uploads (hidden multi-file input → inline
     // Lexical preview → uploaded on send; see attachImages). Vision-capable, so

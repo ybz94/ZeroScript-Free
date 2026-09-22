@@ -404,3 +404,20 @@ npm test --prefix cursor-web/tests
 **复测方法（重要）**：升级 0.4.12 后，**先在专用页打开 DevTools 控制台（F12 → Console）**，再从 Cursor 发任务。卡死后别关页面，把控制台里**最后一行 `[zs]`** 和任何红色报错截图/复制给我。
 
 升级步骤：停止端点（Ctrl+C）和 Bridge → `git pull --ff-only` → `prepare_extension.py` → 重新加载扩展 → 刷新专用页并等输入框可见后再多等几秒 → 重启 Bridge → `--sessions`（确认 `transportVersion: "0.4.12"`、`providerVersion: "0.4.12"`、`inSync: true`）→ `--session "ID"` 重测。
+
+## 0.4.13：发送确认窗口 8s→30s（大消息不再误判失败）+ 大载荷警告（2026-09-22）
+
+**为什么要这一版**：0.4.12 面包屑实机确认：分块写入与发送**全部成功**（`send confirmed (composer cleared)`——网站接受了发送），但 112,912 字符的用户消息渲染进聊天列表超过 8 秒，发送确认窗口（8s）到期后误报 `Message was not sent`。同时暴露出对话历史膨胀问题：一个"你好"的载荷高达 11.3 万字符（历史里堆着之前失败大任务的完整 prompt），已贴近 118,000 预算上限；网站处理这个体量的消息/后续点击（点"继续/否"发起新一轮）会卡死标签页——**这是站点侧对超大对话的处理能力问题**。
+
+0.4.13 改动：
+
+1. **发送确认窗口 8s → 30s**（150×200ms）：输入框清空已是网站"接受发送"的信号，超大消息渲染慢不再误判失败。
+2. **报错措辞区分两种情况**：输入框曾持有内容且已清空（发送已被接受）→ 报 `send WAS accepted; the page may process very large messages slowly`；文字从未落进输入框 → 保持原措辞。
+3. **端点大载荷警告**：prompt 超过 90,000 字符时端点控制台打印 `WARNING: large prompt (…) start a FRESH chat`。
+
+**重要操作规则（针对对话膨胀）**：
+- **看到端点打印 `WARNING: large prompt` 时，开新对话**：Cursor 里新建会话 + 专用页新开聊天（重新绑定会话），让历史归零。历史里的每个大 prompt/大工具结果都会随每次请求整体重发，越堆越大，最终把网站自己卡死。
+- **永远不要点"是/否/继续"三选项**（任务期间或期间外都尽量别点）：点"继续/否"会让网站带着完整历史发起新一轮，11 万字符量级会直接卡死标签页。
+- 正常的小任务（新对话里的普通问答/单文件操作）载荷通常在 2–5 万字符，网站可以正常处理。
+
+升级步骤：停止端点（Ctrl+C）和 Bridge → `git pull --ff-only` → `prepare_extension.py` → 重新加载扩展 → **开新对话**（Cursor 新会话 + 专用页新聊天）→ 刷新并等输入框可见 → 重启 Bridge → `--sessions`（确认 `transportVersion: "0.4.13"`、`providerVersion: "0.4.13"`、`inSync: true`）→ `--session "ID"` 重测。

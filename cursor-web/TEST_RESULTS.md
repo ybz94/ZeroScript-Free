@@ -107,6 +107,18 @@ git diff --check
 - 真实 HTTP/Bridge 测试验证 json_code_block 指令到浏览器连接的传播。
 - 这些是 Markdown/DOM 与模拟浏览器回归测试，不是三家网站的在线实机验证。用户反复同列报错与此机制相符，但未获得其原始响应，不能宣称根因已完全确认。
 
+## 0.4.13 发送确认窗口 8s→30s + 大载荷警告（2026-09-22）
+
+- Python 46 项、JavaScript 54 项，总计 100 项通过（`unittest discover` + `npm test`）。
+- 实机依据（0.4.12 面包屑截图，Arena Agent 模式）：`prompt 112912 chars`；15 块分块写入全部落地（`landed 112903/112912`）；`write done` → `clicking send button` → **`send confirmed (composer cleared)`**（网站已接受发送）；随后 8s 确认窗口内未出现新用户消息 → 误报 `Message was not sent: no new message appeared in the chat (the text did not land in the composer)`。用户另报告：点击回复后的"继续/否"选项会卡死标签页（网站带 11.3 万字符完整历史发起新一轮，站点自身管线被噎住）。
+- 根因分析：11.3 万字符载荷来自对话历史膨胀（之前失败大任务 104,245 字符的完整 prompt 留在历史中，每次请求整体重发），已贴近 118,000 预算上限；网站对超大消息的渲染/后续处理超出其能力。
+- 改动 1（content.js）：发送确认循环 40×200ms → 150×200ms（8s → 30s），覆盖超大用户消息的慢渲染。
+- 改动 2（content.js）：确认失败时区分措辞——发送前输入框持有内容且现已清空（发送已被网站接受）→ `no new user turn appeared within 30s although the composer was cleared (the send WAS accepted; …)`；否则保持"文字未落进输入框"措辞。
+- 改动 3（model_endpoint.py）：prompt > 90,000 字符时打印 `WARNING: large prompt (…) start a FRESH chat`。
+- 新增测试 2 项：发送已被接受但用户消息 20s 才渲染（30s 窗口内确认成功，旧 8s 窗口会误判）；31s 才渲染（窗口外失败且报错措辞为 send WAS accepted）。
+- 对话膨胀的根治靠操作规则（端点 WARNING 时开新对话），不做历史裁剪——裁剪会破坏跨轮工具结果连续性。
+- 仍是模拟浏览器回归；11 万字符载荷下网站的真实渲染耗时/上限待用户桌面复测（新对话小载荷应为主要验证场景）。
+
 ## 0.4.12 卡死定位面包屑 + 回复读取限速（2026-09-22）
 
 - Python 46 项、JavaScript 52 项，总计 98 项通过（`unittest discover` + `npm test`）。

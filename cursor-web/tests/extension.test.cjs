@@ -9,17 +9,17 @@ const root = path.join(__dirname, '..', 'extension');
 function content(options = {}) {
   const messages = [], intervals = [];
   let listener, now = 0, sent = 0, old = {}, item = old, text = 'old answer', count = 1, key = '/c/1';
-  let editorContent = options.draft || '', userCountVar = 1;
+  let editorContent = options.draft || '', userCountVar = 1, turnAt = Infinity; // fake-time when OUR user turn becomes visible
   const document = {hidden:!!options.hidden, title:'Chat', addEventListener(){}};
   const provider = {
     id:options.provider || 'mock',
-    version:options.providerVersion === undefined ? '0.4.12' : options.providerVersion, // null => pre-0.4.9 (no version field)
+    version:options.providerVersion === undefined ? '0.4.13' : options.providerVersion, // null => pre-0.4.9 (no version field)
     init(){}, conversationKey:()=>key, isFreshChat:()=>false,
     isBusyNow:()=>!!options.busy, isGenerating:()=>!!options.generating && sent>0, // generating only AFTER our send (post-reply prompt state)
     isHardGenerating:()=>!!options.hardGenerating,
     getEditor:()=>({tagName:'TEXTAREA', offsetParent:{}, placeholder:'Message', value:editorContent}),
     editorText:()=>editorContent, lastAssistant:()=>item, lastAssistantId:()=>item===old?'old':'new',
-    assistantCount:()=>count, userCount:()=>userCountVar, readAssistant:()=>({reply:text,item}),
+    assistantCount:()=>count, userCount:()=>userCountVar+(turnAt!==Infinity&&now>=turnAt?1:0), readAssistant:()=>({reply:text,item}),
     errorText:()=>options.siteError || null,
     findContinueBtn:()=>!!options.truncated, turnHalted:()=>!!options.halted,
     async typeAndSend(t){sent++; if(options.sendError) throw Error('send failed');
@@ -27,7 +27,7 @@ function content(options = {}) {
       if(options.hideAfterSend) document.hidden=true;
       const accepted = !options.sendNotConfirmed && !options.sendDropped;
       if(!options.sendDropped) editorContent = t;              // text typed (unless it never landed)
-      if(accepted){ editorContent=''; userCountVar++; }        // accepted -> cleared + new user turn
+      if(accepted){ editorContent=''; turnAt = now + (options.turnDelayMs||0); } // accepted -> cleared + new user turn at turnAt
       userCountVar += options.extraUserTurns || 0;             // simulate manual use of the page
       if(!options.noReply && accepted){ item={}; text=options.answer || 'new answer'; count++; }
     }
@@ -114,8 +114,8 @@ test('unversioned provider (pre-0.4.9 build) is also refused, not mixed',()=>{
 test('session announcement reports provider version and sync state',()=>{
   const c=content();
   const s=c.messages.find(m=>m.type==='session');
-  assert.equal(s.transportVersion,'0.4.12');
-  assert.equal(s.providerVersion,'0.4.12');
+  assert.equal(s.transportVersion,'0.4.13');
+  assert.equal(s.providerVersion,'0.4.13');
   assert.equal(s.inSync,true);
 });
 test('stable parseable JSON reply finalizes even while page reports generating (Arena follow-up prompt)',async()=>{
@@ -149,6 +149,27 @@ test('manual use of the dedicated page mid-task fails fast, not after 240s',asyn
 test('prompt length is reported in diagnostics',async()=>{
   const c=content();c.dispatch({prompt:'hello'});const r=await c.result();
   assert.equal(r.diagnostics.promptLen,'hello'.length);
+});
+test('send accepted but user turn renders slowly (large payload) is NOT a false failure',async()=>{
+  // Site accepted the send (composer cleared) but the huge user turn takes
+  // 20s to render - the 30s confirmation window must cover that (the old 8s
+  // window false-failed this live with a 112912-char payload).
+  const c=content({turnDelayMs:20000});
+  c.dispatch();
+  const r=await c.result();
+  assert.equal(r.error,undefined);
+  assert.equal(r.diagnostics.sendConfirmed,true);
+  assert.equal(c.sent,1);
+});
+test('turn that renders after the 30s window fails with accepted-but-slow wording',async()=>{
+  // 31s > 30s window: composer held text before the send (draft) and is now
+  // cleared, so the error must say the send WAS accepted, not "did not land".
+  const c=content({turnDelayMs:31000, draft:'leftover draft'});
+  c.dispatch();
+  const r=await c.result();
+  assert.match(r.error,/Message was not sent/);
+  assert.match(r.error,/send WAS accepted/);
+  assert.equal(c.sent,1);
 });
 test('navigation while running invalidates original session binding',async()=>{
   const c=content({navigate:true});c.dispatch();assert.match((await c.result()).error,/changed/);
@@ -237,7 +258,7 @@ test('model protocol returns code block extraction rather than rendered reply',a
   const r=await c.result();assert.equal(r.error,undefined);assert.equal(r.text,raw);
   assert.equal(r.diagnostics.extraction,'code_text');
   assert.equal(r.diagnostics.extraction_detail,'roots=1 scope=answer_roots turn_blocks=1');
-  assert.equal(r.diagnostics.version,'0.4.12');
+  assert.equal(r.diagnostics.version,'0.4.13');
 });
 test('site error with no reply fails the task in seconds, not 240s',async()=>{
   const c=content({noReply:true,siteError:'model channel not available'});

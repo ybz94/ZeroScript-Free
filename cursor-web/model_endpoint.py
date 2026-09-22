@@ -381,6 +381,8 @@ def create_app(api_key, session_id, rpc=bridge_rpc, poll_interval=1, heartbeat=1
         if bound is None:
             raise AdapterError('Bound webpage session unavailable. Re-list sessions and restart endpoint with an explicit session ID.', 409)
         prompt = make_prompt(body, rid, bound)
+        if len(prompt) > 90000:
+            print(f'[{rid[:8]}] WARNING: large prompt ({len(prompt)} chars) - the webpage conversation has bloated with accumulated history. Start a FRESH chat (Cursor side and dedicated page) to bring payloads back down; near the ~118k provider cap the webpage itself may become unresponsive.', flush=True)
         # Transport choices do not change the generation or tool-call IDs.
         semantic = {k: v for k, v in body.items() if k not in ('stream', 'stream_options')}
         fingerprint = hashlib.sha256(dumps(semantic).encode()).hexdigest()
