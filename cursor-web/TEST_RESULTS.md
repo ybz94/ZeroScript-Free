@@ -107,6 +107,16 @@ git diff --check
 - 真实 HTTP/Bridge 测试验证 json_code_block 指令到浏览器连接的传播。
 - 这些是 Markdown/DOM 与模拟浏览器回归测试，不是三家网站的在线实机验证。用户反复同列报错与此机制相符，但未获得其原始响应，不能宣称根因已完全确认。
 
+## 0.4.10 JSON 回复完成即返回 + 任务期间手动操作快速失败（2026-09-22）
+
+- Python 46 项、JavaScript 49 项，总计 95 项通过（`unittest discover` + `npm test`）。
+- 实机依据（Arena Agent 模式）：0.4.9 下首次跑通发送与回复（"内容发送出去了，网页返回 json 了"），但 Cursor 长时间未收到结果——页面在回复后弹出"任务完成？是/否/继续"三选项，进入非空闲状态；完成判定要求页面空闲，持完整 JSON 干等到 240s 超时。用户手动点击三选项后站点自身卡死（已知的 getComputedStyle bug）。
+- 改动 1（content.js）：新增 `isCompleteJson()`；回复围栏 JSON 块稳定 4s 且可 `JSON.parse` 时立即判定完成（`finalReason: "complete_json"`），与页面空闲状态解耦；纯文本回复不受此规则影响（仍走空闲判定，超时语义不变）。
+- 改动 2（content.js）：等待回复期间用户消息数超过"发送前 +1"即快速失败 `Dedicated page was operated during the task (…)`，附修复步骤（刷新→重绑→重试），不再等满 240s。
+- 改动 3（content.js）：`diagnostics.promptLen` 记录每次任务发出的载荷字符数（解释"你好"为何在网页中显示为长文：完整上下文+工具定义原样转发，架构使然）。
+- 新增测试 4 项：可解析 JSON 在页面持续报告 generating 时照常完成；纯文本回复不触发 JSON 规则（仍超时）；额外用户消息导致快速失败；promptLen 入诊断。
+- 仍是模拟浏览器回归，非在线实机验证；Arena 三选项的真实 DOM 未参与测试（JSON 判定规则不依赖该 UI 的结构）。
+
 ## 0.4.9 内容脚本与 provider 版本一致性闸门（2026-09-22）
 
 - Python 46 项、JavaScript 45 项，总计 91 项通过（`unittest discover` + `npm test`）。

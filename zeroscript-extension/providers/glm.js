@@ -554,7 +554,7 @@ const ZSProvider = (() => {
 
   return {
     id: "glm",
-    version: "0.4.9",
+    version: "0.4.10",
     displayName: "GLM",
     // GLM-5.2 is multimodal and z.ai's composer accepts image uploads (png/jpg via
     // the always-mounted file input; chip staged in .chip-scroll, upload complete

@@ -13,9 +13,9 @@ function content(options = {}) {
   const document = {hidden:!!options.hidden, title:'Chat', addEventListener(){}};
   const provider = {
     id:options.provider || 'mock',
-    version:options.providerVersion === undefined ? '0.4.9' : options.providerVersion, // null => pre-0.4.9 (no version field)
+    version:options.providerVersion === undefined ? '0.4.10' : options.providerVersion, // null => pre-0.4.9 (no version field)
     init(){}, conversationKey:()=>key, isFreshChat:()=>false,
-    isBusyNow:()=>!!options.busy, isGenerating:()=>!!options.generating,
+    isBusyNow:()=>!!options.busy, isGenerating:()=>!!options.generating && sent>0, // generating only AFTER our send (post-reply prompt state)
     isHardGenerating:()=>!!options.hardGenerating,
     getEditor:()=>({tagName:'TEXTAREA', offsetParent:{}, placeholder:'Message', value:editorContent}),
     editorText:()=>editorContent, lastAssistant:()=>item, lastAssistantId:()=>item===old?'old':'new',
@@ -28,6 +28,7 @@ function content(options = {}) {
       const accepted = !options.sendNotConfirmed && !options.sendDropped;
       if(!options.sendDropped) editorContent = t;              // text typed (unless it never landed)
       if(accepted){ editorContent=''; userCountVar++; }        // accepted -> cleared + new user turn
+      userCountVar += options.extraUserTurns || 0;             // simulate manual use of the page
       if(!options.noReply && accepted){ item={}; text=options.answer || 'new answer'; count++; }
     }
   };
@@ -113,9 +114,41 @@ test('unversioned provider (pre-0.4.9 build) is also refused, not mixed',()=>{
 test('session announcement reports provider version and sync state',()=>{
   const c=content();
   const s=c.messages.find(m=>m.type==='session');
-  assert.equal(s.transportVersion,'0.4.9');
-  assert.equal(s.providerVersion,'0.4.9');
+  assert.equal(s.transportVersion,'0.4.10');
+  assert.equal(s.providerVersion,'0.4.10');
   assert.equal(s.inSync,true);
+});
+test('stable parseable JSON reply finalizes even while page reports generating (Arena follow-up prompt)',async()=>{
+  const json='{"content":"ok","tool_calls":[]}';
+  const c=content({generating:true, protocol:{text:json,source:'code_text',detail:'roots=1'}});
+  c.dispatch({response_format:'json_code_block'});
+  const r=await c.result();
+  assert.equal(r.error,undefined);
+  assert.equal(r.text,json);
+  assert.equal(r.diagnostics.finalReason,'complete_json');
+  assert.equal(r.diagnostics.phase,'completed');
+  assert.equal(c.sent,1);
+});
+test('plain prose reply does NOT finalize via the JSON rule while page reports generating',async()=>{
+  const c=content({generating:true, answer:'plain prose'});
+  c.dispatch({response_format:'json_code_block'});
+  const r=await c.result();
+  assert.match(r.error,/Timed out/);
+  assert.equal(r.diagnostics.phase,'reading_reply');
+  assert.equal(r.diagnostics.finalReason,undefined);
+});
+test('manual use of the dedicated page mid-task fails fast, not after 240s',async()=>{
+  const c=content({extraUserTurns:1});
+  c.dispatch();
+  const r=await c.result();
+  assert.match(r.error,/operated during the task/);
+  assert.match(r.error,/Refresh the page, rebind/);
+  assert.equal(r.diagnostics.phase,'waiting_new_reply');
+  assert.equal(c.sent,1);
+});
+test('prompt length is reported in diagnostics',async()=>{
+  const c=content();c.dispatch({prompt:'hello'});const r=await c.result();
+  assert.equal(r.diagnostics.promptLen,'hello'.length);
 });
 test('navigation while running invalidates original session binding',async()=>{
   const c=content({navigate:true});c.dispatch();assert.match((await c.result()).error,/changed/);
@@ -204,7 +237,7 @@ test('model protocol returns code block extraction rather than rendered reply',a
   const r=await c.result();assert.equal(r.error,undefined);assert.equal(r.text,raw);
   assert.equal(r.diagnostics.extraction,'code_text');
   assert.equal(r.diagnostics.extraction_detail,'roots=1 scope=answer_roots turn_blocks=1');
-  assert.equal(r.diagnostics.version,'0.4.9');
+  assert.equal(r.diagnostics.version,'0.4.10');
 });
 test('site error with no reply fails the task in seconds, not 240s',async()=>{
   const c=content({noReply:true,siteError:'model channel not available'});

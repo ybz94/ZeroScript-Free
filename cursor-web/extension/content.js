@@ -7,7 +7,7 @@
   const inputMaxLines = P.id === 'chatgpt' ? 600 : null;
   P.init({diag: () => {}});
   let id = crypto.randomUUID(), key = P.conversationKey(), busy = false;
-  const VERSION = '0.4.9';
+  const VERSION = '0.4.10';
   const seen = new Set();
   // DOM events can wake the watcher even when background timers are throttled.
   // Keep a timer fallback for generation-state changes without DOM mutations.
@@ -20,6 +20,16 @@
       observer.observe(document.documentElement, {subtree:true, childList:true,
         characterData:true, attributes:true});
     });
+  }
+  // The protocol reply is exactly one fenced JSON block, so a parseable
+  // extraction IS a complete answer - regardless of the site's post-reply UI
+  // (e.g. Arena Agent mode's "task complete? yes/no/continue" prompt leaves
+  // the page non-idle and would otherwise stall the wait to the 240s timeout).
+  function isCompleteJson(t) {
+    if (typeof t !== 'string') return false;
+    const s = t.trim();
+    if (!s.startsWith('{') && !s.startsWith('[')) return false;
+    try { JSON.parse(s); return true; } catch { return false; }
   }
   const notify = data => chrome.runtime.sendMessage(data).catch(() => {});
   function announce() {
@@ -36,7 +46,7 @@
     busy = true;
     const sessionId = id;
     let text = '', failure;
-    const diagnostics = {version:VERSION, startedHidden:document.hidden, sawHidden:document.hidden, phase:'preflight'};
+    const diagnostics = {version:VERSION, startedHidden:document.hidden, sawHidden:document.hidden, phase:'preflight', promptLen:msg.prompt.length};
     try {
       if (P.isBusyNow() || P.isGenerating()) throw new Error('Webpage is already generating');
       // Dedicated page: a leftover draft (from manual typing or a prior send
@@ -85,6 +95,10 @@
       }
       diagnostics.editorLenAfter = leftover.length;
       diagnostics.usersAfter = usersAfter;
+      // Our send added exactly one user turn; any further growth means the
+      // dedicated page was operated manually (or its follow-up prompt was
+      // clicked) mid-task.
+      const expectedUsers = (diagnostics.usersBefore ?? 0) + 1;
       diagnostics.generatingAfter = gen;
       diagnostics.hardGeneratingAfter = hard;
       const newTurnAfter = usersAfter != null && diagnostics.usersBefore != null && usersAfter > diagnostics.usersBefore;
@@ -108,6 +122,14 @@
       while (Date.now() < deadline) {
         await waitForChange();
         diagnostics.sawHidden ||= document.hidden;
+        // Manual operation of the dedicated page (typing, or clicking the
+        // site's post-reply follow-up prompt) injects extra user turns.
+        // Fail in seconds with an actionable message instead of waiting out
+        // the 240s deadline reading a conversation we no longer own.
+        const usersNow = P.userCount ? P.userCount() : null;
+        if (usersNow != null && usersNow > expectedUsers) {
+          throw new Error('Dedicated page was operated during the task (an extra user message appeared - manual input or the site\'s follow-up prompt was clicked). Refresh the page, rebind the session, and retry; never use the dedicated page while a task runs');
+        }
         const currentKey = P.conversationKey();
         if (currentKey !== taskKey) {
           if (!mayCreateChat) {
@@ -149,11 +171,19 @@
         const idle = !P.isGenerating() && !P.isBusyNow();
         if (!idle) idleSince = null;
         else if (idleSince === null) idleSince = Date.now();
-        if (text && idle && Date.now() - idleSince > 4000 && Date.now() - changed > 4000) {
+        // Settle on idle+stable as before, OR on a stable, parseable protocol
+        // JSON block: that block IS the complete answer by construction, so a
+        // non-idle post-reply UI must not hold a finished reply hostage.
+        const settled = Date.now() - changed > 4000;
+        const idleStable = idleSince !== null && Date.now() - idleSince > 4000;
+        const jsonComplete = msg.response_format === 'json_code_block' && !extracted.error && isCompleteJson(text);
+        if (text && settled && (idleStable || jsonComplete)) {
           if (extracted.error) throw new Error(extracted.error);
           if (P.findContinueBtn?.()) throw new Error('Reply is truncated; continue on webpage before requesting another task');
           if (P.turnHalted?.(result.item)) throw new Error('Webpage generation was stopped');
-          complete = true; break;
+          complete = true;
+          diagnostics.finalReason = (!idleStable && jsonComplete) ? 'complete_json' : 'idle';
+          break;
         }
       }
       if (!complete) throw new Error('Timed out waiting for a complete new reply. Background throttling, login or website state may block progress. Activate the webpage and inspect the original request before retrying; do not automatically resend');

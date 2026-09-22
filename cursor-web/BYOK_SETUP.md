@@ -359,3 +359,19 @@ npm test --prefix cursor-web/tests
 **核对方式升级**：`--sessions` 里该会话应同时满足 `transportVersion: "0.4.9"` 且 `providerVersion: "0.4.9"` 且 `inSync: true`。只要 `inSync` 是 `false` 或 `providerVersion` 不是 `0.4.9`，先别发任务——按上面三步把 provider 更新到位再测。
 
 升级步骤：停止端点（Ctrl+C）和 Bridge → `git pull --ff-only` → **`prepare_extension.py`（关键，pull 不会更新 providers 目录）** → 重新加载扩展 → 刷新专用页并等输入框可见后再多等几秒 → 重启 Bridge → `--sessions`（确认 `inSync: true` 且两版本都是 0.4.9）→ `--session "ID"` 重测。
+
+## 0.4.10：JSON 回复完成即返回，不再被页面"是否完成"提示卡死（2026-09-22）
+
+**为什么要这一版**：0.4.9 之后发送与回复链路已通（网页确实返回了 JSON），但 Cursor 长时间收不到结果。原因：Arena Agent 模式**每答完一次都会弹出"任务完成？是 / 否 / 继续"的三选项**，页面随即进入"等你选择"的非空闲状态；扩展的完成判定要求"页面空闲 + 文本稳定 4 秒"，于是拿着已经完整的 JSON 回复干等到 240 秒超时。另外手动点了这三个选项还会触发站点自身的 bug 把页面卡死。
+
+0.4.10 改动：
+
+1. **可解析的协议 JSON = 完成**：回复的围栏 JSON 块一旦稳定（4 秒不再变化）且 `JSON.parse` 成功，立即判定回复完成并返回，不再依赖页面空闲状态（Arena 的三选项、或其他任何回复后 UI 都挡不住返回）。诊断字段 `finalReason: "complete_json"` / `"idle"` 标明走了哪条判定。
+2. **任务期间动过专用页 → 快速失败**：等待回复期间若出现额外的用户消息（手动输入，或点了"是/否/继续"），数秒内报 `Dedicated page was operated during the task (…)` 并给出修复步骤（刷新页面、重新绑定会话、重试），不再空等 240 秒。
+3. **`promptLen` 进诊断**：每次任务把发出的载荷字符数写进 diagnostics，方便核对"你好"为什么在网页里很长（见下）。
+
+**关于"我就发了你好，网页里却特别长"**：这是架构设计使然——网页 AI 直接作为 Cursor 的模型源，**完整上下文**（协议说明 + 全部工具定义 + 对话历史）原样转发，没有第二个模型做转述。工具定义（文件读写、终端等）本身就占几千到几万字符，属正常现象，不是 bug。
+
+**重要规则**：任务运行期间**绝不要手动操作专用页**——包括点"是/否/继续"、手动发送、编辑输入框。这些操作要么触发站点自身的 `getComputedStyle` 卡死，要么让任务快速失败（0.4.10 会明确报错）。等 Cursor 拿到结果后再做任何手动操作。
+
+升级步骤：停止端点（Ctrl+C）和 Bridge → `git pull --ff-only` → `prepare_extension.py` → 重新加载扩展 → 刷新专用页并等输入框可见后再多等几秒 → 重启 Bridge → `--sessions`（确认 `transportVersion: "0.4.10"`、`providerVersion: "0.4.10"`、`inSync: true`）→ `--session "ID"` 重测。
