@@ -321,6 +321,21 @@ const ZSProvider = (() => {
     return false;
   }
 
+  // Visible site error chrome (toast/alert), if any - content.js fails the
+  // task in seconds when this persists with no reply, instead of waiting out
+  // the 240s window on a request the page already rejected (0.4.19).
+  function errorText() {
+    try {
+      for (const el of document.querySelectorAll(S.errorSurfaces)) {
+        if (el.offsetParent === null) continue;
+        if (el.closest(S.anyItem)) continue; // model content, not UI chrome
+        const t = (el.innerText || "").trim();
+        if (t.length >= 8 && t.length < 600) return t;
+      }
+    } catch {}
+    return null;
+  }
+
   // ── Sending ─────────────────────────────────────────────────────────────────
   // Real <textarea> driven by Svelte: set .value via the native prototype setter
   // so the framework's input handler fires, dispatch an input event, then click
@@ -565,7 +580,7 @@ const ZSProvider = (() => {
 
   return {
     id: "glm",
-    version: "0.4.18",
+    version: "0.4.19",
     displayName: "GLM",
     // GLM-5.2 is multimodal and z.ai's composer accepts image uploads (png/jpg via
     // the always-mounted file input; chip staged in .chip-scroll, upload complete
@@ -616,7 +631,7 @@ const ZSProvider = (() => {
     isGenerating, isBusyNow, isHardGenerating,
     enforceComposer, ensureComposerReady,
     turnHalted, findContinueBtn, clickContinueBtn,
-    scanError, isTooLongMsg, isBusyMsg,
+    scanError, errorText, isTooLongMsg, isBusyMsg,
     // actions
     attachImages, clearAttachments, conversationKey,
     installSendHooks, findToolBlockSpot,

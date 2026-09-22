@@ -595,11 +595,16 @@ const ZSProvider = (() => {
   function readAssistant() {
     const item = lastAssistant();
     if (!item) return { present: false, reply: "", thinking: "", item: null };
+    const body = item.querySelector(S.reply);
     return {
       present: true,
       reply: assistantReplyText(item).trim(),
       thinking: "",
       item,
+      // Protocol reader (0.4.19): scope the code-block search to the response
+      // content so anything else in the turn (thinking UI, chips, metadata)
+      // can never count as the protocol's JSON block.
+      replyRoots: body ? [body] : [],
     };
   }
 
@@ -610,6 +615,21 @@ const ZSProvider = (() => {
       await sleep(120);
     }
     return false;
+  }
+
+  // Visible site error chrome (toast/alert), if any - content.js fails the
+  // task in seconds when this persists with no reply, instead of waiting out
+  // the 240s window on a request the page already rejected (0.4.19).
+  function errorText() {
+    try {
+      for (const el of document.querySelectorAll(S.errorSurfaces)) {
+        if (el.offsetParent === null) continue;
+        if (el.closest(S.anyItem)) continue; // model content, not UI chrome
+        const t = (el.innerText || "").trim();
+        if (t.length >= 8 && t.length < 600) return t;
+      }
+    } catch {}
+    return null;
   }
 
   // ── Sending ───────────────────────────────────────────────────────────────
@@ -975,7 +995,7 @@ const ZSProvider = (() => {
 
   return {
     id: "qwen",
-    version: "0.4.18",
+    version: "0.4.19",
     displayName: "Qwen",
     // DYNAMIC per selected model (see the capability section above). A getter so
     // the core always reads the CURRENT model's capability - it can change
@@ -1018,7 +1038,7 @@ const ZSProvider = (() => {
     isGenerating, isBusyNow, isHardGenerating,
     enforceComposer, ensureComposerReady,
     turnHalted, findContinueBtn, clickContinueBtn, replyUnsettled, isComparisonTurn, resolveComparison,
-    scanError, isTooLongMsg, isBusyMsg,
+    scanError, errorText, isTooLongMsg, isBusyMsg,
     // actions
     attachImages, clearAttachments, conversationKey,
     installSendHooks, findToolBlockSpot,

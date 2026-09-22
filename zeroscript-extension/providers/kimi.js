@@ -402,6 +402,21 @@ const ZSProvider = (() => {
     return false;
   }
 
+  // Visible site error chrome (toast/alert), if any - content.js fails the
+  // task in seconds when this persists with no reply, instead of waiting out
+  // the 240s window on a request the page already rejected (0.4.19).
+  function errorText() {
+    try {
+      for (const el of document.querySelectorAll(S.errorSurfaces)) {
+        if (el.offsetParent === null) continue;
+        if (el.closest(S.anyItem)) continue; // model content, not UI chrome
+        const t = (el.innerText || "").trim();
+        if (t.length >= 8 && t.length < 600) return t;
+      }
+    } catch {}
+    return null;
+  }
+
   // ── Sending ───────────────────────────────────────────────────────────────
   // Lexical contenteditable: select-all then a single execCommand("insertText")
   // drives the native editing pipeline so Lexical's model updates and the send
@@ -775,7 +790,7 @@ const ZSProvider = (() => {
 
   return {
     id: "kimi",
-    version: "0.4.18",
+    version: "0.4.19",
     displayName: "Kimi",
     // Confirmed live: Kimi (K2.6) reads attached images - it correctly described
     // a test screenshot's content. So screen_capture is exposed here (see main.js
@@ -822,7 +837,7 @@ const ZSProvider = (() => {
     isGenerating, isBusyNow, isHardGenerating,
     enforceComposer, ensureComposerReady, modeWarning, overlayBlocking,
     turnHalted, findContinueBtn, clickContinueBtn,
-    scanError, isTooLongMsg, isBusyMsg,
+    scanError, errorText, isTooLongMsg, isBusyMsg,
     // actions
     attachImages, clearAttachments, conversationKey,
     installSendHooks, findToolBlockSpot,

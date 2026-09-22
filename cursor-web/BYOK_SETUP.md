@@ -515,3 +515,25 @@ npm test --prefix cursor-web/tests
 - 新站点的输入预算是保守起点：若真实任务被 413 拒绝，先试"新会话"（去掉历史），仍不行再按需上调该站预算
 - 某站点若把输入截断，0.4.11 的中途截断报错会直接指出（wrote N, holds M），按提示调预算
 - 站点的"任务成功了吗?"类后续弹窗目前只有 Arena 有自动应答；其它站点若出现同类弹窗且挡住下一次对话，告诉我站点名，按同样方式加
+
+## 0.4.19：qwen / gemini / meta / chatgpt 逐项适配完成（2026-09-22）
+
+在 0.4.18 通用接入之上，对四个站点做了逐项接口审计与补齐（8 个适配器现在全部实现 content.js 依赖的完整接口）：
+
+1. **`errorText` 站点报错快速失败 ×5**（glm/kimi/qwen/gemini/meta 补齐）：读取可见的 toast/alert 报错区（8–600 字符、排除模型内容）——网页已拒绝请求时几秒内失败并给出原文，而不是空等 240 秒。
+2. **协议块搜索作用域补齐**：
+   - gemini `readAssistant`：`replyRoots` = `message-content`（回答体），`model-thoughts` 是它的兄弟元素，思考中的代码块天然出局
+   - qwen `readAssistant`：`replyRoots` = `.response-message-content`
+   - meta `readAssistant`：`thinkingSel` = `[data-testid="thinking-status"],[data-testid="subagent-cot-list"]`（Réflexion 模式的推理代码块不计入协议块搜索）
+3. **审计确认**：`userCount`/`lastAssistantId`/`isGenerating`/`isHardGenerating`/`scanError`/`attachImages`/`installSendHooks`/`findToolBlockSpot`/`turnHalted` 等接口 8/8 齐备；gemini/kimi 无 `lastAssistantId`（非虚拟化列表，item 身份 + 文本变化足以判新轮，content.js 已做可选处理）。
+
+**四站使用须知**（账号/网络要求不同）：
+
+| 站点 | 要求 | 备注 |
+|---|---|---|
+| chat.qwen.ai | Qwen 国际版账号 | 适配的是**国际版** chat.qwen.ai；国内版 tongyi.aliyun.com DOM 不同，未覆盖 |
+| gemini.google.com | Google 账号（需可访问） | 思考（model-thoughts）已排除 |
+| www.meta.ai | Meta 账号（需可访问） | 适配器强制 Réflexion（think_hard）模式，回复质量更好、更慢 |
+| chatgpt.com | ChatGPT 账号（需可访问） | 输入预算 120000 UTF-16 / **600 行**（ProseMirror 性能限制，实机验证过） |
+
+升级步骤同 0.4.18：`git pull` → `prepare_extension.py` → 重载扩展 → 刷新专用页 → 重启 Bridge → `--sessions`（`0.4.19`/`0.4.19`/`inSync: true`）→ 换站点开新会话 → 2KB 控制 → 真实任务。

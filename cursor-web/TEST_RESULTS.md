@@ -107,6 +107,17 @@ git diff --check
 - 真实 HTTP/Bridge 测试验证 json_code_block 指令到浏览器连接的传播。
 - 这些是 Markdown/DOM 与模拟浏览器回归测试，不是三家网站的在线实机验证。用户反复同列报错与此机制相符，但未获得其原始响应，不能宣称根因已完全确认。
 
+## 0.4.19 qwen / gemini / meta / chatgpt 逐项适配完成（2026-09-22）
+
+- Python 46 项、JavaScript 60 项，总计 106 项通过（`unittest discover` + `npm test`）。
+- 背景：用户要求 qwen/gemini/meta/chatgpt 全部直接适配。0.4.18 已完成通用接入；0.4.19 对四个站点逐项审计 content.js 依赖的完整接口并补齐缺口。
+- 改动：
+  1. `errorText` ×5（glm/kimi/qwen/gemini/meta）：可见 toast/alert（8–600 字符，排除模型内容）→ 网站报错时几秒内失败并给原文（chatgpt 同款实现，各站用自己的 errorSurfaces/anyItem）。
+  2. 协议块搜索作用域：gemini `readAssistant` 加 `replyRoots:[message-content]` + `thinkingSel`（model-thoughts 为兄弟元素）；qwen 加 `replyRoots:[.response-message-content]`；meta 加 `thinkingSel:[data-testid="thinking-status"],[data-testid="subagent-cot-list"]`（Réflexion 推理代码块出局）。
+  3. 审计矩阵 8/8 齐备：errorText/landedLen/(replyRoots 或 thinkingSel)/userCount/isGenerating/isHardGenerating/scanError/attachImages/installSendHooks/findToolBlockSpot/turnHalted。gemini/kimi 无 lastAssistantId（非虚拟化列表，item 身份 + 文本判新轮，content.js 可选处理）。
+- 新增站点使用须知（BYOK_SETUP）：qwen=国际版 chat.qwen.ai（国内版未覆盖）、gemini/meta/chatgpt 需可访问对应网络；chatgpt 保持 120000/600 行预算；meta 强制 Réflexion 模式。
+- 四站 + glm/kimi 均待用户桌面实机验证（登录 + 2KB 控制 + 真实任务）；errorText 与协议块作用域为结构性保障，具体 DOM 命中以实机为准。
+
 ## 0.4.18 适配其它网页 AI（GLM / Kimi K3 / Qwen / Gemini / Meta / ChatGPT）（2026-09-22）
 
 - Python 46 项、JavaScript 60 项，总计 106 项通过（`unittest discover` + `npm test`）。
