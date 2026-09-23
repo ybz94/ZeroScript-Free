@@ -60,6 +60,10 @@ async def handle(ws):
                 continue
             if kind == 'list':
                 result = {'sessions': [s for sessions in clients.values() for s in sessions]}
+            elif kind == 'jobs':
+                # Control-center dashboard: task state per job (no internals).
+                result = {'jobs': [{k: v for k, v in j.items() if k != 'owner'}
+                                   for j in jobs.values()]}
             elif kind == 'send':
                 sid, prompt = msg.get('session_id'), msg.get('prompt')
                 if not isinstance(prompt, str) or not prompt.strip() :

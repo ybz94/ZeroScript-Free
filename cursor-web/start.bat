@@ -1,23 +1,23 @@
-:: One-click launcher: Cursor Web Assistant (Bridge + model endpoint).
-:: Replaces the old three-step start: bridge.py -> --sessions -> --session <id>.
+:: Cursor Web Assistant - desktop control center.
+:: One window = Bridge + model endpoint + control UI. Close the window to stop all.
 @echo off
 chcp 65001 >nul
 setlocal
 cd /d "%~dp0"
-title Cursor Web Assistant (one-click)
+title Cursor Web Assistant
 
 echo.
-echo   === Cursor Web Assistant - 一键启动 ===
+echo   === Cursor Web Assistant ===
 echo.
 
-if not exist "%~dp0bridge.py" (
-    echo   错误：start.bat 旁边没有找到 bridge.py（文件不全？重新 git pull 试试）。
+if not exist "%~dp0app.py" (
+    echo   错误：找不到 app.py（文件不全？重新 git pull 试试）。
     pause
     exit /b 1
 )
 
-REM --- Find Python: prefer the py launcher, then PATH python (skipping the
-REM Microsoft Store stub), then the standard per-user install folders -------
+REM --- Find Python: py launcher first, then PATH (skip the Store stub), then
+REM the standard per-user install folders ------------------------------------
 set "PY="
 where py >nul 2>nul && set "PY=py -3"
 if not defined PY (
@@ -33,10 +33,11 @@ if not defined PY (
 if not defined PY (
     echo   未找到 Python。请到 https://www.python.org/downloads/ 安装，
     echo   安装时勾选 "Add python.exe to PATH"，然后重新运行本文件。
+    echo   （或者先双击 build_exe.bat 打包出 CursorWebAssistant.exe 后直接运行 exe。）
     pause
     exit /b 1
 )
 echo   使用 Python: %PY%
 
-%PY% launcher.py %*
+%PY% app.py
 pause

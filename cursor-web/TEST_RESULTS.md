@@ -131,6 +131,17 @@ git diff --check
 - 改动：background.js dispatch catch 分支识别 "Receiving end does not exist"，替换为可操作中文指引（打开受支持站点/刷新/重新绑定，并点名 chatglm.cn ≠ chat.z.ai）；popup.html 站点列表下加"国内版暂不支持"提示。
 - 后续：chatglm.cn 适配器待用户提供 DOM 快照（控制台探针脚本已随消息给出）后按真实结构实现。
 
+## 0.4.23 桌面软件：一个进程 = Bridge + 端点 + 控制中心（2026-09-22）
+
+- Python 47 项、JavaScript 63 项，总计 110 项通过。
+- 新增 `cursor-web/app.py`：同进程运行 bridge（`bridge.main()` 作为任务）+ 端点（`uvicorn.Server` 任务，`create_app(key, SessionRef)`）+ 控制界面（starlette 静态 UI + /api/status|rebind|stop，端口 17616，WebView2 原生窗口；`--no-window` 无头模式）。
+- `model_endpoint.create_app` 会话绑定改为可变引用（接受字符串或 callable）→ **窗口一键重绑，端点不重启**；CLI `--session` 行为不变（回归测试覆盖）。
+- `bridge.py` 新增 `type:"jobs"` 查询（任务日志用）。
+- 令牌文件冻结（frozen）适配：exe 模式下所有令牌固定在 exe 同目录（_MEIPASS 是临时目录，不能放令牌）；bridge 模块 TOKEN_FILE 与端点 RPC 统一指向同一文件。
+- `web/index.html` 控制界面：状态条、5 步向导（localStorage 记忆手动步骤，出现会话自动点亮①②）、8 站点跳转、会话卡片+一键重绑、任务日志、Cursor 连接三项复制、停止按钮。
+- **集成测试 test_app.py（子进程隔离，端口 177xx）**：假 content script 应答 dispatch（回显 request_id）→ 单进程起全部服务 → UI HTML/status → 会话注册 → POST 重绑 → **真实 HTTP chat/completions 200 且内容 = 假网页回复** → 任务日志出现 completed。
+- 打包：`build_exe.bat`（pip requirements-desktop.txt → prepare → PyInstaller onefile windowed，--add-data web+extension）→ `dist\CursorWebAssistant.exe`；exe 行为（PyInstaller 冻结环境）待用户 Windows 上首次构建验证，沙箱为 Linux 不能跨平台编译 Windows exe。
+
 ## 0.4.19 qwen / gemini / meta / chatgpt 逐项适配完成（2026-09-22）
 
 - Python 46 项、JavaScript 60 项，总计 106 项通过（`unittest discover` + `npm test`）。

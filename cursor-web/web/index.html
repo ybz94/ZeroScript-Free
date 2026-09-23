@@ -1,0 +1,246 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>Cursor Web Assistant</title>
+<style>
+:root{
+  --bg:#0f1115; --card:#171a21; --card2:#1d212b; --text:#e6e8ec; --muted:#9aa1ad;
+  --line:#262b35; --accent:#5b9bff; --ok:#4ade80; --bad:#f87171; --warn:#fbbf24;
+}
+@media (prefers-color-scheme: light){
+  :root{--bg:#f5f6f8; --card:#ffffff; --card2:#f0f2f5; --text:#191c20; --muted:#68707c;
+        --line:#e4e7ec; --accent:#2563eb; --ok:#16a34a; --bad:#dc2626; --warn:#d97706;}
+}
+*{box-sizing:border-box;margin:0}
+body{font:13.5px/1.55 system-ui,-apple-system,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif;
+     background:var(--bg);color:var(--text);padding:18px 20px 30px}
+header{display:flex;align-items:center;gap:12px;margin-bottom:16px}
+.logo{width:34px;height:34px;border-radius:9px;background:linear-gradient(135deg,#5b9bff,#8b5cf6);
+      display:flex;align-items:center;justify-content:center;font-weight:800;color:#fff;font-size:15px}
+h1{font-size:17px;font-weight:700}
+.sub{font-size:11.5px;color:var(--muted)}
+.spacer{flex:1}
+.chip{font-size:11px;color:var(--muted);border:1px solid var(--line);border-radius:99px;padding:3px 10px}
+.row{display:grid;grid-template-columns:1fr 1fr;gap:14px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:14px 16px;margin-bottom:14px}
+.card h2{font-size:12px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.05em;margin-bottom:10px}
+.dot{width:9px;height:9px;border-radius:50%;background:var(--muted);display:inline-block;margin-right:6px}
+.dot.on{background:var(--ok);box-shadow:0 0 7px var(--ok)}
+.dot.err{background:var(--bad);box-shadow:0 0 7px var(--bad)}
+.statusline{display:flex;gap:18px;flex-wrap:wrap;font-size:12.5px}
+.statusline b{font-weight:600}
+.steps{counter-reset:s}
+.step{display:flex;gap:12px;padding:10px 0;border-top:1px solid var(--line);align-items:flex-start}
+.step:first-of-type{border-top:0;padding-top:2px}
+.step .num{counter-increment:s;flex:none;width:22px;height:22px;border-radius:50%;background:var(--card2);
+  border:1px solid var(--line);display:flex;align-items:center;justify-content:center;font-size:11.5px;font-weight:700;color:var(--muted);margin-top:1px}
+.step .num::before{content:counter(s)}
+.step.done .num{background:var(--ok);border-color:var(--ok);color:#04150b}
+.step.done .num::before{content:"✓"}
+.step .body{flex:1;min-width:0}
+.step .t{font-weight:650;font-size:13px}
+.step .d{font-size:12px;color:var(--muted);margin-top:2px;word-break:break-all}
+a{color:var(--accent);text-decoration:none}
+a:hover{text-decoration:underline}
+button{border:0;border-radius:8px;background:var(--accent);color:#fff;font-size:12px;font-weight:650;
+  padding:6px 12px;cursor:pointer;margin-top:6px}
+button:hover{filter:brightness(1.1)}
+button.ghost{background:var(--card2);color:var(--text);border:1px solid var(--line);font-weight:500}
+button.danger{background:var(--bad)}
+button:disabled{opacity:.45;cursor:default;filter:none}
+.mini{font-size:11px;padding:3px 9px;margin-left:6px}
+code, .mono{font-family:ui-monospace,Consolas,monospace;font-size:11.5px;background:var(--card2);
+  border:1px solid var(--line);border-radius:6px;padding:1px 6px;word-break:break-all}
+.sites{display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-top:6px}
+a.site{display:flex;align-items:center;gap:8px;padding:7px 9px;border-radius:9px;background:var(--card2);
+  border:1px solid var(--line);color:var(--text);font-size:12.5px}
+a.site:hover{border-color:var(--accent);text-decoration:none}
+.glyph{width:20px;height:20px;border-radius:6px;display:flex;align-items:center;justify-content:center;
+  font-size:10px;font-weight:800;color:#fff;flex:none}
+a.site .pid{margin-left:auto;font-size:10px;color:var(--muted);font-family:ui-monospace,monospace}
+.session{display:flex;align-items:center;gap:10px;padding:9px 10px;border:1px solid var(--line);
+  border-radius:9px;margin-top:8px;background:var(--card2)}
+.session.bound{border-color:var(--ok)}
+.badge{font-size:10px;font-weight:700;padding:1px 8px;border-radius:99px}
+.badge.ok{color:var(--ok);background:rgba(74,222,128,.12)}
+.badge.bad{color:var(--bad);background:rgba(248,113,113,.12)}
+.badge.busy{color:var(--warn);background:rgba(251,191,36,.12)}
+.s-meta{font-size:11px;color:var(--muted);word-break:break-all}
+.job{display:flex;gap:10px;align-items:baseline;padding:7px 0;border-top:1px solid var(--line);font-size:12px}
+.job:first-child{border-top:0}
+.job .jid{font-family:ui-monospace,monospace;font-size:10.5px;color:var(--muted)}
+.job .err{color:var(--bad);font-size:11.5px;word-break:break-all}
+.kv{display:flex;gap:8px;align-items:center;margin-top:7px;font-size:12.5px}
+.kv .k{color:var(--muted);flex:none;width:74px}
+.kv .v{flex:1;word-break:break-all}
+.hint{font-size:11.5px;color:var(--muted);margin-top:8px;line-height:1.5}
+.toast{position:fixed;right:18px;bottom:18px;background:var(--ok);color:#04150b;font-weight:700;
+  font-size:12.5px;border-radius:9px;padding:9px 16px;opacity:0;transition:opacity .25s;pointer-events:none}
+.toast.show{opacity:1}
+</style>
+</head>
+<body>
+<header>
+  <div class="logo">C</div>
+  <div>
+    <h1>Cursor Web Assistant</h1>
+    <div class="sub">桌面控制中心 · 一个程序 = Bridge + 端点 + 控制界面</div>
+  </div>
+  <div class="spacer"></div>
+  <span class="chip" id="ver">…</span>
+</header>
+
+<div class="card">
+  <h2>状态</h2>
+  <div class="statusline" id="statusline"><span>加载中…</span></div>
+</div>
+
+<div class="row">
+  <div class="card">
+    <h2>设置向导</h2>
+    <div class="steps" id="steps"></div>
+    <div class="hint">①② 只需做一次；之后每次用这个程序都从 ③ 开始。扩展文件夹路径和令牌都可以一键复制。</div>
+  </div>
+  <div class="card">
+    <h2>支持的 AI 网站（专用页）</h2>
+    <div class="sites" id="sites"></div>
+    <div class="hint">点击新开标签页并<b>开一个全新会话</b>；把它当作专用页（任务期间不要手动操作）。GLM 用国际版 chat.z.ai，国内版 chatglm.cn 暂不支持。</div>
+  </div>
+</div>
+
+<div class="card">
+  <h2>专用页会话 <span class="s-meta" id="sessHint"></span></h2>
+  <div id="sessions"></div>
+</div>
+
+<div class="row">
+  <div class="card">
+    <h2>任务日志</h2>
+    <div id="jobs"><div class="s-meta">暂无任务</div></div>
+  </div>
+  <div class="card">
+    <h2>Cursor 连接</h2>
+    <div class="kv"><span class="k">端点地址</span><span class="v mono" id="epUrl"></span><button class="ghost mini" data-copy="epUrl">复制</button></div>
+    <div class="kv"><span class="k">模型名</span><span class="v mono">web-ai</span><button class="ghost mini" data-copy="const:web-ai">复制</button></div>
+    <div class="kv"><span class="k">端点密钥</span><span class="v mono" id="epKey"></span><button class="ghost mini" data-copy="epKey">复制</button></div>
+    <div class="kv"><span class="k">Bridge 令牌</span><span class="v mono" id="token"></span><button class="ghost mini" data-copy="token">复制</button></div>
+    <div class="hint">cursor-byok 里把模型 <b>web-ai</b> 指向端点地址、填上端点密钥即可。Bridge 令牌用于扩展弹窗"设置"里配对（只需一次）。</div>
+    <div style="margin-top:12px"><button class="danger" id="stopBtn">停止程序</button>
+      <span class="s-meta">停止 Bridge、端点与窗口；关闭窗口效果相同。</span></div>
+  </div>
+</div>
+
+<div class="toast" id="toast">已复制</div>
+<script>
+const $ = id => document.getElementById(id);
+const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const COLOR = {deepseek:'#4d6bfe',glm:'#ff7a1a',kimi:'#2f6bff',qwen:'#7c3aed',gemini:'#4285f4',meta:'#0081fb',chatgpt:'#10a37f',arena:'#f97316'};
+const done = {ext: localStorage.getItem('zsDoneExt')==='1', token: localStorage.getItem('zsDoneToken')==='1'};
+
+$('sites').innerHTML = (window.__state?.sites || []).map(([pid,name,url]) =>
+  `<a class="site" href="${esc(url)}" target="_blank"><span class="glyph" style="background:${COLOR[pid]||'#666'}">${esc(name[0])}</span><span>${esc(name)}</span><span class="pid">${esc(pid)}</span></a>`).join('');
+
+function toast(msg){ const t=$('toast'); t.textContent=msg; t.classList.add('show'); setTimeout(()=>t.classList.remove('show'),1400); }
+document.querySelectorAll('[data-copy]').forEach(b => b.onclick = async () => {
+  const src = b.dataset.copy; let v='';
+  if (src.startsWith('const:')) v = src.slice(6);
+  else v = $(src).textContent;
+  try { await navigator.clipboard.writeText(v); } catch {
+    const ta=document.createElement('textarea'); ta.value=v; document.body.appendChild(ta); ta.select(); document.execCommand('copy'); ta.remove();
+  }
+  toast('已复制');
+});
+
+function mark(id, v){ if(v) done[id]=true; if(!v) delete done[id]; }
+
+function render(s){
+  $('ver').textContent = `v${s.app.version} · ${s.app.frozen?'exe':'源码'} · 运行 ${Math.floor(s.app.uptime_s/60)} 分`;
+  const ep = s.endpoint, anySession = s.sessions.length>0;
+  $('statusline').innerHTML =
+    `<span><i class="dot on"></i><b>Bridge</b> :${s.bridge.port}</span>` +
+    `<span><i class="dot on"></i><b>端点</b> :${ep.port} · ${esc(ep.model)}</span>` +
+    `<span><i class="dot ${anySession?'on':'err'}"></i><b>专用页会话</b> ${anySession?s.sessions.length:0}</span>` +
+    `<span><i class="dot ${ep.bound_ok?'on':'err'}"></i><b>绑定</b> ${ep.bound_ok?'正常':'未绑定'}</span>` +
+    `<span><i class="dot"></i>Python ${esc(s.app.python)}</span>`;
+
+  const extLoaded = anySession || done.ext; // 有会话 = 扩展必然在工作
+  const tokenDone = done.token || anySession;
+  const boundDone = ep.bound_ok;
+  const steps = [
+    {done:extLoaded, t:'加载 Chrome 扩展（一次）',
+     d:`打开 <a href="chrome://extensions">chrome://extensions</a> → 右上角"开发者模式" → "加载已解压的扩展程序" → 选择文件夹：`,
+     act:`<code>${esc(s.extension.dir)}</code> <button class="ghost mini" data-copy="const:${esc(s.extension.dir)}">复制路径</button>
+          <button class="ghost mini" id="mkExt">我已加载 ✓</button>`},
+    {done:tokenDone, t:'配对令牌（一次）',
+     d:'扩展弹窗 → "设置" → 粘贴令牌 → 保存并连接；顶部状态点变绿即可。',
+     act:`<code>${esc(s.token)}</code> <button class="ghost mini" data-copy="const:${esc(s.token)}">复制令牌</button>
+          <button class="ghost mini" id="mkToken">我已配对 ✓</button>`},
+    {done:anySession, t:'打开专用页',
+     d:'从右边选一个网站，新开标签页登录并开全新会话；刷新后这里会自动出现会话。'},
+    {done:boundDone, t:'绑定会话',
+     d: boundDone? '端点已绑定当前会话，Cursor 可以直接用。'
+                 : '在下方"专用页会话"里点"绑定到此会话"（页面刷新后 ID 会变，随时可换绑）。'},
+    {done:boundDone, t:'开始使用 Cursor',
+     d:'cursor-byok 把模型 web-ai 指向端点地址 + 密钥；然后直接用 Cursor 对话。',
+     act:`<code>${esc(ep.url)}</code> <button class="ghost mini" data-copy="const:${esc(ep.url)}">复制</button>`},
+  ];
+  $('steps').innerHTML = steps.map((x,i)=>`<div class="step ${x.done?'done':''}"><div class="num"></div>
+      <div class="body"><div class="t">${x.t}</div><div class="d">${x.d}</div><div>${x.act||''}</div></div></div>`).join('');
+  $('mkExt').onclick = () => { mark('ext', true); localStorage.setItem('zsDoneExt','1'); render(s); };
+  $('mkToken').onclick = () => { mark('token', true); localStorage.setItem('zsDoneToken','1'); render(s); };
+  if (anySession){ mark('ext', true); mark('token', true); }
+
+  $('epUrl').textContent = ep.url; $('epKey').textContent = ep.key; $('token').textContent = s.token;
+
+  $('sessHint').textContent = anySession? '' : '还没有会话 — 打开专用页并刷新后会自动出现';
+  $('sessions').innerHTML = s.sessions.length? s.sessions.map(x => {
+    const host = (x.url||'').replace(/^https?:\/\//,'').split('/')[0];
+    const bound = x.id === ep.session_id;
+    const badges = [x.inSync?`<span class="badge ok">同步 ${esc(x.transportVersion||'')}</span>`
+                             :`<span class="badge bad">版本不同步</span>`,
+                    x.busy?`<span class="badge busy">任务中</span>`:''].join(' ');
+    return `<div class="session ${bound?'bound':''}">
+      <div style="flex:1;min-width:0"><div style="font-weight:650">${esc(x.provider||'?')}
+        ${bound?'<span class="badge ok">已绑定</span>':''} ${badges}</div>
+        <div class="s-meta">${esc(host)} · id ${esc(x.id)}</div></div>
+      ${bound?'':'<button class="ghost mini" data-bind="'+esc(x.id)+'">绑定到此会话</button>'}
+    </div>`;
+  }).join('') : '<div class="s-meta">等待专用网页…</div>';
+  document.querySelectorAll('[data-bind]').forEach(b => b.onclick = async () => {
+    const r = await fetch('/api/rebind', {method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({session_id: b.dataset.bind})});
+    const j = await r.json();
+    if (!r.ok || !j.ok) { alert(j.error || '绑定失败'); return; }
+    toast('已绑定'); refresh();
+  });
+
+  $('jobs').innerHTML = s.jobs.length? [...s.jobs].reverse().slice(0,12).map(j => {
+    const st = j.status==='completed'?'<span class="badge ok">完成</span>'
+             : j.status==='error'?'<span class="badge bad">失败</span>'
+             : '<span class="badge busy">进行中</span>';
+    const age = Math.max(0, Math.floor((Date.now()/1000) - (j.created||0)));
+    return `<div class="job"><span class="jid">${esc(j.job_id).slice(0,8)}</span>${st}
+      <span class="s-meta">${age}s 前</span>${j.error?`<span class="err">${esc(String(j.error).slice(0,160))}</span>`:''}</div>`;
+  }).join('') : '<div class="s-meta">暂无任务</div>';
+}
+
+let state = null;
+async function refresh(){
+  try {
+    const r = await fetch('/api/status');
+    state = await r.json();
+    window.__state = state;
+    render(state);
+  } catch {}
+}
+$('stopBtn').onclick = async () => {
+  if (!confirm('停止 Bridge、端点与窗口？（当前进行中的任务会中断）')) return;
+  await fetch('/api/stop', {method:'POST'});
+  $('stopBtn').disabled = true;
+};
+refresh();
+setInterval(refresh, 2500);
+</script>
+</body>
+</html>

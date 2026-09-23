@@ -277,11 +277,17 @@ def sse_completion(result):
     yield 'data: [DONE]\n\n'
 
 
-def create_app(api_key, session_id, rpc=bridge_rpc, poll_interval=1, heartbeat=10):
+def create_app(api_key, session, rpc=bridge_rpc, poll_interval=1, heartbeat=10):
+    # `session` is either a plain session-id string (CLI: --session ID) or a
+    # zero-argument callable returning the CURRENT id (desktop app: live rebind
+    # from the control window without restarting the endpoint).
+    def sid():
+        return session() if callable(session) else session
+
     cache = {}  # fingerprint -> (task, started_monotonic); exact payload retries share a task, including its failures
 
     async def exchange(prompt):
-        submitted = await rpc({'type': 'send', 'session_id': session_id, 'prompt': prompt, 'response_format': 'json_code_block'})
+        submitted = await rpc({'type': 'send', 'session_id': sid(), 'prompt': prompt, 'response_format': 'json_code_block'})
         if submitted.get('error') or not submitted.get('job_id'):
             raise AdapterError(submitted.get('error', 'Missing job_id'))
         jid = submitted['job_id']
@@ -314,7 +320,7 @@ def create_app(api_key, session_id, rpc=bridge_rpc, poll_interval=1, heartbeat=1
     async def complete(body, catalog, prompt, request_id):
         try:
             listing = await rpc({'type': 'list'})
-            bound = next((s for s in listing.get('sessions', []) if s.get('id') == session_id), None)
+            bound = next((s for s in listing.get('sessions', []) if s.get('id') == sid()), None)
             if bound is None:
                 raise AdapterError('Bound webpage session unavailable. Re-list sessions and restart endpoint with an explicit session ID.', 409)
             raw, diagnostics = await exchange(prompt)
@@ -377,7 +383,7 @@ def create_app(api_key, session_id, rpc=bridge_rpc, poll_interval=1, heartbeat=1
         listing = await rpc({'type': 'list'})
         if listing.get('error'):
             raise AdapterError(listing['error'])
-        bound = next((s for s in listing.get('sessions', []) if s.get('id') == session_id), None)
+        bound = next((s for s in listing.get('sessions', []) if s.get('id') == sid()), None)
         if bound is None:
             raise AdapterError('Bound webpage session unavailable. Re-list sessions and restart endpoint with an explicit session ID.', 409)
         prompt = make_prompt(body, rid, bound)
