@@ -610,7 +610,7 @@ npm test --prefix cursor-web/tests
   - **专用页会话**卡片：版本同步徽章、busy 状态、**"绑定到此会话"一键重绑**（页面刷新导致 ID 变化时不用再开新程序）
   - **任务日志**：每个任务的 完成/失败/进行中 + 报错摘录
   - **停止按钮**；关窗口 = 全部干净停止，无残留进程
-- **界面**：原生窗口（Windows 用系统自带 WebView2，不需要额外安装）；深色/浅色自适应
+- **界面（双通道，保证有窗）**：默认先开**原生窗口**（Windows 系统自带 WebView2，无需额外安装）；若 15 秒内没渲染出来（WebView2 引擎缺失/损坏时才会发生），程序**自动**改用系统 Edge/Chrome 以**应用窗口**打开同一个界面（无地址栏、无标签页，效果等同桌面窗口），并关闭坏窗口——日志里会写明走了哪条路。深色/浅色自适应。命令行可选：`--display auto`（默认）/ `--display native`（只试原生窗口）/ `--display browser`（直接用最稳妥的系统应用窗口）
 - **源码运行**：双击 `start.bat`（或 `python app.py`）——不再需要分别开 bridge / --sessions / --session
 - **打包 exe（一次）**：双击 **`build_exe.bat`** → 自动装打包依赖 → 生成 **`dist\CursorWebAssistant.exe`**（单文件，PyInstaller onefile）。以后**只需双击这个 exe**，不需要 Python 环境。首次运行会在 exe 同目录生成 `extension\`（扩展文件）和两个令牌文件。
 

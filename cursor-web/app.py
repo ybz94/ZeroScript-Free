@@ -308,6 +308,43 @@ def _loop_exception_handler(loop, context):
     print(f'[loop] {context.get("message")}: {exc!r}', flush=True)
 
 
+def _find_system_browsers():
+    """[(exe, label)] system browsers that can open a chrome-less app window
+    (--app mode: no tabs, no address bar - looks like a desktop app window)."""
+    import shutil
+    from pathlib import Path as _P
+    candidates = []
+    for name in ('msedge', 'chrome'):
+        p = shutil.which(name)
+        if p:
+            candidates.append((p, name))
+    for p in (r'C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe',
+              r'C:\Program Files\Microsoft\Edge\Application\msedge.exe',
+              r'C:\Program Files\Google\Chrome\Application\chrome.exe',
+              r'C:\Program Files (x86)\Google\Chrome\Application\chrome.exe'):
+        if os.path.exists(p):
+            candidates.append((p, _P(p).name))
+    return candidates
+
+
+def _open_system_app_window(ui_url):
+    """Open the control center in a system-browser app window. Returns
+    (label, Popen|None); (None, None) if no browser found."""
+    import subprocess
+    for exe, label in _find_system_browsers():
+        try:
+            proc = subprocess.Popen([exe, f'--app={ui_url}'])
+            return label, proc
+        except Exception:
+            continue
+    import webbrowser
+    try:
+        webbrowser.open(ui_url)
+        return 'default browser (normal tab)', None
+    except Exception:
+        return None, None
+
+
 def _wait_port(port, tries=100, delay=0.15):
     """True if 127.0.0.1:port accepts a TCP connection within ~tries*delay s."""
     import socket
@@ -323,16 +360,24 @@ def _wait_port(port, tries=100, delay=0.15):
     return False
 
 
-def run_with_window(center, ui_url):
+def run_with_window(center, ui_url, display='auto'):
     """Windowed mode.
 
     CRITICAL: webview.start() blocks the MAIN thread in the native WinForms
     message pump. The asyncio loop (bridge + endpoint + UI servers) must
     therefore run on a SEPARATE thread - if it shares the main thread, the
     whole pipeline freezes the moment the window opens and the page never
-    loads (blank white window)."""
+    loads (blank white window).
+
+    display:
+      auto   - try the native WebView2 window; if the page never renders
+               (WebView2 broken/missing), automatically open the same UI in
+               a system-browser app window (chrome-less, looks like a desktop
+               app) so the user ALWAYS gets a windowed UI
+      native - native window only
+      browser- system-browser app window only (the most reliable path)
+    """
     import threading
-    import webview
 
     stop_evt = threading.Event()
     center.external_stop = stop_evt
@@ -364,20 +409,51 @@ def run_with_window(center, ui_url):
         return 1
 
     # Definitive blank-window diagnostic: prove the in-process server actually
-    # SERVES the page (not just accepts TCP). If this says \u6b63\u5e38 but the window
-    # is still white, the problem is the WebView2 window itself, not the server.
+    # SERVES the page (not just accepts TCP).
     ok, detail = _self_check_ui(ui_url)
     verdict = '\u6b63\u5e38' if ok else '\u5f02\u5e38'
     print(f'  \u81ea\u68c0\uff1a\u63a7\u5236\u9762\u677f\u9875\u9762 {verdict}\uff08{detail}\uff09', flush=True)
     if not ok:
-        print(f'  \u8b66\u544a\uff1a\u9875\u9762\u81ea\u68c0\u5931\u8d25\uff0c\u7a97\u53e3\u53ef\u80fd\u7a7a\u767d\u2014\u53ef\u5728\u6d4f\u89c8\u5668\u6253\u5f00 {ui_url} \u9a8c\u8bc1\u670d\u52a1\u5c42', flush=True)
+        print(f'  \u8b66\u544a\uff1a\u9875\u9762\u81ea\u68c0\u5931\u8d25\u2014\u53ef\u5728\u6d4f\u89c8\u5668\u6253\u5f00 {ui_url} \u9a8c\u8bc1\u670d\u52a1\u5c42', flush=True)
 
+    if display == 'browser':
+        return _run_browser_display(ui_url, stop_evt, t)
+
+    import webview
     try:
         print(f'  \u7a97\u53e3\u5f15\u64ce: pywebview {webview.__version__} (edgechromium/WebView2)', flush=True)
     except Exception:
         pass
-    webview.create_window('Cursor Web Assistant', ui_url,
-                          width=1024, height=800, min_size=(860, 620))
+    win = webview.create_window('Cursor Web Assistant', ui_url,
+                                width=1024, height=800, min_size=(860, 620))
+
+    if display == 'auto':
+        # Watchdog: pywebview fires window.events.loaded only once the page has
+        # rendered AND its JS bridge ran - it NEVER fires if the WebView2
+        # engine itself is broken. So: no 'loaded' within 15s => the native
+        # window is blind => open the same UI in a system app window instead,
+        # and close the broken one.
+        def load_watchdog():
+            try:
+                if win.events.loaded.wait(15):
+                    return
+            except Exception:
+                return
+            label, _proc = _open_system_app_window(ui_url)
+            if label:
+                print(f'  [\u5151\u5e95] \u5185\u7f6e\u7a97\u53e3 15 \u79d2\u672a\u6e32\u67d3\u9875\u9762\uff08WebView2 \u5f15\u64ce\u53ef\u80fd\u7f3a\u5931\uff09\u2014'
+                      f'\u5df2\u7528\u7cfb\u7edf\u6d4f\u89c8\u5668\u5e94\u7528\u7a97\u53e3\u6253\u5f00\u63a7\u5236\u4e2d\u5fc3\uff08{label}\uff09\uff0c\u8bf7\u76f4\u63a5\u4f7f\u7528\u8be5\u7a97\u53e3\u3002',
+                      flush=True)
+                try:
+                    win.destroy()
+                except Exception:
+                    pass
+            else:
+                print('  [\u5151\u5e95\u5931\u8d25] \u672a\u627e\u5230 Edge/Chrome\uff0c\u65e0\u6cd5\u6253\u5f00\u7cfb\u7edf\u5e94\u7528\u7a97\u53e3\u2014\u8bf7\u53d1\u6211 cursor_web.log\u3002',
+                      flush=True)
+
+        threading.Thread(target=load_watchdog, name='watchdog', daemon=True).start()
+
     webview.start()  # returns when the window is closed
     print('  \u7a97\u53e3\u5df2\u5173\u95ed\uff0c\u6b63\u5728\u505c\u6b62\u670d\u52a1\u2026', flush=True)
     stop_evt.set()
@@ -385,9 +461,35 @@ def run_with_window(center, ui_url):
     return 0
 
 
+def _run_browser_display(ui_url, stop_evt, services_thread):
+    """Most reliable display path: all services run inside the exe; the control
+    center shows in a system-browser APP window (chrome-less, looks like a
+    desktop app). Exit via the \u505c\u6b62\u7a0b\u5e8f button in the UI."""
+    label, proc = _open_system_app_window(ui_url)
+    if not label:
+        print('  \u542f\u52a8\u5931\u8d25\uff1a\u672a\u627e\u5230 Edge/Chrome\uff0c\u65e0\u6cd5\u6253\u5f00\u7cfb\u7edf\u5e94\u7528\u7a97\u53e3\u3002', flush=True)
+        stop_evt.set()
+        services_thread.join(timeout=10)
+        return 1
+    print(f'  \u4f7f\u7528\u7cfb\u7edf\u5e94\u7528\u7a97\u53e3\uff08{label}\uff09\u663e\u793a\u63a7\u5236\u4e2d\u5fc3\u3002', flush=True)
+    print('  \u9000\u51fa\u65b9\u5f0f\uff1a\u754c\u9762\u91cc\u70b9"\u505c\u6b62\u7a0b\u5e8f"\uff08\u4f1a\u540c\u65f6\u5173\u95ed\u8be5\u7a97\u53e3\uff09\u3002', flush=True)
+    try:
+        stop_evt.wait()
+    finally:
+        if proc is not None:
+            try:
+                proc.terminate()
+            except Exception:
+                pass
+        return 0
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument('--no-window', action='store_true', help='headless (tests/CI)')
+    ap.add_argument('--display', choices=['auto', 'native', 'browser'], default='auto',
+                    help='window: auto = native with system-app fallback (default); '
+                         'native = WebView2 only; browser = system app window only')
     ap.add_argument('--bridge-port', type=int, default=BRIDGE_PORT)
     ap.add_argument('--endpoint-port', type=int, default=ENDPOINT_PORT)
     ap.add_argument('--ui-port', type=int, default=UI_PORT)
@@ -423,7 +525,7 @@ def main(argv=None):
                 await center.stop_event.wait()
                 await center.shutdown()
             return asyncio.run(run())
-        return run_with_window(center, ui_url)
+        return run_with_window(center, ui_url, display=args.display)
     except KeyboardInterrupt:
         print('\nStopping\u2026', flush=True)
         return 0

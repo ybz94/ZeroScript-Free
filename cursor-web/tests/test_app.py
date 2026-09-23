@@ -162,6 +162,64 @@ class DesktopAppTests(unittest.TestCase):
             self.assertIn("WINDOW-MODE-OK", r.stdout,
                           f"stdout:\n{r.stdout[-2000:]}\nstderr:\n{r.stderr[-2000:]}")
 
+    def _run_fake_webview_scenario(self, loaded, expect_fallback, port_base):
+        """Run run_with_window with a fake webview whose 'loaded' event
+        behaves per `loaded` ('never' | 'fast'); assert the system-app
+        fallback did / did not kick in."""
+        with tempfile.TemporaryDirectory() as tmp:
+            bp, ep, up = port_base, port_base + 1, port_base + 2
+            script = (
+                "import os, sys, time, types\n"
+                f"sys.path.insert(0, r'{CURSOR_WEB}')\n"
+                f"os.environ['CURSOR_WEB_TOKEN_FILE'] = r'{tmp}/t1'\n"
+                f"os.environ['CURSOR_WEB_ENDPOINT_TOKEN_FILE'] = r'{tmp}/t2'\n"
+                f"os.environ['CURSOR_WEB_PORT'] = '{bp}'\n"
+                "import app\n"
+                "calls = {'fallback': [], 'destroy': []}\n"
+                "app._open_system_app_window = lambda url: (calls['fallback'].append(url) or ('fake-edge', None))\n"
+                "class FakeWin:\n"
+                "    def __init__(self):\n"
+                "        self.events = types.SimpleNamespace(loaded=self)\n"
+                "        self.destroyed = False\n"
+                f"    def wait(self, timeout=None):\n"
+                f"        time.sleep(0.2 if '{loaded}' == 'never' else 0.01)\n"
+                f"        return '{loaded}' != 'never'\n"
+                "    def destroy(self):\n"
+                "        self.destroyed = True\n"
+                "fake_win = FakeWin()\n"
+                "fake = types.ModuleType('webview')\n"
+                "fake.__version__ = '9.9-test'\n"
+                "fake.create_window = lambda *a, **k: fake_win\n"
+                "def fake_start():\n"
+                "    time.sleep(1.0)\n"
+                "    if " + str(expect_fallback) + ":\n"
+                "        assert fake_win.destroyed, 'fallback did not destroy broken window'\n"
+                "        assert calls['fallback'], 'fallback app window not opened'\n"
+                "    else:\n"
+                "        assert not fake_win.destroyed, 'fallback must not run when page loaded'\n"
+                "        assert not calls['fallback'], 'fallback must not run when page loaded'\n"
+                "fake.start = fake_start\n"
+                "sys.modules['webview'] = fake\n"
+                f"c = app.Center('ext', bridge_port={bp}, endpoint_port={ep}, ui_port={up})\n"
+                f"rc = app.run_with_window(c, 'http://127.0.0.1:{up}')\n"
+                "assert rc == 0, rc\n"
+                "print('FAKE-WINDOW-OK')\n"
+            )
+            r = subprocess.run([sys.executable, "-c", script],
+                               capture_output=True, text=True, timeout=90,
+                               cwd=str(CURSOR_WEB))
+            self.assertIn("FAKE-WINDOW-OK", r.stdout,
+                          f"stdout:\n{r.stdout[-2000:]}\nstderr:\n{r.stderr[-2000:]}")
+
+    def test_fallback_when_page_never_loads(self):
+        """Native window blind (WebView2 broken => 'loaded' never fires) =>
+        the system-browser app window must open and the broken window close."""
+        self._run_fake_webview_scenario('never', True, 17734)
+
+    def test_no_fallback_when_page_loads(self):
+        """Native window renders ('loaded' fires) => no fallback, no destroy."""
+        self._run_fake_webview_scenario('fast', False, 17744)
+
 
 if __name__ == "__main__":
     unittest.main()
