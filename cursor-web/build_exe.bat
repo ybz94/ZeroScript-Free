@@ -59,6 +59,8 @@ echo   [3/3] 打包中（PyInstaller 约 2-5 分钟，请耐心等待）...
   --add-data "web;web" --add-data "extension;extension" ^
   --hidden-import webview.platforms.edgechromium ^
   --hidden-import webview.platforms.winforms ^
+  --hidden-import appdirs ^
+  --hidden-import uvicorn.loops.auto ^
   app.py
 if errorlevel 1 (
     echo.

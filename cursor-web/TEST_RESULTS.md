@@ -141,6 +141,7 @@ git diff --check
 - `web/index.html` 控制界面：状态条、5 步向导（localStorage 记忆手动步骤，出现会话自动点亮①②）、8 站点跳转、会话卡片+一键重绑、任务日志、Cursor 连接三项复制、停止按钮。
 - **集成测试 test_app.py（子进程隔离，端口 177xx）**：假 content script 应答 dispatch（回显 request_id）→ 单进程起全部服务 → UI HTML/status → 会话注册 → POST 重绑 → **真实 HTTP chat/completions 200 且内容 = 假网页回复** → 任务日志出现 completed。
 - 打包：`build_exe.bat`（pip requirements-desktop.txt → prepare → PyInstaller onefile windowed，--add-data web+extension）→ `dist\CursorWebAssistant.exe`；exe 行为（PyInstaller 冻结环境）待用户 Windows 上首次构建验证，沙箱为 Linux 不能跨平台编译 Windows exe。
+- **修复（用户首次运行 exe 时报错后）**：`ImportError: The 'appdirs' package is required` —— pywebview 运行时导入 pkg_resources，新版 setuptools 的 pkg_resources.extern 需要真实 appdirs 模块而 onefile 未打包 → `requirements-desktop.txt` 加 `appdirs>=1.4`，PyInstaller 参数加 `--hidden-import appdirs`（另加 `--hidden-import uvicorn.loops.auto` 防同类动态导入缺件）。扩展代码无变化，版本号仍 0.4.23，浏览器里的扩展不用重新加载；只需重新双击 build_exe.bat。
 
 ## 0.4.19 qwen / gemini / meta / chatgpt 逐项适配完成（2026-09-22）
 
