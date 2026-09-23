@@ -144,6 +144,7 @@ git diff --check
 - **修复（用户首次运行 exe 时报错后）**：`ImportError: The 'appdirs' package is required` —— pywebview 运行时导入 pkg_resources，新版 setuptools 的 pkg_resources.extern 需要真实 appdirs 模块而 onefile 未打包 → `requirements-desktop.txt` 加 `appdirs>=1.4`，PyInstaller 参数加 `--hidden-import appdirs`（另加 `--hidden-import uvicorn.loops.auto` 防同类动态导入缺件）。扩展代码无变化，版本号仍 0.4.23，浏览器里的扩展不用重新加载；只需重新双击 build_exe.bat。
 - **修复 2（用户第二次运行 exe 时）**：`ValueError: Unable to configure formatter 'default'` —— `--windowed` 无控制台 exe 里 `sys.stdout` 为 None，uvicorn 配置日志时调 `sys.stdout.isatty()` 崩溃 → `app.py` 启动时 `_ensure_streams()`：stdout/stderr 为 None 就把两者指向 exe 同目录 `cursor_web.log`（行缓冲追加，可用 `CURSOR_WEB_LOG_FILE` 改位置），兼作调试日志；UI "Cursor 连接"卡片显示日志路径（可复制）。回归测试 `test_windowed_exe_no_console` 在 stdout/stderr=None 下真实执行 `uvicorn.Config(...).configure_logging()` 验证。
 - **顺带修复 UI 隐性 bug**：向导里动态渲染的"复制路径/复制令牌"按钮从未绑定点击事件（绑定循环在首次渲染前执行）→ 改为 `bindCopy()` 每次渲染后重新绑定。
+- **修复 3（用户第三次运行：窗口打开但纯白）**：根因是架构级——`webview.start()` 阻塞主线程进入 WinForms 消息循环，而 bridge/端点/UI 三个服务都在主线程的同一个 asyncio 事件循环里，窗口一开循环即冻结 → UI 服务器无法响应任何请求 → 页面空白。修复：`run_with_window()` 把事件循环整体挪到独立 daemon 线程（`threading.Event` 跨线程停止信号，`/api/stop` 同时置位），主线程只跑窗口；主线程另做端口就绪探测，服务起不来时日志写明原因。回归测试 `test_window_mode_serves_while_main_thread_blocked`：假 webview 的 start() 模拟"主线程冻结"期间，页面与 /api/status 必须仍能被真实 HTTP 取回（旧架构下会挂起）。
 
 ## 0.4.19 qwen / gemini / meta / chatgpt 逐项适配完成（2026-09-22）
 

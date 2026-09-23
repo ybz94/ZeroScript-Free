@@ -132,6 +132,7 @@ class Center:
         self.jobs = []
         self.started_at = time.time()
         self.stop_event = asyncio.Event()
+        self.external_stop = None  # threading.Event set from main thread (windowed)
         self._tasks = []
         self._servers = []
         self.note = None
@@ -177,6 +178,8 @@ class Center:
 
         async def stop(request):
             self.stop_event.set()
+            if self.external_stop is not None:
+                self.external_stop.set()
             return JSONResponse({'ok': True})
 
         app = Starlette(routes=[Route('/', index), Route('/api/status', status),
@@ -239,6 +242,68 @@ class Center:
         }
 
 
+def _wait_port(port, tries=100, delay=0.15):
+    """True if 127.0.0.1:port accepts a TCP connection within ~tries*delay s."""
+    import socket
+    for _ in range(tries):
+        s = socket.socket()
+        s.settimeout(delay)
+        try:
+            s.connect(('127.0.0.1', port))
+            s.close()
+            return True
+        except OSError:
+            time.sleep(delay)
+    return False
+
+
+def run_with_window(center, ui_url):
+    """Windowed mode.
+
+    CRITICAL: webview.start() blocks the MAIN thread in the native WinForms
+    message pump. The asyncio loop (bridge + endpoint + UI servers) must
+    therefore run on a SEPARATE thread - if it shares the main thread, the
+    whole pipeline freezes the moment the window opens and the page never
+    loads (blank white window)."""
+    import threading
+    import webview
+
+    stop_evt = threading.Event()
+    center.external_stop = stop_evt
+
+    def loop_thread():
+        async def run():
+            try:
+                await center.start()
+                print(f'\n  \u25b6 \u5c31\u7eea\uff1a\u7aef\u70b9 http://127.0.0.1:{center.endpoint_port}/v1 '
+                      f'(model: {MODEL})\u3000\u63a7\u5236\u9762\u6771: {ui_url}', flush=True)
+                await asyncio.get_running_loop().run_in_executor(None, stop_evt.wait)
+            finally:
+                await center.shutdown()
+        try:
+            asyncio.run(run())
+        except Exception:
+            import traceback
+            traceback.print_exc()  # sys.stderr -> cursor_web.log when windowed/frozen
+
+    t = threading.Thread(target=loop_thread, name='services', daemon=True)
+    t.start()
+
+    if not _wait_port(center.ui_port):
+        print('  \u542f\u52a8\u5931\u8d25\uff1a\u670d\u52a1\u672a\u5c31\u7eea\uff08\u7aef\u53e3\u88ab\u5360\u7528\u6216\u5176\u4ed6\u9519\u8bef\uff09\u2014 \u8be6\u89c1 cursor_web.log',
+              flush=True)
+        stop_evt.set()
+        t.join(timeout=10)
+        return 1
+
+    webview.create_window('Cursor Web Assistant', ui_url,
+                          width=1024, height=800, min_size=(860, 620))
+    webview.start()  # returns when the window is closed
+    stop_evt.set()
+    t.join(timeout=10)
+    return 0
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument('--no-window', action='store_true', help='headless (tests/CI)')
@@ -269,21 +334,15 @@ def main(argv=None):
     center.log_path = log_path
     ui_url = f'http://127.0.0.1:{args.ui_port}'
 
-    async def run():
-        await center.start()
-        print(f'\n  \u25b6 \u5c31\u7eea\uff1a\u7aef\u70b9 http://127.0.0.1:{args.endpoint_port}/v1 (model: {MODEL})', flush=True)
-        if args.no_window:
-            print(f'    \u65e0\u7a97\u53e3\u6a21\u5f0f - \u63a7\u5236\u9762\u6771\u4e5f\u53ef\u6253\u5f00: {ui_url}', flush=True)
-            await center.stop_event.wait()
-        else:
-            import webview
-            webview.create_window('Cursor Web Assistant', ui_url,
-                                  width=1024, height=800, min_size=(860, 620))
-            webview.start()  # returns when the window is closed
-        return 0
-
     try:
-        return asyncio.run(run())
+        if args.no_window:
+            async def run():
+                await center.start()
+                print(f'  \u65e0\u7a97\u53e3\u6a21\u5f0f - \u63a7\u5236\u9762\u677f\u4e5f\u53ef\u6253\u5f00: {ui_url}', flush=True)
+                await center.stop_event.wait()
+                await center.shutdown()
+            return asyncio.run(run())
+        return run_with_window(center, ui_url)
     except KeyboardInterrupt:
         print('\nStopping\u2026', flush=True)
         return 0

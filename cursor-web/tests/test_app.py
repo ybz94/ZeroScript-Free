@@ -126,6 +126,42 @@ class DesktopAppTests(unittest.TestCase):
                              f"log file has details):\n{Path(logf).read_text(errors='replace') if Path(logf).exists() else ''}")
             self.assertIn("STREAMS-OK", Path(logf).read_text(encoding="utf-8"))
 
+    def test_window_mode_serves_while_main_thread_blocked(self):
+        """Regression: webview.start() blocks the main thread in the native
+        message pump. If the asyncio loop shared that thread, the in-process
+        UI server would freeze and the window would load a BLANK WHITE page.
+        Here a fake webview.start() 'blocks' the main thread while the page
+        must still be served (it would hang under the old single-thread code)."""
+        with tempfile.TemporaryDirectory() as tmp:
+            script = (
+                "import json, os, sys, time, types, urllib.request\n"
+                f"sys.path.insert(0, r'{CURSOR_WEB}')\n"
+                f"os.environ['CURSOR_WEB_TOKEN_FILE'] = r'{tmp}/t1'\n"
+                f"os.environ['CURSOR_WEB_ENDPOINT_TOKEN_FILE'] = r'{tmp}/t2'\n"
+                "os.environ['CURSOR_WEB_PORT'] = '17724'\n"
+                "import app\n"
+                "fake = types.ModuleType('webview')\n"
+                "fake.create_window = lambda *a, **k: None\n"
+                "def fake_start():\n"
+                "    time.sleep(0.6)  # main thread now 'in the message pump'\n"
+                "    html = urllib.request.urlopen('http://127.0.0.1:17726/', timeout=10).read().decode()\n"
+                "    assert 'Cursor Web Assistant' in html, 'page not served while main thread blocked'\n"
+                "    st = json.loads(urllib.request.urlopen('http://127.0.0.1:17726/api/status', timeout=10).read())\n"
+                "    assert st['app']['version'], st\n"
+                "    time.sleep(0.4)\n"
+                "fake.start = fake_start\n"
+                "sys.modules['webview'] = fake\n"
+                "c = app.Center('ext', bridge_port=17724, endpoint_port=17725, ui_port=17726)\n"
+                "rc = app.run_with_window(c, 'http://127.0.0.1:17726')\n"
+                "assert rc == 0, rc\n"
+                "print('WINDOW-MODE-OK')\n"
+            )
+            r = subprocess.run([sys.executable, "-c", script],
+                               capture_output=True, text=True, timeout=90,
+                               cwd=str(CURSOR_WEB))
+            self.assertIn("WINDOW-MODE-OK", r.stdout,
+                          f"stdout:\n{r.stdout[-2000:]}\nstderr:\n{r.stderr[-2000:]}")
+
 
 if __name__ == "__main__":
     unittest.main()
