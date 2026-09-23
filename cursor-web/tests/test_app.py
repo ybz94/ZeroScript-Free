@@ -102,6 +102,30 @@ class DesktopAppTests(unittest.TestCase):
             self.assertIn("APP-TEST-OK", r.stdout,
                           f"stdout:\n{r.stdout[-2000:]}\nstderr:\n{r.stderr[-2000:]}")
 
+    def test_windowed_exe_no_console(self):
+        """Regression: frozen --windowed exe has sys.stdout/stderr == None,
+        which crashed uvicorn's logging setup (sys.stdout.isatty())."""
+        with tempfile.TemporaryDirectory() as tmp:
+            logf = str(Path(tmp) / "cursor_web.log")
+            script = (
+                "import sys; sys.stdout = None; sys.stderr = None\n"
+                "import app\n"
+                "p = app._ensure_streams()\n"
+                "assert p is not None, 'no log file'\n"
+                "import uvicorn\n"
+                "from starlette.applications import Starlette\n"
+                "uvicorn.Config(Starlette(), host='127.0.0.1', port=17799).configure_logging()\n"
+                "print('STREAMS-OK', p)\n"
+            )
+            r = subprocess.run([sys.executable, "-c", script],
+                               capture_output=True, text=True, timeout=60,
+                               cwd=str(CURSOR_WEB),
+                               env={**os.environ, "CURSOR_WEB_LOG_FILE": logf})
+            self.assertEqual(r.returncode, 0,
+                             f"script failed (streams were redirected, so the "
+                             f"log file has details):\n{Path(logf).read_text(errors='replace') if Path(logf).exists() else ''}")
+            self.assertIn("STREAMS-OK", Path(logf).read_text(encoding="utf-8"))
+
 
 if __name__ == "__main__":
     unittest.main()

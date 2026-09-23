@@ -142,6 +142,8 @@ git diff --check
 - **集成测试 test_app.py（子进程隔离，端口 177xx）**：假 content script 应答 dispatch（回显 request_id）→ 单进程起全部服务 → UI HTML/status → 会话注册 → POST 重绑 → **真实 HTTP chat/completions 200 且内容 = 假网页回复** → 任务日志出现 completed。
 - 打包：`build_exe.bat`（pip requirements-desktop.txt → prepare → PyInstaller onefile windowed，--add-data web+extension）→ `dist\CursorWebAssistant.exe`；exe 行为（PyInstaller 冻结环境）待用户 Windows 上首次构建验证，沙箱为 Linux 不能跨平台编译 Windows exe。
 - **修复（用户首次运行 exe 时报错后）**：`ImportError: The 'appdirs' package is required` —— pywebview 运行时导入 pkg_resources，新版 setuptools 的 pkg_resources.extern 需要真实 appdirs 模块而 onefile 未打包 → `requirements-desktop.txt` 加 `appdirs>=1.4`，PyInstaller 参数加 `--hidden-import appdirs`（另加 `--hidden-import uvicorn.loops.auto` 防同类动态导入缺件）。扩展代码无变化，版本号仍 0.4.23，浏览器里的扩展不用重新加载；只需重新双击 build_exe.bat。
+- **修复 2（用户第二次运行 exe 时）**：`ValueError: Unable to configure formatter 'default'` —— `--windowed` 无控制台 exe 里 `sys.stdout` 为 None，uvicorn 配置日志时调 `sys.stdout.isatty()` 崩溃 → `app.py` 启动时 `_ensure_streams()`：stdout/stderr 为 None 就把两者指向 exe 同目录 `cursor_web.log`（行缓冲追加，可用 `CURSOR_WEB_LOG_FILE` 改位置），兼作调试日志；UI "Cursor 连接"卡片显示日志路径（可复制）。回归测试 `test_windowed_exe_no_console` 在 stdout/stderr=None 下真实执行 `uvicorn.Config(...).configure_logging()` 验证。
+- **顺带修复 UI 隐性 bug**：向导里动态渲染的"复制路径/复制令牌"按钮从未绑定点击事件（绑定循环在首次渲染前执行）→ 改为 `bindCopy()` 每次渲染后重新绑定。
 
 ## 0.4.19 qwen / gemini / meta / chatgpt 逐项适配完成（2026-09-22）
 

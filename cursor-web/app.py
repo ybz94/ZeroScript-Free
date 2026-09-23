@@ -51,6 +51,27 @@ def _stable_dir():
     return HERE
 
 
+def _ensure_streams():
+    """A windowed (no-console) exe has sys.stdout/stderr == None, which crashes
+    uvicorn's log setup (it calls sys.stdout.isatty()). Point both at a log
+    file instead - next to the exe, and it doubles as the debug log the user
+    can send when something goes wrong. Returns the log path or None."""
+    if sys.stdout is not None and sys.stderr is not None:
+        return None
+    try:
+        path = Path(os.getenv('CURSOR_WEB_LOG_FILE')
+                    or (Path(_stable_dir()) / 'cursor_web.log'))
+        stream = open(path, 'a', encoding='utf-8', buffering=1)
+    except Exception:
+        stream = open(os.devnull, 'w', encoding='utf-8')
+        return None
+    if sys.stdout is None:
+        sys.stdout = stream
+    if sys.stderr is None:
+        sys.stderr = stream
+    return path
+
+
 def res_path(name):
     """Resource path, frozen (PyInstaller _MEIPASS) or plain."""
     base = getattr(sys, '_MEIPASS', str(HERE))
@@ -114,6 +135,7 @@ class Center:
         self._tasks = []
         self._servers = []
         self.note = None
+        self.log_path = None
 
     # -- lifecycle ----------------------------------------------------------
     async def start(self):
@@ -202,7 +224,8 @@ class Center:
         return {
             'app': {'version': VERSION, 'python': sys.version.split()[0],
                     'frozen': bool(getattr(sys, 'frozen', False)),
-                    'uptime_s': int(time.time() - self.started_at)},
+                    'uptime_s': int(time.time() - self.started_at),
+                    'log': str(self.log_path) if self.log_path else None},
             'bridge': {'port': self.bridge_port, 'running': True},
             'endpoint': {'port': self.endpoint_port, 'model': MODEL,
                          'url': f'http://127.0.0.1:{self.endpoint_port}/v1',
@@ -224,10 +247,13 @@ def main(argv=None):
     ap.add_argument('--ui-port', type=int, default=UI_PORT)
     args = ap.parse_args(argv)
 
+    log_path = _ensure_streams()
     print('=' * 56, flush=True)
     print('  Cursor Web Assistant - \u684c\u9762\u63a7\u5236\u4e2d\u5fc3', flush=True)
     print('=' * 56, flush=True)
     print(f'  Python: {sys.version.split()[0]}  ({sys.executable})', flush=True)
+    if log_path:
+        print(f'  \u65e0\u63a7\u5236\u53f0\u73af\u5883\uff0c\u65e5\u5fd7\u5199\u5165: {log_path}', flush=True)
 
     ext_dir, note = ensure_extension()
     print(f'  \u6269\u5c55\u76ee\u5f55: {ext_dir}' + (f'  ({note})' if note else ''), flush=True)
@@ -240,6 +266,7 @@ def main(argv=None):
     center = Center(ext_dir, bridge_port=args.bridge_port,
                     endpoint_port=args.endpoint_port, ui_port=args.ui_port)
     center.note = note
+    center.log_path = log_path
     ui_url = f'http://127.0.0.1:{args.ui_port}'
 
     async def run():

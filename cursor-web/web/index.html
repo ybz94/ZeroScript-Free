@@ -126,6 +126,8 @@ a.site .pid{margin-left:auto;font-size:10px;color:var(--muted);font-family:ui-mo
     <div class="kv"><span class="k">端点密钥</span><span class="v mono" id="epKey"></span><button class="ghost mini" data-copy="epKey">复制</button></div>
     <div class="kv"><span class="k">Bridge 令牌</span><span class="v mono" id="token"></span><button class="ghost mini" data-copy="token">复制</button></div>
     <div class="hint">cursor-byok 里把模型 <b>web-ai</b> 指向端点地址、填上端点密钥即可。Bridge 令牌用于扩展弹窗"设置"里配对（只需一次）。</div>
+    <div class="kv" id="logRow" style="display:none"><span class="k">运行日志</span><span class="v mono" id="epLog"></span><button class="ghost mini" data-copy="epLog">复制</button></div>
+    <div class="hint" id="logHint" style="display:none">出问题时把这个日志文件发给我即可定位。</div>
     <div style="margin-top:12px"><button class="danger" id="stopBtn">停止程序</button>
       <span class="s-meta">停止 Bridge、端点与窗口；关闭窗口效果相同。</span></div>
   </div>
@@ -142,15 +144,18 @@ $('sites').innerHTML = (window.__state?.sites || []).map(([pid,name,url]) =>
   `<a class="site" href="${esc(url)}" target="_blank"><span class="glyph" style="background:${COLOR[pid]||'#666'}">${esc(name[0])}</span><span>${esc(name)}</span><span class="pid">${esc(pid)}</span></a>`).join('');
 
 function toast(msg){ const t=$('toast'); t.textContent=msg; t.classList.add('show'); setTimeout(()=>t.classList.remove('show'),1400); }
-document.querySelectorAll('[data-copy]').forEach(b => b.onclick = async () => {
-  const src = b.dataset.copy; let v='';
-  if (src.startsWith('const:')) v = src.slice(6);
-  else v = $(src).textContent;
-  try { await navigator.clipboard.writeText(v); } catch {
-    const ta=document.createElement('textarea'); ta.value=v; document.body.appendChild(ta); ta.select(); document.execCommand('copy'); ta.remove();
-  }
-  toast('已复制');
-});
+function bindCopy(root){ root.querySelectorAll('[data-copy]').forEach(b => { if(b._cb) return; b._cb = true;
+  b.onclick = async () => {
+    const src = b.dataset.copy; let v='';
+    if (src.startsWith('const:')) v = src.slice(6);
+    else v = $(src).textContent;
+    try { await navigator.clipboard.writeText(v); } catch {
+      const ta=document.createElement('textarea'); ta.value=v; document.body.appendChild(ta); ta.select(); document.execCommand('copy'); ta.remove();
+    }
+    toast('已复制');
+  };
+}); }
+bindCopy(document.body);
 
 function mark(id, v){ if(v) done[id]=true; if(!v) delete done[id]; }
 
@@ -192,6 +197,10 @@ function render(s){
   if (anySession){ mark('ext', true); mark('token', true); }
 
   $('epUrl').textContent = ep.url; $('epKey').textContent = ep.key; $('token').textContent = s.token;
+  const hasLog = !!s.app.log;
+  $('logRow').style.display = hasLog? 'flex':'none';
+  $('logHint').style.display = hasLog? 'block':'none';
+  if (hasLog) $('epLog').textContent = s.app.log;
 
   $('sessHint').textContent = anySession? '' : '还没有会话 — 打开专用页并刷新后会自动出现';
   $('sessions').innerHTML = s.sessions.length? s.sessions.map(x => {
@@ -223,6 +232,8 @@ function render(s){
     return `<div class="job"><span class="jid">${esc(j.job_id).slice(0,8)}</span>${st}
       <span class="s-meta">${age}s 前</span>${j.error?`<span class="err">${esc(String(j.error).slice(0,160))}</span>`:''}</div>`;
   }).join('') : '<div class="s-meta">暂无任务</div>';
+
+  bindCopy(document.body); // step/copy buttons are re-rendered each pass
 }
 
 let state = null;
