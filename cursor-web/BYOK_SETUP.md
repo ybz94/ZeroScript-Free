@@ -586,3 +586,16 @@ npm test --prefix cursor-web/tests
 4. 端点立即退出的报错改为指向真实原因（上方 traceback：缺模块 → pip install；端口占用 → 任务管理器）
 
 **如果你刚才也遇到同样报错**：`git pull` 后重新双击 start.bat 即可（会自动装缺的依赖）。若仍报缺模块，在 cmd 里手动跑一次 `py -3 -m pip install -r cursor-web\requirements.txt` 再试。
+
+## 0.4.22：chatglm.cn 报错明确化（2026-09-22）
+
+**实机问题**：用国内版 **chatglm.cn（智谱清言）** 当专用页 → Cursor 报 `Could not establish connection. Receiving end does not exist`。原因：GLM 适配器针对的是**国际版 chat.z.ai**（2026-06 实机验证的 Svelte DOM），chatglm.cn 是另一套站点，扩展代码不会注入 → 消息发到一个没有监听者的标签页。
+
+0.4.22 改动：
+
+1. **错误明确化**（background.js）：该 Chrome 内部错误现在翻译为可操作指引——"目标标签页里没有扩展内容脚本（该网址不是受支持的站点…）注意：GLM 适配器支持的是国际版 chat.z.ai，不是国内 chatglm.cn…"
+2. **弹窗提示**：站点列表下注明"国内版 chatglm.cn（智谱清言）暂不支持"。
+
+**两条路**：
+- **立即可用**：专用标签页改用 **https://chat.z.ai**（Z.ai 国际版，需国际版账号、需可访问）→ 刷新 → 重新绑定 → 2KB 控制
+- **要国内版 chatglm.cn**：发我一个 DOM 快照，我按真实结构写适配器（方法见本消息 / 测试记录）

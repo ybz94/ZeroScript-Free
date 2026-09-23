@@ -124,6 +124,13 @@ git diff --check
 - 修复：`check_python_deps` 改读 requirements.txt 全量核对（缺即安装 + 安装后复验）；requirements 显式加 `referencing`；启动显示 Python 版本与路径（排查"双 Python"）；端点退出报错改为按 traceback 指向（缺模块/端口占用）。
 - 沙箱验证：① 构造缺 jsonschema/mcp/referencing 的环境 → 启动器正确列出缺失并自动 pip 安装；② 依赖齐全环境 + 模拟扩展会话 → 4 步全流程至端点就绪；③ 端口最终干净释放。
 
+## 0.4.22 chatglm.cn 报错明确化（2026-09-22）
+
+- Python 46 项、JavaScript 63 项，总计 109 项通过。
+- 实机依据：用户以国内版 chatglm.cn（智谱清言）为专用页，Cursor 报 `Could not establish connection. Receiving end does not exist`——该域名不在 manifest 注入范围（GLM 适配器面向国际版 chat.z.ai），dispatch 发到无内容脚本的标签页。
+- 改动：background.js dispatch catch 分支识别 "Receiving end does not exist"，替换为可操作中文指引（打开受支持站点/刷新/重新绑定，并点名 chatglm.cn ≠ chat.z.ai）；popup.html 站点列表下加"国内版暂不支持"提示。
+- 后续：chatglm.cn 适配器待用户提供 DOM 快照（控制台探针脚本已随消息给出）后按真实结构实现。
+
 ## 0.4.19 qwen / gemini / meta / chatgpt 逐项适配完成（2026-09-22）
 
 - Python 46 项、JavaScript 60 项，总计 106 项通过（`unittest discover` + `npm test`）。

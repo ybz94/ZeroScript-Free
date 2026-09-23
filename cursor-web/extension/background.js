@@ -38,7 +38,15 @@ async function connect() {
       if (!ack?.accepted) throw new Error(ack?.error || 'Page rejected task');
     } catch (e) {
       routes.delete(msg.job_id);
-      send({type:'result', job_id:msg.job_id, error:String(e)});
+      const m = String((e && e.message) || e);
+      // "Receiving end does not exist" = no extension content script in that
+      // tab: the URL is not a supported site (e.g. chatglm.cn, which is NOT
+      // chat.z.ai), or the page is mid-load. Say what to do instead of
+      // surfacing the Chrome internals.
+      const err = /Receiving end does not exist/i.test(m)
+        ? '目标标签页里没有扩展内容脚本（该网址不是受支持的站点，或页面还没加载完）。注意：GLM 适配器支持的是国际版 chat.z.ai，不是国内 chatglm.cn。请在专用标签页打开受支持的聊天网站并刷新，然后重新绑定会话'
+        : m;
+      send({type:'result', job_id:msg.job_id, error:err});
     }
   };
 }
