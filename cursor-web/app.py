@@ -372,6 +372,10 @@ def run_with_window(center, ui_url):
     if not ok:
         print(f'  \u8b66\u544a\uff1a\u9875\u9762\u81ea\u68c0\u5931\u8d25\uff0c\u7a97\u53e3\u53ef\u80fd\u7a7a\u767d\u2014\u53ef\u5728\u6d4f\u89c8\u5668\u6253\u5f00 {ui_url} \u9a8c\u8bc1\u670d\u52a1\u5c42', flush=True)
 
+    try:
+        print(f'  \u7a97\u53e3\u5f15\u64ce: pywebview {webview.__version__} (edgechromium/WebView2)', flush=True)
+    except Exception:
+        pass
     webview.create_window('Cursor Web Assistant', ui_url,
                           width=1024, height=800, min_size=(860, 620))
     webview.start()  # returns when the window is closed

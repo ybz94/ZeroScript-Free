@@ -147,6 +147,7 @@ git diff --check
 - **修复 3（用户第三次运行：窗口打开但纯白）**：根因是架构级——`webview.start()` 阻塞主线程进入 WinForms 消息循环，而 bridge/端点/UI 三个服务都在主线程的同一个 asyncio 事件循环里，窗口一开循环即冻结 → UI 服务器无法响应任何请求 → 页面空白。修复：`run_with_window()` 把事件循环整体挪到独立 daemon 线程（`threading.Event` 跨线程停止信号，`/api/stop` 同时置位），主线程只跑窗口；主线程另做端口就绪探测，服务起不来时日志写明原因。回归测试 `test_window_mode_serves_while_main_thread_blocked`：假 webview 的 start() 模拟"主线程冻结"期间，页面与 /api/status 必须仍能被真实 HTTP 取回（旧架构下会挂起）。
 - **日志判读（用户发来 exe 日志）**：日志显示两段启动；第一段"就绪"后的一大段 ERROR（lifespan CancelledError×2、proactor AssertionError、WinError 10054、websockets handshake failed×2、Task destroyed）经逐条判读**全部是关窗退出时的正常噪音**（退出时 poller 的 list+jobs 两条在途 WS 连接被掐断 = 两条 handshake failed；Windows proactor 关闭竞态）——正常运行期间无任何错误，服务健康。
 - **可诊断性增强**：① 日志文件每行加 `HH:MM:SS` 时间戳（`_TimestampedStream`）；② 窗口打开前做**页面自检**——真实 HTTP GET 控制页并记录 `HTTP 200 / 字节数 / 标题✓`，日志从此能一锤定音区分"服务没供页面"vs"WebView2 渲染问题"；③ 退出前把 uvicorn/websockets 日志器调静 + 自定义 loop 异常处理器吞掉 Windows 良性竞态（AssertionError@proactor、连接重置、取消），关窗不再刷一大段吓人但无害的 ERROR；④ 关窗/停止时打明确标记行（"窗口已关闭，正在停止服务…"/"已停止：…"）。
+- **修复 4（用户第四次运行：线程修复后窗口仍白）**：用户日志无时间戳/自检行 → 判为旧构建；进一步定位真正根因——pywebview 的 WebView2 互操作 DLL（`Microsoft.Web.WebView2.Core/WinForms.dll`、`runtimes/win-x64/native/WebView2Loader.dll`）与 `js/*.js` 是**数据包里的数据文件**，`interop_dll_path()` 在冻结模式下从 `_MEIPASS/webview/lib/...` 查找，而原打包命令只有 `--hidden-import`（只收集代码不收集数据）→ DLL 缺失 → WebView2 控件窗口能建、浏览器引擎初始化不了 → 白屏无崩溃。修复：`build_exe.bat` 改用 **`--collect-all webview`**（数据+二进制+子模块全收，DLL 落位与 `interop_dll_path` 搜索路径逐一核对过）。另在窗口创建前打印 pywebview 版本/引擎行，日志可确认引擎。
 
 ## 0.4.19 qwen / gemini / meta / chatgpt 逐项适配完成（2026-09-22）
 
