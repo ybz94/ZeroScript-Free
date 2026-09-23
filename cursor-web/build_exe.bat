@@ -17,6 +17,16 @@ if not exist "%~dp0app.py" (
     exit /b 1
 )
 
+REM --- 旧程序必须在关着（占着 exe 文件，新包写不进去） ----------------------
+tasklist /FI "IMAGENAME eq CursorWebAssistant.exe" 2>nul | find "CursorWebAssistant.exe" >nul
+if not errorlevel 1 (
+    echo   错误：CursorWebAssistant.exe 还在运行。
+    echo   请先关掉程序窗口（或任务管理器结束它），再运行本脚本，
+    echo   否则新 exe 无法写入、你运行的仍是旧版本。
+    pause
+    exit /b 1
+)
+
 REM --- Find Python (same rules as start.bat) ---------------------------------
 set "PY="
 where py >nul 2>nul && set "PY=py -3"
@@ -72,9 +82,16 @@ echo.
 echo   ================================================
 echo   完成！程序在:  %~dp0dist\CursorWebAssistant.exe
 echo.
+echo   核对一下新包（应该显示刚才的日期和几分钟前的时间）:
+for %F in ("%~dp0dist\CursorWebAssistant.exe") do echo     %~xF   %~zF 字节   %~tF
+echo.
+echo   运行后日志第一屏应出现:
+echo     [时:分:秒] ……（每行带时间）
+echo     版本: 0.4.23  (构建 b5)
+echo   如果没有 = 你运行的还是旧 exe，先关掉再重新打包。
+echo.
 echo   以后每天只需双击 dist\CursorWebAssistant.exe
 echo   （可右键"创建快捷方式"放到桌面）。
-echo   首次运行会在 exe 同目录生成 extension\ 和令牌文件。
 echo   注意：exe 和 git 仓库是分开的——git pull 更新代码后重新
 echo   双击本文件打包一次即可。
 echo   ================================================

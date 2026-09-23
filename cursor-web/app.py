@@ -30,6 +30,7 @@ ENDPOINT_PORT = int(os.getenv('CURSOR_WEB_ENDPOINT_PORT', '17615'))
 UI_PORT = int(os.getenv('CURSOR_WEB_UI_PORT', '17616'))
 MODEL = 'web-ai'
 VERSION = '0.4.23'
+BUILD_ID = 'b5'  # printed in the banner: proves which build is actually running
 
 SITES = [
     ('deepseek', 'DeepSeek', 'https://chat.deepseek.com'),
@@ -500,6 +501,7 @@ def main(argv=None):
     print('  Cursor Web Assistant - \u684c\u9762\u63a7\u5236\u4e2d\u5fc3', flush=True)
     print('=' * 56, flush=True)
     print(f'  Python: {sys.version.split()[0]}  ({sys.executable})', flush=True)
+    print(f'  \u7248\u672c: {VERSION}  (\u6784\u5efa {BUILD_ID})', flush=True)
     if log_path:
         print(f'  \u65e0\u63a7\u5236\u53f0\u73af\u5883\uff0c\u65e5\u5fd7\u5199\u5165: {log_path}', flush=True)
 
