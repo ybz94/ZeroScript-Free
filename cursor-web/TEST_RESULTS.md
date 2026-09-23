@@ -145,6 +145,8 @@ git diff --check
 - **修复 2（用户第二次运行 exe 时）**：`ValueError: Unable to configure formatter 'default'` —— `--windowed` 无控制台 exe 里 `sys.stdout` 为 None，uvicorn 配置日志时调 `sys.stdout.isatty()` 崩溃 → `app.py` 启动时 `_ensure_streams()`：stdout/stderr 为 None 就把两者指向 exe 同目录 `cursor_web.log`（行缓冲追加，可用 `CURSOR_WEB_LOG_FILE` 改位置），兼作调试日志；UI "Cursor 连接"卡片显示日志路径（可复制）。回归测试 `test_windowed_exe_no_console` 在 stdout/stderr=None 下真实执行 `uvicorn.Config(...).configure_logging()` 验证。
 - **顺带修复 UI 隐性 bug**：向导里动态渲染的"复制路径/复制令牌"按钮从未绑定点击事件（绑定循环在首次渲染前执行）→ 改为 `bindCopy()` 每次渲染后重新绑定。
 - **修复 3（用户第三次运行：窗口打开但纯白）**：根因是架构级——`webview.start()` 阻塞主线程进入 WinForms 消息循环，而 bridge/端点/UI 三个服务都在主线程的同一个 asyncio 事件循环里，窗口一开循环即冻结 → UI 服务器无法响应任何请求 → 页面空白。修复：`run_with_window()` 把事件循环整体挪到独立 daemon 线程（`threading.Event` 跨线程停止信号，`/api/stop` 同时置位），主线程只跑窗口；主线程另做端口就绪探测，服务起不来时日志写明原因。回归测试 `test_window_mode_serves_while_main_thread_blocked`：假 webview 的 start() 模拟"主线程冻结"期间，页面与 /api/status 必须仍能被真实 HTTP 取回（旧架构下会挂起）。
+- **日志判读（用户发来 exe 日志）**：日志显示两段启动；第一段"就绪"后的一大段 ERROR（lifespan CancelledError×2、proactor AssertionError、WinError 10054、websockets handshake failed×2、Task destroyed）经逐条判读**全部是关窗退出时的正常噪音**（退出时 poller 的 list+jobs 两条在途 WS 连接被掐断 = 两条 handshake failed；Windows proactor 关闭竞态）——正常运行期间无任何错误，服务健康。
+- **可诊断性增强**：① 日志文件每行加 `HH:MM:SS` 时间戳（`_TimestampedStream`）；② 窗口打开前做**页面自检**——真实 HTTP GET 控制页并记录 `HTTP 200 / 字节数 / 标题✓`，日志从此能一锤定音区分"服务没供页面"vs"WebView2 渲染问题"；③ 退出前把 uvicorn/websockets 日志器调静 + 自定义 loop 异常处理器吞掉 Windows 良性竞态（AssertionError@proactor、连接重置、取消），关窗不再刷一大段吓人但无害的 ERROR；④ 关窗/停止时打明确标记行（"窗口已关闭，正在停止服务…"/"已停止：…"）。
 
 ## 0.4.19 qwen / gemini / meta / chatgpt 逐项适配完成（2026-09-22）
 

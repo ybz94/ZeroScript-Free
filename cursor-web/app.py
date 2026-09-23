@@ -51,6 +51,33 @@ def _stable_dir():
     return HERE
 
 
+class _TimestampedStream:
+    """Wraps the log file so every line is prefixed with HH:MM:SS - the exe
+    log reads like a timeline, which makes remote diagnosis (user sends the
+    log file) actually possible."""
+
+    def __init__(self, raw):
+        self._raw = raw
+
+    def write(self, s):
+        if not s:
+            return 0
+        import datetime
+        ts = datetime.datetime.now().strftime('%H:%M:%S')
+        out = ''.join(f'[{ts}] {line}' if line.strip() else line
+                      for line in s.splitlines(keepends=True))
+        return self._raw.write(out)
+
+    def flush(self):
+        self._raw.flush()
+
+    def isatty(self):
+        return False
+
+    def fileno(self):
+        return self._raw.fileno()
+
+
 def _ensure_streams():
     """A windowed (no-console) exe has sys.stdout/stderr == None, which crashes
     uvicorn's log setup (it calls sys.stdout.isatty()). Point both at a log
@@ -61,7 +88,7 @@ def _ensure_streams():
     try:
         path = Path(os.getenv('CURSOR_WEB_LOG_FILE')
                     or (Path(_stable_dir()) / 'cursor_web.log'))
-        stream = open(path, 'a', encoding='utf-8', buffering=1)
+        stream = _TimestampedStream(open(path, 'a', encoding='utf-8', buffering=1))
     except Exception:
         stream = open(os.devnull, 'w', encoding='utf-8')
         return None
@@ -202,11 +229,21 @@ class Center:
                 await asyncio.sleep(0.1)
 
     async def shutdown(self):
+        import logging
+        # A clean exit on Windows is otherwise a wall of scary-but-harmless
+        # tracebacks: uvicorn logs CancelledError from the lifespan tasks,
+        # the proactor logs _attach AssertionErrors, and the poller's two
+        # in-flight bridge connections (list + jobs) get cut mid-handshake.
+        # Our own markers below are enough; keep the log readable.
+        for name in ('uvicorn.error', 'uvicorn.access', 'websockets'):
+            logging.getLogger(name).setLevel(logging.CRITICAL)
         for s in self._servers:
             s.should_exit = True
+        await asyncio.sleep(0.3)  # let the servers drain gracefully
         for t in self._tasks:
             t.cancel()
         await asyncio.gather(*self._tasks, return_exceptions=True)
+        print('\n  已停止：Bridge、端点与控制界面均已关闭。', flush=True)
 
     # -- state ----------------------------------------------------------------
     async def _poll(self):
@@ -242,6 +279,35 @@ class Center:
         }
 
 
+def _self_check_ui(ui_url):
+    """Real HTTP GET of the control page. A TCP-connect probe (like
+    _wait_port) only proves something LISTENS; this proves the in-process
+    server actually SERVES the page - the definitive answer to a blank
+    window (server-side) in the log."""
+    import urllib.request
+    try:
+        with urllib.request.urlopen(ui_url, timeout=10) as resp:
+            body = resp.read().decode('utf-8', 'replace')
+        title_ok = 'Cursor Web Assistant' in body
+        return (resp.status == 200 and title_ok), \
+            f'HTTP {resp.status}, {len(body)} 字节, 页面标题 {"✓" if title_ok else "✗"}'
+    except Exception as exc:
+        return False, f'{type(exc).__name__}: {exc}'
+
+
+def _loop_exception_handler(loop, context):
+    """Quiet the benign Windows/asyncio callback errors (mostly at shutdown):
+    cancelled lifespans, connection resets, proactor _attach races. Anything
+    else is still printed to the log."""
+    exc = context.get('exception')
+    if isinstance(exc, (asyncio.CancelledError, ConnectionResetError, BrokenPipeError)):
+        return
+    if isinstance(exc, (AssertionError, OSError)) and \
+            'roactor' in repr(context.get('handle') or ''):
+        return
+    print(f'[loop] {context.get("message")}: {exc!r}', flush=True)
+
+
 def _wait_port(port, tries=100, delay=0.15):
     """True if 127.0.0.1:port accepts a TCP connection within ~tries*delay s."""
     import socket
@@ -273,6 +339,7 @@ def run_with_window(center, ui_url):
 
     def loop_thread():
         async def run():
+            asyncio.get_running_loop().set_exception_handler(_loop_exception_handler)
             try:
                 await center.start()
                 print(f'\n  \u25b6 \u5c31\u7eea\uff1a\u7aef\u70b9 http://127.0.0.1:{center.endpoint_port}/v1 '
@@ -296,9 +363,19 @@ def run_with_window(center, ui_url):
         t.join(timeout=10)
         return 1
 
+    # Definitive blank-window diagnostic: prove the in-process server actually
+    # SERVES the page (not just accepts TCP). If this says \u6b63\u5e38 but the window
+    # is still white, the problem is the WebView2 window itself, not the server.
+    ok, detail = _self_check_ui(ui_url)
+    verdict = '\u6b63\u5e38' if ok else '\u5f02\u5e38'
+    print(f'  \u81ea\u68c0\uff1a\u63a7\u5236\u9762\u677f\u9875\u9762 {verdict}\uff08{detail}\uff09', flush=True)
+    if not ok:
+        print(f'  \u8b66\u544a\uff1a\u9875\u9762\u81ea\u68c0\u5931\u8d25\uff0c\u7a97\u53e3\u53ef\u80fd\u7a7a\u767d\u2014\u53ef\u5728\u6d4f\u89c8\u5668\u6253\u5f00 {ui_url} \u9a8c\u8bc1\u670d\u52a1\u5c42', flush=True)
+
     webview.create_window('Cursor Web Assistant', ui_url,
                           width=1024, height=800, min_size=(860, 620))
     webview.start()  # returns when the window is closed
+    print('  \u7a97\u53e3\u5df2\u5173\u95ed\uff0c\u6b63\u5728\u505c\u6b62\u670d\u52a1\u2026', flush=True)
     stop_evt.set()
     t.join(timeout=10)
     return 0
