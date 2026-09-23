@@ -573,3 +573,16 @@ npm test --prefix cursor-web/tests
 - **主 ZeroScript 扩展**（core/config.js + core/main.js）：移植 01a0a947 分支 83e0f69 的 `userLang` 系统提示规则（zh 浏览器 → 显式简体中文指令）
 
 说明：01a0a947 分支的其它提交（去 Roblox / 通用 MCP 模式 / Streamable HTTP 桥）属于旧 agent 循环架构，本分支的 cursor-web 直连管道不使用 core/ 那套，未合并。
+
+## 0.4.21：启动器依赖检查修复（2026-09-22）
+
+**实机问题**：start.bat 走到第 4 步时 `model_endpoint.py` 报 `No module named 'jsonschema'`。原因：启动器原来只硬编码检查 3 个模块（websockets/httpx/uvicorn），全在就跳过安装——但 `jsonschema`（工具 schema 校验）等其它依赖可能缺。
+
+修复：
+
+1. **依赖检查改为读 `requirements.txt` 全量核对**（mcp/websockets/starlette/uvicorn/jsonschema/referencing），缺任何一个就 `pip install -r requirements.txt`，装完再核对一遍
+2. `requirements.txt` 显式补 `referencing`（model_endpoint.py 直接 import，此前只靠 jsonschema 间接带入）
+3. 启动第一行显示 **Python 版本 + 完整路径**——"手动跑 model_endpoint.py 正常、start.bat 不正常"基本都是机器上有第二个 Python（`py -3` 解析到了另一个安装）；对照这行就能定位
+4. 端点立即退出的报错改为指向真实原因（上方 traceback：缺模块 → pip install；端口占用 → 任务管理器）
+
+**如果你刚才也遇到同样报错**：`git pull` 后重新双击 start.bat 即可（会自动装缺的依赖）。若仍报缺模块，在 cmd 里手动跑一次 `py -3 -m pip install -r cursor-web\requirements.txt` 再试。

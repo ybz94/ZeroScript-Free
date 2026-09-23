@@ -117,6 +117,13 @@ git diff --check
 - **主扩展语言移植**：core/config.js `buildSystemPrompt` 增加 `userLang`（zh → 显式简体中文指令，否则镜像用户语言，命令本身永不翻译）；core/main.js 传 `navigator.languages[0]`。来自 01a0a947 分支 83e0f69（该分支其它提交属旧 agent 架构，未合并）。
 - 待用户桌面实机：一键启动器在 Windows 上的完整流程；弹窗站点跳转；中文浏览器下网页回复是否切为中文。
 
+## 0.4.21 启动器依赖检查修复（2026-09-22）
+
+- Python 46 项、JavaScript 63 项，总计 109 项通过（`unittest discover` + `npm test`）。
+- 实机依据：用户 Windows 上 start.bat 第 4 步 `model_endpoint.py` 报 `ModuleNotFoundError: No module named 'jsonschema'`——启动器硬编码只查 3 个依赖，漏网。
+- 修复：`check_python_deps` 改读 requirements.txt 全量核对（缺即安装 + 安装后复验）；requirements 显式加 `referencing`；启动显示 Python 版本与路径（排查"双 Python"）；端点退出报错改为按 traceback 指向（缺模块/端口占用）。
+- 沙箱验证：① 构造缺 jsonschema/mcp/referencing 的环境 → 启动器正确列出缺失并自动 pip 安装；② 依赖齐全环境 + 模拟扩展会话 → 4 步全流程至端点就绪；③ 端口最终干净释放。
+
 ## 0.4.19 qwen / gemini / meta / chatgpt 逐项适配完成（2026-09-22）
 
 - Python 46 项、JavaScript 60 项，总计 106 项通过（`unittest discover` + `npm test`）。

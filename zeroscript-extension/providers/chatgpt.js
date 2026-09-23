@@ -943,7 +943,7 @@ const ZSProvider = (() => {
 
   return {
     id: "chatgpt",
-    version: "0.4.20",
+    version: "0.4.21",
     displayName: "ChatGPT",
     timings,
     // Exported for test-chatgpt.js (the Node smoke test drives it against a stub

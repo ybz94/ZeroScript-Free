@@ -32,18 +32,41 @@ def fatal(msg):
     sys.exit(1)
 
 
+def _required_modules():
+    """Top-level module names from requirements.txt (package name == module
+    name for every entry here)."""
+    import re
+    mods = []
+    for line in (HERE / "requirements.txt").read_text().splitlines():
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        name = re.split(r"[><=!~;@\s]", line, 1)[0].strip()
+        if name:
+            mods.append(name)
+    return mods
+
+
 def check_python_deps():
     import importlib.util
-    missing = [m for m in ("websockets", "httpx", "uvicorn")
-               if importlib.util.find_spec(m) is None]
-    if not missing:
+
+    def missing():
+        return [m for m in _required_modules()
+                if importlib.util.find_spec(m) is None]
+
+    miss = missing()
+    if not miss:
         return
-    step(0, f"Installing missing Python dependencies: {', '.join(missing)}")
+    step(0, f"Installing missing Python dependencies: {', '.join(miss)}")
     r = subprocess.run([sys.executable, "-m", "pip", "install", "-r",
                         str(HERE / "requirements.txt")])
     if r.returncode != 0:
-        fatal("pip install failed - run manually:\n  "
+        fatal("pip install failed - run manually with the SAME python:\n  "
               f"{sys.executable} -m pip install -r requirements.txt")
+    miss = missing()
+    if miss:
+        fatal("Dependencies still missing after install: " + ", ".join(miss)
+              + f"\nRun manually: {sys.executable} -m pip install -r requirements.txt")
     print("  ✓ dependencies installed", flush=True)
 
 
@@ -163,8 +186,11 @@ def start_endpoint(session, port):
                             cwd=HERE)
     time.sleep(1.0)
     if proc.poll() is not None:
-        fatal(f"model_endpoint.py exited immediately (port {port} in use? "
-              "旧端点没停干净：任务管理器结束 python 再试)")
+        # The traceback is printed above (output is inherited) - point at the
+        # two common causes instead of guessing.
+        fatal(f"model_endpoint.py exited immediately - see the traceback above:\n"
+              f"  • 'No module named X' → {sys.executable} -m pip install -r requirements.txt 然后重跑\n"
+              f"  • port {port} in use → 任务管理器结束旧的 python 进程再试")
     print(f"  ✓ Endpoint: http://127.0.0.1:{port}/v1   (model 名: web-ai)", flush=True)
     return proc
 
@@ -177,6 +203,10 @@ def main():
     print("=" * 52, flush=True)
     print("  Cursor Web Assistant — 一键启动 (Bridge + 端点)", flush=True)
     print("=" * 52, flush=True)
+    # On screen for troubleshooting: a second Python on the machine (e.g. the
+    # `py -3` launcher resolving elsewhere) is the most common cause of
+    # "works when I run model_endpoint.py manually, not via start.bat".
+    print(f"  Python: {sys.version.split()[0]}  ({sys.executable})", flush=True)
 
     check_python_deps()
     prepare_extension()
