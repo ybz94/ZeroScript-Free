@@ -619,7 +619,31 @@ npm test --prefix cursor-web/tests
 **专用浏览器（免装扩展）**：界面"支持的 AI 网站"里点任意一个网站 → 程序自动弹出一个**专用浏览器窗口**（独立用户配置 `cursor-web-profile`，与你主浏览器完全隔离）——扩展通过 `--load-extension` **预装**在该窗口里，**永远不用打开 `chrome://extensions` 手动加载**。首次在该窗口登录网站 + 粘贴一次令牌；之后配置保留，每次点一下网站即可。右上 ⧉ 仍可用普通浏览器打开（传统方式）。
 
 **物理上装不进 exe 的两样**（平台安全，向导里带路）：
-1. **Chrome 扩展**：浏览器规定必须由用户手动"加载已解压的扩展"（向导第 1 步，仅一次；exe 运行时自动把扩展文件释放到 exe 同目录 `extension\`）
-2. **cursor-byok**：你的 Go 适配器（窗口"Cursor 连接"卡片给出要填的三项：端点地址、模型名 web-ai、端点密钥，各带复制按钮）
+1. **Chrome 扩展**：浏览器规定必须由用户手动"加载已解压的扩展"（向导第 1 步，仅一次；exe 运行时自动把扩展文件释放到 exe 同目录 `extension\`；0.4.23 起点网站卡片弹专用浏览器已免装，见上）
+2. **cursor-byok**：你的 Go 适配器——**0.4.23 (b7) 起自动接入，见下节**
 
 **注意**：exe 与 git 仓库分离——`git pull` 拿到新代码后重新双击一次 `build_exe.bat` 即可。旧的手动三步法（bridge.py + --sessions + --session）与 launcher.py 仍然可用。
+
+## 0.4.23（构建 b7）：cursor-byok 自动接入——不再手输地址和 key（2026-09-24）
+
+**背景**：cursor-byok（github.com/WHUT666/cursor-byok，MIT 协议）是本地 MITM 代理，让 Cursor 把 `web-ai` 模型经它转到我们的端点。核对其源码后确认：它的模型配置就是磁盘上一个普通 YAML 文件 `~/.cursor-local-assistant-v2/config.yaml`（`internal/appdata/paths.go`），适配器结构见 `internal/backend/server/config/types.go` —— 所以本程序可以在它的界面之外直接把配置写好。
+
+**现在自动做的事**（`cursor-web/byok_setup.py`）：
+
+1. **启动即写入**：每次启动，本程序幂等地把 `web-ai` 适配器合并进 cursor-byok 的 `config.yaml`：
+   - `baseURL` = 本程序端点地址（`http://127.0.0.1:17615/v1`）
+   - `apiKey` = 本程序端点密钥（`.endpoint-token`）
+   - `modelID` = `web-ai`、OpenAI 兼容、Chat Completions
+   - 文件不存在 → 按 cursor-byok 官方默认骨架创建；已有 → 只更新/新增 web-ai 这一条，**其它模型和设置原样保留**；已有内容解析失败 → **绝不改动**（宁可不动，也不破坏你的配置）；每次改动前自动备份 `config.yaml.bak`。日志打印 `[cursor-byok] 模型配置: …`。
+2. **界面状态与按钮**（"Cursor 连接"卡片）：五项实时状态——`配置文件 ✓/✗ · 模型 ✓/✗ · 程序(路径) ✓/✗ · 运行中 ✓/✗ · 代理 ✓/✗`，下方提示当前该做什么；按钮：**写入连接配置**（重跑合并，二次执行自动判定"已是最新"不重复写盘）、**启动 cursor-byok**（按 环境变量 `CURSOR_BYOK_EXE` → 本程序同目录 → Downloads/LOCALAPPDATA/home/Program Files → PATH 定位 `cursor-byok*.exe` 并启动）。
+3. **Cursor 侧**：等五项全绿后，在 Cursor 里选 `web-ai` 模型即可对话——**全程没有输入过任何地址或密钥**。
+
+**仍然属于 cursor-byok 程序本身、无法代劳的一步（诚实边界）**：
+
+- cursor-byok 的核心是 TLS 拦截（MITM）+ 把自己的 CA 证书装进系统信任库 + 系统代理指向。这部分**没有**在本程序里重实现——它安全敏感且只在 Windows 上能跑，留在 cursor-byok 的 Go 程序里最稳妥。
+- 因此**首次**运行 cursor-byok 时，需要在它自己的窗口里按提示点一次"启用/开始"（需要管理员权限，UAC 确认）。这是唯一的手动步骤，一次即可；之后每次由本程序"启动 cursor-byok"按钮拉起。
+- 判断依据：状态行里 `运行中` 与 `代理` 两项。`运行中 ✓` 但 `代理 ✗` = 在它窗口里还没点"开始"。
+
+**环境变量**（可选）：`CURSOR_BYOK_CONFIG` 改配置路径、`CURSOR_BYOK_EXE` 指定 cursor-byok 可执行文件位置。
+
+**验证新构建**：启动后日志/窗口顶部应显示 `版本: 0.4.23  (构建 b7)`；"Cursor 连接"卡片里出现 cursor-byok 状态行与两个按钮即为此构建。

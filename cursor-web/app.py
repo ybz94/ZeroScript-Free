@@ -30,7 +30,7 @@ ENDPOINT_PORT = int(os.getenv('CURSOR_WEB_ENDPOINT_PORT', '17615'))
 UI_PORT = int(os.getenv('CURSOR_WEB_UI_PORT', '17616'))
 MODEL = 'web-ai'
 VERSION = '0.4.23'
-BUILD_ID = 'b6'  # printed in the banner: proves which build is actually running
+BUILD_ID = 'b7'  # printed in the banner: proves which build is actually running
 
 SITES = [
     ('deepseek', 'DeepSeek', 'https://chat.deepseek.com'),
@@ -165,6 +165,7 @@ class Center:
         self._servers = []
         self.note = None
         self.log_path = None
+        self._byok_cache = None
 
     # -- lifecycle ----------------------------------------------------------
     async def start(self):
@@ -226,10 +227,44 @@ class Center:
             print(f'[center] 专用浏览器已打开（{label}）→ {site_url}', flush=True)
             return JSONResponse({'ok': True, 'label': label, 'url': site_url})
 
+        async def byok(request):
+            data = await request.json()
+            action = str(data.get('action') or 'status')
+            url = f'http://127.0.0.1:{self.endpoint_port}/v1'
+            if action == 'write':
+                try:
+                    from byok_setup import merge_webai_adapter
+                    changed, detail = merge_webai_adapter(url, self.endpoint_key)
+                except Exception as exc:
+                    return JSONResponse({'ok': False, 'error': f'写入失败: {exc}'}, status_code=500)
+                self._byok_cache = None
+                print(f'[byok] {detail}', flush=True)
+                return JSONResponse({'ok': True, 'changed': changed, 'detail': detail})
+            if action == 'launch':
+                try:
+                    from byok_setup import find_byok_exe
+                    exe = find_byok_exe()
+                except Exception as exc:
+                    return JSONResponse({'ok': False, 'error': f'查找失败: {exc}'}, status_code=500)
+                if not exe:
+                    return JSONResponse({'ok': False,
+                                         'error': '未找到 cursor-byok.exe — 把它放到本程序同目录后重试'},
+                                        status_code=404)
+                try:
+                    subprocess.Popen([str(exe)])
+                except Exception as exc:
+                    return JSONResponse({'ok': False, 'error': f'启动失败: {exc}'}, status_code=500)
+                self._byok_cache = None
+                print(f'[byok] 已启动 {exe}', flush=True)
+                return JSONResponse({'ok': True, 'exe': str(exe)})
+            self._byok_cache = None
+            return JSONResponse(self.byok_state())
+
         app = Starlette(routes=[Route('/', index), Route('/api/status', status),
                                 Route('/api/rebind', rebind, methods=['POST']),
                                 Route('/api/stop', stop, methods=['POST']),
-                                Route('/api/launch-browser', launch_browser, methods=['POST'])])
+                                Route('/api/launch-browser', launch_browser, methods=['POST']),
+                                Route('/api/byok', byok, methods=['POST'])])
         cfg2 = uvicorn.Config(app, host='127.0.0.1', port=self.ui_port, log_level='warning')
         srv2 = uvicorn.Server(cfg2)
         self._servers.append(srv2)
@@ -276,6 +311,20 @@ class Center:
                 pass
             await asyncio.sleep(3)
 
+    def byok_state(self, ttl=10.0):
+        """cursor-byok 状态（10 秒缓存，避免每 2.5s 的轮询都跑 tasklist）。"""
+        now = time.time()
+        if self._byok_cache and now - self._byok_cache[0] < ttl:
+            return self._byok_cache[1]
+        try:
+            from byok_setup import byok_status
+            st = byok_status(f'http://127.0.0.1:{self.endpoint_port}/v1',
+                             self.endpoint_key)
+        except Exception as exc:
+            st = {'error': str(exc)}
+        self._byok_cache = (now, st)
+        return st
+
     def state(self):
         bound = self.session.current
         bound_ok = any(s.get('id') == bound for s in self.sessions)
@@ -294,6 +343,7 @@ class Center:
             'sites': SITES,
             'sessions': self.sessions,
             'jobs': self.jobs,
+            'byok': self.byok_state(),
         }
 
 
@@ -560,6 +610,16 @@ def main(argv=None):
     center.note = note
     center.log_path = log_path
     ui_url = f'http://127.0.0.1:{args.ui_port}'
+
+    # 自动把 web-ai 模型写进 cursor-byok 的配置（幂等、带备份）：
+    # 用户不用再在 cursor-byok 里手填地址/密钥。
+    try:
+        from byok_setup import merge_webai_adapter
+        _changed, _detail = merge_webai_adapter(f'http://127.0.0.1:{args.endpoint_port}/v1',
+                                                center.endpoint_key)
+        print(f'  [cursor-byok] \u6a21\u578b\u914d\u7f6e: {_detail}', flush=True)
+    except Exception as exc:
+        print(f'  [cursor-byok] \u6a21\u578b\u914d\u7f6e\u5199\u5165\u5931\u8d25: {exc}', flush=True)
 
     try:
         if args.no_window:

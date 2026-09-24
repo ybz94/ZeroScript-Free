@@ -127,9 +127,15 @@ a.site .pid{margin-left:auto;font-size:10px;color:var(--muted);font-family:ui-mo
     <div class="kv"><span class="k">模型名</span><span class="v mono">web-ai</span><button class="ghost mini" data-copy="const:web-ai">复制</button></div>
     <div class="kv"><span class="k">端点密钥</span><span class="v mono" id="epKey"></span><button class="ghost mini" data-copy="epKey">复制</button></div>
     <div class="kv"><span class="k">Bridge 令牌</span><span class="v mono" id="token"></span><button class="ghost mini" data-copy="token">复制</button></div>
-    <div class="hint">cursor-byok 里把模型 <b>web-ai</b> 指向端点地址、填上端点密钥即可。Bridge 令牌用于扩展弹窗"设置"里配对（只需一次）。</div>
+    <div class="hint">模型 <b>web-ai</b> 的地址与密钥由本程序<b>自动写入</b> cursor-byok 配置，无需手输（见下方状态）。Bridge 令牌用于扩展弹窗"设置"里配对（只需一次）。</div>
     <div class="kv" id="logRow" style="display:none"><span class="k">运行日志</span><span class="v mono" id="epLog"></span><button class="ghost mini" data-copy="epLog">复制</button></div>
     <div class="hint" id="logHint" style="display:none">出问题时把这个日志文件发给我即可定位。</div>
+    <div class="kv" style="margin-top:10px"><span class="k">cursor-byok</span><span class="v" id="byokLine">…</span></div>
+    <div style="display:flex;gap:6px;margin-top:4px">
+      <button class="ghost mini" id="byokWrite">写入连接配置</button>
+      <button class="ghost mini" id="byokLaunch">启动 cursor-byok</button>
+    </div>
+    <div class="hint" id="byokHint"></div>
     <div style="margin-top:12px"><button class="danger" id="stopBtn">停止程序</button>
       <span class="s-meta">停止 Bridge、端点与窗口；关闭窗口效果相同。</span></div>
   </div>
@@ -182,8 +188,28 @@ bindCopy(document.body);
 
 function mark(id, v){ if(v) done[id]=true; if(!v) delete done[id]; }
 
+function renderByok(s){
+  const b = s.byok || {}, line = $('byokLine');
+  if (!line) return;
+  if (b.error){ line.textContent = '状态读取失败: ' + b.error; return; }
+  const exeShort = b.byok_exe ? String(b.byok_exe).replace(/^.*[/\\]/, '') : '未找到';
+  line.textContent = '配置文件 ' + (b.config_exists ? '✓' : '✗')
+    + ' · 模型 ' + (b.adapter_ok ? '✓' : '✗')
+    + ' · ' + exeShort + (b.byok_exe ? ' ✓' : ' ✗')
+    + ' · 运行中 ' + (b.byok_running ? '✓' : '✗')
+    + ' · 代理 ' + (b.proxy_on ? '✓' : '✗');
+  const hint = $('byokHint');
+  if (!hint) return;
+  if (!b.config_exists || !b.adapter_ok) hint.textContent = '点「写入连接配置」，本程序自动把模型地址和密钥填进 cursor-byok（无需手输）。';
+  else if (!b.byok_exe) hint.textContent = '把 cursor-byok.exe 放到本程序同目录即可识别。';
+  else if (!b.byok_running) hint.textContent = '点「启动 cursor-byok」；首次需在其窗口点“启用/开始”（需管理员，一次性）。';
+  else if (!b.proxy_on) hint.textContent = 'cursor-byok 在运行：请确认其窗口里已点“开始”（需管理员）。';
+  else hint.textContent = '全部就绪：Cursor 里选 web-ai 即可直接使用。';
+}
+
 function render(s){
   renderSites(s);
+  renderByok(s);
   $('ver').textContent = `v${s.app.version} · ${s.app.frozen?'exe':'源码'} · 运行 ${Math.floor(s.app.uptime_s/60)} 分`;
   const ep = s.endpoint, anySession = s.sessions.length>0;
   $('statusline').innerHTML =
@@ -210,8 +236,8 @@ function render(s){
      d: boundDone? '端点已绑定当前会话，Cursor 可以直接用。'
                  : '在下方"专用页会话"里点"绑定到此会话"（页面刷新后 ID 会变，随时可换绑）。'},
     {done:boundDone, t:'开始使用 Cursor',
-     d:'cursor-byok 把模型 web-ai 指向端点地址 + 密钥；然后直接用 Cursor 对话。',
-     act:`<code>${esc(ep.url)}</code> <button class="ghost mini" data-copy="const:${esc(ep.url)}">复制</button>`},
+     d:'本程序已把模型 web-ai（地址 + 密钥）自动写入 cursor-byok；启动它（下方按钮）、首次点一次“启用”后，直接用 Cursor 对话。',
+     act:`<code>${esc(ep.url)}</code> <button class="ghost mini" data-copy="const:${esc(ep.url)}">复制端点</button>`},
   ];
   $('steps').innerHTML = steps.map((x,i)=>`<div class="step ${x.done?'done':''}"><div class="num"></div>
       <div class="body"><div class="t">${x.t}</div><div class="d">${x.d}</div><div>${x.act||''}</div></div></div>`).join('');
@@ -272,6 +298,30 @@ $('stopBtn').onclick = async () => {
   if (!confirm('停止 Bridge、端点与窗口？（当前进行中的任务会中断）')) return;
   await fetch('/api/stop', {method:'POST'});
   $('stopBtn').disabled = true;
+};
+$('byokWrite').onclick = async () => {
+  $('byokWrite').disabled = true;
+  try {
+    const r = await fetch('/api/byok', {method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({action:'write'})});
+    const j = await r.json();
+    if (!r.ok || !j.ok) { alert('写入失败: ' + (j.error || '')); return; }
+    toast(j.changed ? j.detail : '配置已是最新');
+    refresh();
+  } catch(e){ alert('写入失败: ' + e.message); }
+  finally { $('byokWrite').disabled = false; }
+};
+$('byokLaunch').onclick = async () => {
+  $('byokLaunch').disabled = true;
+  try {
+    const r = await fetch('/api/byok', {method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({action:'launch'})});
+    const j = await r.json();
+    if (!r.ok || !j.ok) { alert('启动失败: ' + (j.error || '')); return; }
+    toast('正在启动 cursor-byok…');
+    setTimeout(refresh, 2000);
+  } catch(e){ alert('启动失败: ' + e.message); }
+  finally { $('byokLaunch').disabled = false; }
 };
 refresh();
 setInterval(refresh, 2500);

@@ -274,5 +274,148 @@ class DesktopAppTests(unittest.TestCase):
                           f"stdout:\n{r.stdout[-2000:]}\nstderr:\n{r.stderr[-2000:]}")
 
 
+class ByokSetupTests(unittest.TestCase):
+    """Pure unit tests for byok_setup.merge_webai_adapter (no Windows needed)."""
+
+    def _mod(self):
+        sys.path.insert(0, str(CURSOR_WEB))
+        import byok_setup as b
+        return b
+
+    def test_merge_creates_when_absent(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            b = self._mod()
+            p = Path(tmp) / 'config.yaml'
+            changed, detail = b.merge_webai_adapter('http://127.0.0.1:17615/v1', 'KEY1', p)
+            self.assertTrue(changed, detail)
+            import yaml
+            cfg = yaml.safe_load(p.read_text(encoding='utf-8'))
+            a = {x['modelID']: x for x in cfg['modelAdapters']}['web-ai']
+            self.assertEqual(a['baseURL'], 'http://127.0.0.1:17615/v1')
+            self.assertEqual(a['apiKey'], 'KEY1')
+            self.assertEqual(a['type'], 'openai')
+            self.assertEqual(a['openAIEndpoint'], '/v1/chat/completions')
+            self.assertEqual(cfg['proxyListenAddr'], '127.0.0.1:18080')
+            self.assertEqual(cfg['backendListenAddr'], '127.0.0.1:18090')
+            self.assertEqual(cfg['routing'], {'mode': 'local'})
+            self.assertFalse(p.with_suffix('.yaml.bak').exists())  # no backup for a new file
+
+    def test_merge_idempotent(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            b = self._mod()
+            p = Path(tmp) / 'config.yaml'
+            url, key = 'http://127.0.0.1:17615/v1', 'KEY1'
+            b.merge_webai_adapter(url, key, p)
+            first = p.read_bytes()
+            changed, detail = b.merge_webai_adapter(url, key, p)
+            self.assertFalse(changed, detail)
+            self.assertEqual(p.read_bytes(), first)  # no rewrite when up to date
+
+    def test_merge_updates_stale_key_preserves_extras(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            b = self._mod()
+            import yaml
+            p = Path(tmp) / 'config.yaml'
+            p.write_text(yaml.safe_dump({
+                'backendListenAddr': '127.0.0.1:18999',
+                'modelAdapters': [{
+                    'displayName': '网页 AI (Cursor Web Assistant)', 'type': 'openai',
+                    'baseURL': 'http://old:9999/v1', 'apiKey': 'OLDKEY',
+                    'tooltipData': 'x', 'modelID': 'web-ai', 'reasoningEffort': 'high',
+                    'openAIEndpoint': '/v1/chat/completions', 'contextWindowTokens': 200000,
+                    'maxCompletionTokens': 32000, 'customHeadersEnabled': True,
+                }],
+            }, allow_unicode=True), encoding='utf-8')
+            changed, _ = b.merge_webai_adapter('http://127.0.0.1:17615/v1', 'NEWKEY', p)
+            self.assertTrue(changed)
+            cfg = yaml.safe_load(p.read_text(encoding='utf-8'))
+            a = [x for x in cfg['modelAdapters'] if x['modelID'] == 'web-ai'][0]
+            self.assertEqual(a['apiKey'], 'NEWKEY')
+            self.assertEqual(a['baseURL'], 'http://127.0.0.1:17615/v1')
+            self.assertEqual(a['reasoningEffort'], 'low')          # our value wins
+            self.assertTrue(a.get('customHeadersEnabled'))          # user extras kept
+            self.assertEqual(cfg['backendListenAddr'], '127.0.0.1:18999')  # top-level kept
+            self.assertTrue(p.with_suffix('.yaml.bak').exists())    # backup written
+
+    def test_merge_preserves_other_adapters(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            b = self._mod()
+            import yaml
+            p = Path(tmp) / 'config.yaml'
+            other = {'displayName': 'deepseek', 'type': 'openai', 'baseURL': 'http://ds/v1',
+                     'apiKey': 'DS', 'tooltipData': 't', 'modelID': 'deepseek',
+                     'reasoningEffort': 'medium', 'openAIEndpoint': '/v1/chat/completions',
+                     'contextWindowTokens': 64000, 'maxCompletionTokens': 8000}
+            p.write_text(yaml.safe_dump({'modelAdapters': [other]}), encoding='utf-8')
+            changed, _ = b.merge_webai_adapter('http://127.0.0.1:17615/v1', 'K', p)
+            self.assertTrue(changed)
+            cfg = yaml.safe_load(p.read_text(encoding='utf-8'))
+            self.assertEqual([a['modelID'] for a in cfg['modelAdapters']],
+                             ['deepseek', 'web-ai'])
+
+    def test_merge_refuses_unparseable(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            b = self._mod()
+            p = Path(tmp) / 'config.yaml'
+            p.write_text('{{{not yaml: [', encoding='utf-8')
+            before = p.read_bytes()
+            changed, detail = b.merge_webai_adapter('http://127.0.0.1:17615/v1', 'K', p)
+            self.assertFalse(changed)
+            self.assertIn('无法解析', detail)
+            self.assertEqual(p.read_bytes(), before)  # untouched
+
+
+class ByokEndpointTests(unittest.TestCase):
+    def test_byok_write_status_launch(self):
+        """/api/byok: write auto-fills cursor-byok's model config (no manual
+        address/key), status reflects it, launch starts the located exe."""
+        with tempfile.TemporaryDirectory() as tmp:
+            exe = Path(tmp) / 'cursor-byok.exe'
+            exe.write_text('#!/bin/sh\nexit 0\n', encoding='utf-8')
+            exe.chmod(0o755)
+            script = (
+                "import asyncio, os, sys, yaml\n"
+                f"sys.path.insert(0, r'{CURSOR_WEB}')\n"
+                f"os.environ['CURSOR_WEB_TOKEN_FILE'] = r'{tmp}/t1'\n"
+                f"os.environ['CURSOR_WEB_ENDPOINT_TOKEN_FILE'] = r'{tmp}/t2'\n"
+                f"os.environ['CURSOR_BYOK_CONFIG'] = r'{tmp}/byok-config.yaml'\n"
+                f"os.environ['CURSOR_BYOK_EXE'] = r'{tmp}/cursor-byok.exe'\n"
+                "os.environ['CURSOR_WEB_PORT'] = '17758'\n"
+                "import app as appmod, httpx\n"
+                "async def main():\n"
+                "    center = appmod.Center('ext-dir', bridge_port=17758, endpoint_port=17759, ui_port=17760)\n"
+                "    await center.start()\n"
+                "    try:\n"
+                "        async with httpx.AsyncClient(base_url='http://127.0.0.1:17760') as ui:\n"
+                "            st = (await ui.get('/api/status')).json()\n"
+                "            assert st['byok']['config_exists'] is False, st['byok']\n"
+                "            r = await ui.post('/api/byok', json={'action':'write'})\n"
+                "            assert r.status_code == 200 and r.json()['ok'] and r.json()['changed'], r.text\n"
+                "            key = (await ui.get('/api/status')).json()['endpoint']['key']\n"
+                f"            cfg = yaml.safe_load(open(r'{tmp}/byok-config.yaml', encoding='utf-8'))\n"
+                "            a = [x for x in cfg['modelAdapters'] if x['modelID'] == 'web-ai'][0]\n"
+                "            assert a['apiKey'] == key, a\n"
+                "            assert a['baseURL'] == 'http://127.0.0.1:17759/v1', a\n"
+                "            r2 = await ui.post('/api/byok', json={'action':'write'})\n"
+                "            assert r2.json()['ok'] and r2.json()['changed'] is False, r2.text\n"
+                "            st2 = (await ui.get('/api/status')).json()\n"
+                "            assert st2['byok']['config_exists'] is True, st2['byok']\n"
+                "            assert st2['byok']['adapter_ok'] is True, st2['byok']\n"
+                "            r3 = await ui.post('/api/byok', json={'action':'launch'})\n"
+                "            assert r3.status_code == 200 and r3.json()['ok'], r3.text\n"
+                "            st3 = (await ui.get('/api/status')).json()\n"
+                "            assert st3['byok']['byok_exe'].endswith('cursor-byok.exe'), st3['byok']\n"
+                "    finally:\n"
+                "        await center.shutdown()\n"
+                "    print('BYOK-ENDPOINT-OK')\n"
+                "asyncio.run(main())\n"
+            )
+            r = subprocess.run([sys.executable, "-c", script],
+                               capture_output=True, text=True, timeout=90,
+                               cwd=str(CURSOR_WEB))
+            self.assertIn("BYOK-ENDPOINT-OK", r.stdout,
+                          f"stdout:\n{r.stdout[-2000:]}\nstderr:\n{r.stderr[-2000:]}")
+
+
 if __name__ == "__main__":
     unittest.main()
