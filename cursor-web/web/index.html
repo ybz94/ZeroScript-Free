@@ -53,9 +53,11 @@ button:disabled{opacity:.45;cursor:default;filter:none}
 code, .mono{font-family:ui-monospace,Consolas,monospace;font-size:11.5px;background:var(--card2);
   border:1px solid var(--line);border-radius:6px;padding:1px 6px;word-break:break-all}
 .sites{display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-top:6px}
-a.site{display:flex;align-items:center;gap:8px;padding:7px 9px;border-radius:9px;background:var(--card2);
-  border:1px solid var(--line);color:var(--text);font-size:12.5px}
-a.site:hover{border-color:var(--accent);text-decoration:none}
+.site{display:flex;align-items:center;gap:8px;padding:7px 9px;border-radius:9px;background:var(--card2);
+  border:1px solid var(--line);color:var(--text);font-size:12.5px;cursor:pointer;user-select:none}
+.site:hover{border-color:var(--accent)}
+.site .plain{margin-left:2px;color:var(--muted);font-size:12px;text-decoration:none}
+.site .plain:hover{color:var(--accent)}
 .glyph{width:20px;height:20px;border-radius:6px;display:flex;align-items:center;justify-content:center;
   font-size:10px;font-weight:800;color:#fff;flex:none}
 a.site .pid{margin-left:auto;font-size:10px;color:var(--muted);font-family:ui-monospace,monospace}
@@ -105,7 +107,7 @@ a.site .pid{margin-left:auto;font-size:10px;color:var(--muted);font-family:ui-mo
   <div class="card">
     <h2>支持的 AI 网站（专用页）</h2>
     <div class="sites" id="sites"></div>
-    <div class="hint">点击新开标签页并<b>开一个全新会话</b>；把它当作专用页（任务期间不要手动操作）。GLM 用国际版 chat.z.ai，国内版 chatglm.cn 暂不支持。</div>
+    <div class="hint">点击 = 打开该站的<b>专用浏览器</b>（独立窗口、扩展已内置），登录并<b>开一个全新会话</b>，之后当作专用页（任务期间不要手动操作）。右上 ⧉ = 用普通浏览器打开。GLM 用国际版 chat.z.ai，国内版 chatglm.cn 暂不支持。</div>
   </div>
 </div>
 
@@ -140,8 +142,29 @@ const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt
 const COLOR = {deepseek:'#4d6bfe',glm:'#ff7a1a',kimi:'#2f6bff',qwen:'#7c3aed',gemini:'#4285f4',meta:'#0081fb',chatgpt:'#10a37f',arena:'#f97316'};
 const done = {ext: localStorage.getItem('zsDoneExt')==='1', token: localStorage.getItem('zsDoneToken')==='1'};
 
-$('sites').innerHTML = (window.__state?.sites || []).map(([pid,name,url]) =>
-  `<a class="site" href="${esc(url)}" target="_blank"><span class="glyph" style="background:${COLOR[pid]||'#666'}">${esc(name[0])}</span><span>${esc(name)}</span><span class="pid">${esc(pid)}</span></a>`).join('');
+function renderSites(s){
+  $('sites').innerHTML = s.sites.map(([pid,name,url]) =>
+    `<div class="site" data-open="${esc(pid)}" title="点击：打开该站的专用浏览器（扩展已内置，无需安装）">
+       <span class="glyph" style="background:${COLOR[pid]||'#666'}">${esc(name[0])}</span><span>${esc(name)}</span>
+       <span class="pid">${esc(pid)}</span>
+       <a class="plain" href="${esc(url)}" target="_blank" title="用普通浏览器打开">⧉</a>
+     </div>`).join('');
+  bindOpen($('sites'));
+}
+function bindOpen(root){ root.querySelectorAll('[data-open]').forEach(el => { if(el._ob) return; el._ob = true;
+  el.onclick = async () => {
+    el.style.opacity = '.5';
+    try {
+      const r = await fetch('/api/launch-browser', {method:'POST', headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({site: el.dataset.open})});
+      const j = await r.json();
+      if (!r.ok || !j.ok) alert(j.error || '打开专用浏览器失败');
+      else toast('专用浏览器已打开');
+    } catch { alert('打开专用浏览器失败'); }
+    el.style.opacity = '';
+  };
+  el.querySelectorAll('a.plain').forEach(a => a.onclick = e => e.stopPropagation());
+}); }
 
 function toast(msg){ const t=$('toast'); t.textContent=msg; t.classList.add('show'); setTimeout(()=>t.classList.remove('show'),1400); }
 function bindCopy(root){ root.querySelectorAll('[data-copy]').forEach(b => { if(b._cb) return; b._cb = true;
@@ -160,6 +183,7 @@ bindCopy(document.body);
 function mark(id, v){ if(v) done[id]=true; if(!v) delete done[id]; }
 
 function render(s){
+  renderSites(s);
   $('ver').textContent = `v${s.app.version} · ${s.app.frozen?'exe':'源码'} · 运行 ${Math.floor(s.app.uptime_s/60)} 分`;
   const ep = s.endpoint, anySession = s.sessions.length>0;
   $('statusline').innerHTML =
@@ -173,16 +197,15 @@ function render(s){
   const tokenDone = done.token || anySession;
   const boundDone = ep.bound_ok;
   const steps = [
-    {done:extLoaded, t:'加载 Chrome 扩展（一次）',
-     d:`打开 <a href="chrome://extensions">chrome://extensions</a> → 右上角"开发者模式" → "加载已解压的扩展程序" → 选择文件夹：`,
-     act:`<code>${esc(s.extension.dir)}</code> <button class="ghost mini" data-copy="const:${esc(s.extension.dir)}">复制路径</button>
-          <button class="ghost mini" id="mkExt">我已加载 ✓</button>`},
+    {done:extLoaded, t:'打开专用浏览器（扩展已内置，一次）',
+     d:'在右侧点任意一个网站 → 弹出专用浏览器（独立配置，扩展已装好，<b>无需手动安装</b>）。首次：登录网站 + 第②步贴令牌；之后每次双击程序、点一下网站即可。',
+     act:`<button class="ghost mini" id="mkExt">我已打开 ✓</button>`},
     {done:tokenDone, t:'配对令牌（一次）',
      d:'扩展弹窗 → "设置" → 粘贴令牌 → 保存并连接；顶部状态点变绿即可。',
      act:`<code>${esc(s.token)}</code> <button class="ghost mini" data-copy="const:${esc(s.token)}">复制令牌</button>
           <button class="ghost mini" id="mkToken">我已配对 ✓</button>`},
-    {done:anySession, t:'打开专用页',
-     d:'从右边选一个网站，新开标签页登录并开全新会话；刷新后这里会自动出现会话。'},
+    {done:anySession, t:'登录并开全新会话',
+     d:'在专用浏览器里登录该网站、开一个全新会话；会话会自动出现在这里。'},
     {done:boundDone, t:'绑定会话',
      d: boundDone? '端点已绑定当前会话，Cursor 可以直接用。'
                  : '在下方"专用页会话"里点"绑定到此会话"（页面刷新后 ID 会变，随时可换绑）。'},

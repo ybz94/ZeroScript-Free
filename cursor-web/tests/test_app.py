@@ -220,6 +220,59 @@ class DesktopAppTests(unittest.TestCase):
         """Native window renders ('loaded' fires) => no fallback, no destroy."""
         self._run_fake_webview_scenario('fast', False, 17744)
 
+    def test_dedicated_browser_command(self):
+        """The dedicated-browser argv must carry a private profile + the
+        pre-loaded extension + the target site (no manual install)."""
+        sys.path.insert(0, str(CURSOR_WEB))
+        try:
+            import app as appmod
+            edge = r'C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe'
+            prof, ext = r'E:\app\cursor-web-profile', r'E:\app\extension'
+            argv = appmod._dedicated_browser_command(edge, prof, ext, 'https://chat.deepseek.com')
+            self.assertEqual(argv[0], edge)
+            self.assertIn('--user-data-dir=' + prof, argv)
+            self.assertIn('--load-extension=' + ext, argv)
+            self.assertIn('--disable-extensions-except=' + ext, argv)
+            self.assertIn('https://chat.deepseek.com', argv)
+        finally:
+            sys.path.pop(0)
+
+    def test_launch_browser_endpoint(self):
+        """/api/launch-browser opens the dedicated browser for the chosen site
+        (launcher mocked; unknown site => 400)."""
+        with tempfile.TemporaryDirectory() as tmp:
+            script = (
+                "import asyncio, json, os, sys\n"
+                f"sys.path.insert(0, r'{CURSOR_WEB}')\n"
+                f"os.environ['CURSOR_WEB_TOKEN_FILE'] = r'{tmp}/t1'\n"
+                f"os.environ['CURSOR_WEB_ENDPOINT_TOKEN_FILE'] = r'{tmp}/t2'\n"
+                "os.environ['CURSOR_WEB_PORT'] = '17754'\n"
+                "import app as appmod\n"
+                "calls = []\n"
+                "appmod._launch_dedicated_browser = lambda ext_dir, url, profile_dir: "
+                "(calls.append((ext_dir, url, profile_dir)) or ('fake-edge', None))\n"
+                "async def main():\n"
+                "    import httpx\n"
+                "    center = appmod.Center('ext-dir', bridge_port=17754, endpoint_port=17755, ui_port=17756)\n"
+                "    await center.start()\n"
+                "    try:\n"
+                "        async with httpx.AsyncClient(base_url='http://127.0.0.1:17756') as ui:\n"
+                "            r = await ui.post('/api/launch-browser', json={'site':'deepseek'})\n"
+                "            assert r.status_code==200 and r.json()['ok'], r.text\n"
+                "            assert calls and calls[0][1]=='https://chat.deepseek.com', calls\n"
+                "            r2 = await ui.post('/api/launch-browser', json={'site':'nope'})\n"
+                "            assert r2.status_code==400, r2.text\n"
+                "    finally:\n"
+                "        await center.shutdown()\n"
+                "    print('LAUNCH-BROWSER-OK')\n"
+                "asyncio.run(main())\n"
+            )
+            r = subprocess.run([sys.executable, "-c", script],
+                               capture_output=True, text=True, timeout=90,
+                               cwd=str(CURSOR_WEB))
+            self.assertIn("LAUNCH-BROWSER-OK", r.stdout,
+                          f"stdout:\n{r.stdout[-2000:]}\nstderr:\n{r.stderr[-2000:]}")
+
 
 if __name__ == "__main__":
     unittest.main()

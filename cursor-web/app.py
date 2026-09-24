@@ -30,7 +30,7 @@ ENDPOINT_PORT = int(os.getenv('CURSOR_WEB_ENDPOINT_PORT', '17615'))
 UI_PORT = int(os.getenv('CURSOR_WEB_UI_PORT', '17616'))
 MODEL = 'web-ai'
 VERSION = '0.4.23'
-BUILD_ID = 'b5'  # printed in the banner: proves which build is actually running
+BUILD_ID = 'b6'  # printed in the banner: proves which build is actually running
 
 SITES = [
     ('deepseek', 'DeepSeek', 'https://chat.deepseek.com'),
@@ -210,9 +210,26 @@ class Center:
                 self.external_stop.set()
             return JSONResponse({'ok': True})
 
+        async def launch_browser(request):
+            # Open a dedicated browser (private profile + extension pre-loaded)
+            # pointed at the chosen AI site - no manual extension install.
+            data = await request.json()
+            site = str(data.get('site') or 'deepseek')
+            site_url = {pid: url for pid, _name, url in SITES}.get(site)
+            if not site_url:
+                return JSONResponse({'ok': False, 'error': f'未知站点: {site}'}, status_code=400)
+            profile_dir = str(Path(_stable_dir()) / 'cursor-web-profile')
+            label, _proc = _launch_dedicated_browser(str(self.ext_dir), site_url, profile_dir)
+            if not label:
+                return JSONResponse({'ok': False,
+                                     'error': '未找到 Edge/Chrome，无法打开专用浏览器'}, status_code=500)
+            print(f'[center] 专用浏览器已打开（{label}）→ {site_url}', flush=True)
+            return JSONResponse({'ok': True, 'label': label, 'url': site_url})
+
         app = Starlette(routes=[Route('/', index), Route('/api/status', status),
                                 Route('/api/rebind', rebind, methods=['POST']),
-                                Route('/api/stop', stop, methods=['POST'])])
+                                Route('/api/stop', stop, methods=['POST']),
+                                Route('/api/launch-browser', launch_browser, methods=['POST'])])
         cfg2 = uvicorn.Config(app, host='127.0.0.1', port=self.ui_port, log_level='warning')
         srv2 = uvicorn.Server(cfg2)
         self._servers.append(srv2)
@@ -344,6 +361,31 @@ def _open_system_app_window(ui_url):
         return 'default browser (normal tab)', None
     except Exception:
         return None, None
+
+
+def _dedicated_browser_command(browser_exe, profile_dir, ext_dir, url):
+    """argv to open a DEDICATED browser instance: private profile + our
+    extension pre-loaded (no chrome://extensions, no manual install)."""
+    return [
+        browser_exe,
+        f'--user-data-dir={profile_dir}',
+        f'--load-extension={ext_dir}',
+        f'--disable-extensions-except={ext_dir}',
+        url,
+    ]
+
+
+def _launch_dedicated_browser(ext_dir, url, profile_dir):
+    """Launch the system browser as a dedicated instance with the extension
+    pre-loaded, pointed at `url`. Returns (label, Popen) or (None, None)."""
+    import subprocess
+    for exe, label in _find_system_browsers():
+        try:
+            proc = subprocess.Popen(_dedicated_browser_command(exe, profile_dir, ext_dir, url))
+            return label, proc
+        except Exception:
+            continue
+    return None, None
 
 
 def _wait_port(port, tries=100, delay=0.15):
