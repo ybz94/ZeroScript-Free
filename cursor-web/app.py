@@ -482,6 +482,24 @@ class Center:
         fm._root_override = self.file_mcp_root
         return fm._token()
 
+    def _sync_mcp_url_env(self):
+        """Publish the public MCP URL (with token) to the endpoint process
+        env while BOTH the tunnel and the in-process MCP are up. The prompt
+        builder then auto-carries the connection to the webpage - the user
+        never pastes the address by hand."""
+        url = None
+        if self.tunnel_url and self.file_mcp_root:
+            running = self._mcp_task is not None and not self._mcp_task.done()
+            if running:
+                try:
+                    url = f'{self.tunnel_url}/mcp?token={self._file_mcp_token()}'
+                except Exception:
+                    url = None
+        if url:
+            os.environ['ZW_FILE_MCP_URL'] = url
+        else:
+            os.environ.pop('ZW_FILE_MCP_URL', None)
+
     async def _start_file_mcp(self):
         """Run the read-only file MCP in-process (no separate Python needed)."""
         if not self.file_mcp_root or not Path(self.file_mcp_root).is_dir():
@@ -498,6 +516,7 @@ class Center:
         self._mcp_server = srv
         self._mcp_task = asyncio.create_task(srv.serve())
         self._servers.append(srv)  # shutdown() stops it too
+        self._sync_mcp_url_env()  # tunnel may already be up
         print(f'[file-mcp] 进程内启动：{self.file_mcp_root} → 127.0.0.1:{self.file_mcp_port}', flush=True)
         return True, ''
 
@@ -511,6 +530,7 @@ class Center:
                 await asyncio.wait_for(asyncio.shield(task), timeout=5)
             except Exception:
                 pass
+        self._sync_mcp_url_env()
         print('[file-mcp] 已停止', flush=True)
 
     def file_mcp_state(self):
@@ -610,10 +630,12 @@ class Center:
                 url = _tunnel_url_from_line(text)
                 if url and not self.tunnel_url:
                     self.tunnel_url = url
+                    self._sync_mcp_url_env()
                     print(f'[tunnel] 隧道地址：{self.tunnel_url}', flush=True)
         finally:
             if self.tunnel_proc is proc:
                 self.tunnel_url = None
+                self._sync_mcp_url_env()
                 print('[tunnel] 隧道已退出', flush=True)
 
     async def _stop_tunnel(self):
@@ -626,6 +648,7 @@ class Center:
             except Exception:
                 proc.kill()
                 await proc.wait()
+        self._sync_mcp_url_env()
         print('[tunnel] 隧道已停止', flush=True)
 
     def tunnel_state(self):

@@ -155,7 +155,7 @@ a.site .pid{margin-left:auto;font-size:10px;color:var(--muted);font-family:ui-mo
       <div class="hint" id="tunnelStatus"></div>
       <div class="hint" id="tunnelManual" style="display:none">下载慢/失败？浏览器打开 <a href="#">cloudflared 官方下载页</a>，下载 <b>cloudflared-windows-amd64.exe</b> 放到 <b>exe 同目录</b> 即可（程序自动识别）。</div>
       <div class="kv" id="mcpConnRow" style="display:none;margin-top:4px"><span class="k">连接地址（含 token）</span><span class="v mono" id="mcpConn"></span><button class="ghost mini" data-copy="mcpConn">复制</button></div>
-      <div class="hint">网页端：在专用网页里连接上面这个地址（MCP 链接填它），然后勾选下一项。</div>
+      <div class="hint">隧道启动后，本程序会<b>自动把上面这个地址带进每条发给网页的消息</b>，AI 自己会连接，你不用手动粘贴（新对话里也可手动把地址发给它，效果相同）。然后勾选下一项。</div>
       <label style="display:flex;align-items:center;gap:6px;margin-top:8px;cursor:pointer">
         <input type="checkbox" id="fileExtern"> 网页端开启文件外置（文件读取结果替换为引用，不占预算）
       </label>

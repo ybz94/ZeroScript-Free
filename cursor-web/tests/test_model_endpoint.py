@@ -360,6 +360,26 @@ class EndpointTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn('z' * 5000, prompt)  # file contents did NOT go through the input box
         self.assertIn('file MCP', prompt)  # protocol instructs the model to fetch
 
+    async def test_file_mcp_connection_is_auto_carried_in_prompt(self):
+        """While tunnel + in-process MCP are up, the desktop app sets
+        ZW_FILE_MCP_URL and every outgoing prompt carries the connection -
+        the user never pastes the MCP address by hand."""
+        self.web.provider = 'arena'
+        os.environ['ZW_FILE_MCP_URL'] = 'https://abc-def.trycloudflare.com/mcp?token=tok123'
+        try:
+            r = await self.post(messages=[{'role': 'user', 'content': 'hi'}])
+        finally:
+            os.environ.pop('ZW_FILE_MCP_URL')
+        self.assertEqual(r.status_code, 200, r.text)
+        prompt = self.web.sent[0]['prompt']
+        self.assertIn('https://abc-def.trycloudflare.com/mcp?token=tok123', prompt)
+        self.assertIn('list_dir, read_file', prompt)
+        self.assertIn('connect to it now', prompt)
+        # without the env var the note is gone (opt-in, no noise otherwise)
+        r = await self.post(messages=[{'role': 'user', 'content': 'hi again'}])
+        self.assertEqual(r.status_code, 200, r.text)
+        self.assertNotIn('trycloudflare.com/mcp', self.web.sent[-1]['prompt'])
+
     async def test_guardrail_still_blocks_unfoldable_oversize(self):
         """Folding only shrinks stale tool results; a huge USER message is
         never folded, so the budget guardrail must still refuse it."""
