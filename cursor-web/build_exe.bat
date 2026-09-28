@@ -65,11 +65,15 @@ if errorlevel 1 (
 
 echo.
 echo   [3/3] 打包中（PyInstaller 约 2-5 分钟，请耐心等待）...
-REM  文件 MCP 在 exe 进程内运行（mcp 库必须完整打包进去）
+REM  文件 MCP 在 exe 进程内运行。注意：不能用 --collect-all mcp ——
+REM  mcp.cli 子模块在导入时会 sys.exit(1)（它需要命令行/typer），
+REM  会把整个打包搞挂。exe 只用 mcp 的服务端，collect-submodules
+REM  只收 mcp.server / mcp.shared（不触碰 cli）。
 %PY% -m PyInstaller --noconfirm --onefile --windowed --name CursorWebAssistant ^
   --add-data "web;web" --add-data "extension;extension" ^
   --collect-all webview ^
-  --collect-all mcp ^
+  --collect-submodules mcp.server ^
+  --collect-submodules mcp.shared ^
   --hidden-import appdirs ^
   --hidden-import uvicorn.loops.auto ^
   app.py

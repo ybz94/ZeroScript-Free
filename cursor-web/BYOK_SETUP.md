@@ -723,7 +723,7 @@ b11 的文件 MCP 还要自己开终端跑 `file_mcp.py` + `cloudflared tunnel`�
 - 文件 MCP：`uvicorn` 任务跑在 exe 进程内（`app.py` 管理生命周期，随程序启停；端口可改，默认 17618）；`file_mcp.py` 保留，作为独立运行方式（`ZW_FILE_MCP_ROOT`/环境变量那套照旧）。
 - 隧道：cloudflared 仍是独立进程（它**就是**你机器到 Cloudflare 边缘的连接，无法嵌入别的程序）——但**下载/启动（隐藏窗口）/抓地址/停止**全部由 exe 代劳，UI 上有状态与按钮。
 - 认证：除 Bearer 头外，MCP 网关现在也接受 `?token=` 查询参数（网页粘贴 URL 场景）。
-- 打包：`build_exe.bat` 增加 `--collect-all mcp`（mcp 库完整进 exe）。
+- 打包：`build_exe.bat` 用 `--collect-submodules mcp.server --collect-submodules mcp.shared` 收 mcp 库（**不能用 `--collect-all mcp`**：mcp 的 CLI 子模块在导入时会 `sys.exit(1)`，会把整个打包搞挂；exe 只用 mcp 的服务端，不需要 CLI）。
 
 **须知**：
 
