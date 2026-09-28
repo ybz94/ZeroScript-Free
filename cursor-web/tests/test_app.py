@@ -417,6 +417,55 @@ class ByokEndpointTests(unittest.TestCase):
                           f"stdout:\n{r.stdout[-2000:]}\nstderr:\n{r.stderr[-2000:]}")
 
 
+class DownloadFileTests(unittest.TestCase):
+    """cloudflared 下载：字节级进度、完成落盘、HTTP 错误路径。"""
+
+    def _serve(self, handler_cls, directory):
+        import http.server
+        srv = http.server.ThreadingHTTPServer(('127.0.0.1', 0), handler_cls)
+        import threading
+        t = threading.Thread(target=srv.serve_forever, daemon=True)
+        t.start()
+        return srv
+
+    def test_download_with_progress_and_error(self):
+        import functools
+        import http.server
+        import app as appmod
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp = Path(tmp)
+            payload = bytes(range(256)) * 4096  # 1MB
+            (tmp / 'cloudflared.exe').write_bytes(payload)
+
+            class H(http.server.SimpleHTTPRequestHandler):
+                def __init__(self, *a, **kw):
+                    super().__init__(*a, directory=str(tmp), **kw)
+                def log_message(self, *a):
+                    pass
+
+            srv = self._serve(H, tmp)
+            port = srv.server_address[1]
+            try:
+                got, seen = [], None
+                def cb(g, t):
+                    got.append((g, t))
+                dst = tmp / 'out' / 'cloudflared.exe'
+                dst.parent.mkdir()
+                r_got, r_total = appmod.download_file(f'http://127.0.0.1:{port}/cloudflared.exe', dst, cb)
+                self.assertEqual(dst.read_bytes(), payload, 'bytes differ')
+                self.assertEqual(r_got, len(payload))
+                self.assertEqual(got[-1][0], len(payload), 'progress ended short')
+                self.assertEqual(got[-1][1], len(payload), 'content-length surfaced')
+                self.assertEqual(got[0], (0, len(payload)), 'first callback is (0, total)')
+                # 404 path raises
+                with self.assertRaises(Exception):
+                    appmod.download_file(f'http://127.0.0.1:{port}/nope.exe', tmp / 'x')
+                self.assertFalse((tmp / 'x').exists(), 'partial file must not be renamed on error')
+            finally:
+                srv.shutdown()
+                srv.server_close()
+
+
 class TunnelUrlTests(unittest.TestCase):
     def test_tunnel_url_from_line(self):
         import app as appmod
@@ -492,6 +541,11 @@ class FileMcpInProcessTests(unittest.TestCase):
                 "            assert 'cloudflared' in st['tunnel'] and st['tunnel']['running'] is False, st['tunnel']\n"
                 "            r = await ui.post('/api/tunnel', json={'action': 'start'})\n"
                 "            assert r.status_code == 500 and 'cloudflared' in r.json()['error'], r.text\n"
+                "            r = await ui.post('/api/pick-dir', json={'path': ''})\n"
+                "            assert r.status_code == 500 and '直接输入' in r.json()['error'], r.text\n"
+                "            st = (await ui.get('/api/status')).json()\n"
+                "            assert st['tunnel']['cloudflared_downloaded'] == 0 and st['tunnel']['cloudflared_error'] is None, st['tunnel']\n"
+                "            assert 'releases' in st['tunnel']['cloudflared_page'], st['tunnel']\n"
                 "            import pathlib; stable = pathlib.Path(os.environ['CURSOR_WEB_STABLE_DIR'])\n"
                 "            fake = stable / 'cloudflared.exe'\n"
                 "            fake.write_text('#!/bin/sh\\necho \"Request URL: https://abc-def.trycloudflare.com\"\\nsleep 300\\n')\n"

@@ -62,6 +62,51 @@ def _tunnel_url_from_line(text):
     return m.group(0) if m else None
 
 
+def download_file(url, dst, progress_cb=None):
+    """Stream a URL to `dst` (via a .part temp file) with byte-level progress.
+    Returns (bytes_downloaded, content_length). Raises on HTTP/IO errors."""
+    import urllib.request
+    dst = Path(dst)
+    tmp = dst.with_suffix(dst.suffix + '.part')
+    req = urllib.request.Request(url, headers={'User-Agent': 'CursorWebAssistant/0.4.23'})
+    with urllib.request.urlopen(req, timeout=30) as resp:
+        total = int(resp.headers.get('Content-Length') or 0)
+        if progress_cb:
+            progress_cb(0, total)
+        got = 0
+        with open(tmp, 'wb') as f:
+            while True:
+                chunk = resp.read(262144)
+                if not chunk:
+                    break
+                f.write(chunk)
+                got += len(chunk)
+                if progress_cb:
+                    progress_cb(got, total)
+    tmp.replace(dst)
+    return got, total
+
+
+def _pick_directory_windows(initial=''):
+    """Native folder picker via PowerShell + System.Windows.Forms
+    (no Python dependency). Returns the selected path or None."""
+    cmd = ("$ErrorActionPreference='Stop'; Add-Type -AssemblyName System.Windows.Forms; "
+           "$d=New-Object System.Windows.Forms.FolderBrowserDialog; "
+           "$d.Description='Select project directory';")
+    if initial:
+        cmd += "$d.SelectedPath='" + initial.replace("'", "''") + "';"
+    cmd += "if($d.ShowDialog() -eq 'OK'){Write-Output $d.SelectedPath}"
+    flags = getattr(subprocess, 'CREATE_NO_WINDOW', 0)
+    try:
+        proc = subprocess.run(
+            ['powershell', '-NoProfile', '-WindowStyle', 'Hidden', '-Command', cmd],
+            capture_output=True, timeout=180, creationflags=flags)
+        lines = [l.strip() for l in proc.stdout.decode(errors='replace').splitlines() if l.strip()]
+        return lines[-1] if lines else None
+    except Exception:
+        return None
+
+
 class _TimestampedStream:
     """Wraps the log file so every line is prefixed with HH:MM:SS - the exe
     log reads like a timeline, which makes remote diagnosis (user sends the
@@ -187,6 +232,10 @@ class Center:
         self.tunnel_proc = None
         self.tunnel_url = None
         self.cloudflared_downloading = False
+        self.cloudflared_downloaded = 0
+        self.cloudflared_total = 0
+        self.cloudflared_speed = 0.0
+        self.cloudflared_error = None
         self._tunnel_reader_task = None
 
     def _load_config(self):
@@ -366,6 +415,20 @@ class Center:
                 return JSONResponse({'ok': True, 'downloading': True})
             return JSONResponse({'ok': True, 'tunnel': self.tunnel_state()})
 
+        async def pick_dir(request):
+            data = await request.json()
+            initial = str(data.get('path') or '').strip()
+            if sys.platform != 'win32':
+                return JSONResponse({'ok': False,
+                                     'error': '目录选择窗口仅 Windows 支持；请直接输入路径。'},
+                                    status_code=500)
+            path = await asyncio.to_thread(_pick_directory_windows, initial)
+            if not path:
+                return JSONResponse({'ok': False,
+                                     'error': '没有打开选择窗口（或你点了取消）。请直接输入路径。'},
+                                    status_code=500)
+            return JSONResponse({'ok': True, 'path': path})
+
         app = Starlette(routes=[Route('/', index), Route('/api/status', status),
                                 Route('/api/rebind', rebind, methods=['POST']),
                                 Route('/api/stop', stop, methods=['POST']),
@@ -373,7 +436,8 @@ class Center:
                                 Route('/api/byok', byok, methods=['POST']),
                                 Route('/api/config', config, methods=['POST']),
                                 Route('/api/file-mcp', file_mcp_cfg, methods=['POST']),
-                                Route('/api/tunnel', tunnel, methods=['POST'])])
+                                Route('/api/tunnel', tunnel, methods=['POST']),
+                                Route('/api/pick-dir', pick_dir, methods=['POST'])])
         cfg2 = uvicorn.Config(app, host='127.0.0.1', port=self.ui_port, log_level='warning')
         srv2 = uvicorn.Server(cfg2)
         self._servers.append(srv2)
@@ -468,6 +532,7 @@ class Center:
 
     CLOUDFLARED_DL = ('https://github.com/cloudflare/cloudflared/releases/latest/download/'
                       'cloudflared-windows-amd64.exe')
+    CLOUDFLARED_PAGE = 'https://github.com/cloudflare/cloudflared/releases/latest'
 
     def _cloudflared_path(self):
         cands = [Path(_stable_dir()) / 'cloudflared.exe',
@@ -485,19 +550,29 @@ class Center:
         if self.cloudflared_downloading:
             return
         self.cloudflared_downloading = True
-        import urllib.request
+        self.cloudflared_error = None
+        self.cloudflared_downloaded = 0
+        self.cloudflared_total = 0
+        self.cloudflared_speed = 0.0
+        start = time.time()
+
+        def _progress(got, total):
+            self.cloudflared_downloaded = got
+            self.cloudflared_total = total
+            elapsed = time.time() - start
+            self.cloudflared_speed = (got / elapsed) if elapsed > 0 else 0.0
 
         def _dl():
-            dst = Path(_stable_dir()) / 'cloudflared.exe'
-            tmp = dst.with_suffix('.exe.part')
-            urllib.request.urlretrieve(self.CLOUDFLARED_DL, tmp)
-            tmp.replace(dst)
+            return download_file(self.CLOUDFLARED_DL,
+                                 Path(_stable_dir()) / 'cloudflared.exe', _progress)
 
         try:
-            await asyncio.to_thread(_dl)
-            print('[tunnel] cloudflared.exe 下载完成', flush=True)
+            got, total = await asyncio.to_thread(_dl)
+            print(f'[tunnel] cloudflared.exe 下载完成（{got // 1048576}MB）', flush=True)
         except Exception as exc:
-            print(f'[tunnel] cloudflared 下载失败：{exc}（可手动下载放到程序目录）', flush=True)
+            self.cloudflared_error = str(exc).splitlines()[0][:200]
+            print(f'[tunnel] cloudflared 下载失败：{self.cloudflared_error}'
+                  f'（手动下载：{self.CLOUDFLARED_PAGE}）', flush=True)
         finally:
             self.cloudflared_downloading = False
 
@@ -557,6 +632,11 @@ class Center:
         exe = self._cloudflared_path()
         return {'cloudflared': str(exe) if exe else None,
                 'cloudflared_downloading': self.cloudflared_downloading,
+                'cloudflared_downloaded': self.cloudflared_downloaded,
+                'cloudflared_total': self.cloudflared_total,
+                'cloudflared_speed': self.cloudflared_speed,
+                'cloudflared_error': self.cloudflared_error,
+                'cloudflared_page': self.CLOUDFLARED_PAGE,
                 'running': bool(self.tunnel_proc and self.tunnel_proc.returncode is None),
                 'url': self.tunnel_url}
 

@@ -712,9 +712,9 @@ b11 的文件 MCP 还要自己开终端跑 `file_mcp.py` + `cloudflared tunnel`�
 
 **现在窗口的「文件外置」区（Cursor 连接卡片内）**：
 
-1. **项目目录**：填项目路径（如 `E:\你的项目`）。
+1. **项目目录**：点**「浏览…」**弹出系统目录选择窗口（或手动输入路径）。
 2. 勾选**「启用文件 MCP（进程内运行）」**→ 自动保存并启动。文件 MCP 直接跑在 exe 进程里（不再需要单独跑 Python/file_mcp.py），仍绑 `127.0.0.1`、仍只读、仍带 token（项目根 `.file-mcp-token` 自动生成）。
-3. 点**「下载 cloudflared」**（首次，约 55MB，官方 GitHub release，放到 exe 同目录）→ 点**「启动隧道」**。程序后台自动启动 cloudflared（无窗口）并抓取它生成的 `https://….trycloudflare.com` 地址。
+3. 点**「下载 cloudflared」**（首次，约 55MB，官方 GitHub release，放到 exe 同目录）。状态行显示**实时进度**（已下/总大小/速度）；国内直连 GitHub 可能很慢或卡死——卡住不动或失败时，用浏览器打开提示里的**官方下载页**手动下 `cloudflared-windows-amd64.exe` 放到 exe 同目录（程序自动识别）。然后点**「启动隧道」**：程序后台自动启动 cloudflared（无窗口）并抓取它生成的 `https://….trycloudflare.com` 地址。
 4. 显示**「连接地址（含 token）」**= 隧道地址 + `/mcp?token=…`（token 走 URL 查询参数，方便直接粘进网页的 MCP 设置）。
 5. 在专用网页里连上这个 MCP（按你之前实测的方式给网页这个地址），回来勾选**「网页端开启文件外置」**。
 

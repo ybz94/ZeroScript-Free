@@ -142,7 +142,8 @@ a.site .pid{margin-left:auto;font-size:10px;color:var(--muted);font-family:ui-mo
         <input type="checkbox" id="mcpEnabled"> 启用文件 MCP（<b>进程内运行</b>，无需命令行）
       </label>
       <div class="kv" style="margin-top:6px"><span class="k">项目目录</span>
-        <input id="mcpRoot" class="mono" placeholder="例如 E:\ZeroScript-Free" style="flex:1;min-width:150px;background:#0e1116;border:1px solid #2a2f3a;border-radius:6px;color:inherit;padding:4px 8px;font-size:12px">
+        <input id="mcpRoot" class="mono" placeholder="例如 E:\ZeroScript-Free" style="flex:1;min-width:150px;background:var(--card2);border:1px solid var(--line);border-radius:6px;color:var(--text);padding:4px 8px;font-size:12px">
+        <button class="ghost mini" id="mcpPick">浏览…</button>
         <button class="ghost mini" id="mcpSave">保存并启动</button>
       </div>
       <div class="hint" id="mcpStatus"></div>
@@ -152,6 +153,7 @@ a.site .pid{margin-left:auto;font-size:10px;color:var(--muted);font-family:ui-mo
         <button class="ghost mini" id="tunnelDl">下载 cloudflared</button>
       </div>
       <div class="hint" id="tunnelStatus"></div>
+      <div class="hint" id="tunnelManual" style="display:none">下载慢/失败？浏览器打开 <a href="#">cloudflared 官方下载页</a>，下载 <b>cloudflared-windows-amd64.exe</b> 放到 <b>exe 同目录</b> 即可（程序自动识别）。</div>
       <div class="kv" id="mcpConnRow" style="display:none;margin-top:4px"><span class="k">连接地址（含 token）</span><span class="v mono" id="mcpConn"></span><button class="ghost mini" data-copy="mcpConn">复制</button></div>
       <div class="hint">网页端：在专用网页里连接上面这个地址（MCP 链接填它），然后勾选下一项。</div>
       <label style="display:flex;align-items:center;gap:6px;margin-top:8px;cursor:pointer">
@@ -245,10 +247,24 @@ function renderFileMcp(s){
   if (ms) ms.textContent = fm.enabled ? (fm.running ? '✓ 文件 MCP 运行中 · 本机 ' + fm.local_url : '✗ 未运行') : '未启用';
   const ts = $('tunnelStatus');
   if (ts){
+    const mb = n => n ? (n/1048576).toFixed(1) + 'MB' : '';
     let t = '隧道：' + (tn.running ? (tn.url || '运行中（地址生成中…）') : '未运行');
-    if (!tn.cloudflared) t += ' · cloudflared 未下载（点「下载 cloudflared」）';
-    else if (tn.cloudflared_downloading) t += ' · cloudflared 下载中…';
+    if (!tn.cloudflared){
+      if (tn.cloudflared_downloading){
+        t += ' · cloudflared 下载中 ' + mb(tn.cloudflared_downloaded) + (tn.cloudflared_total ? ' / ' + mb(tn.cloudflared_total) : '')
+           + (tn.cloudflared_speed ? '（' + (tn.cloudflared_speed/1048576).toFixed(2) + 'MB/s）' : '（无字节变化＝网络卡住，见下方手动下载）');
+      } else if (tn.cloudflared_error){
+        t += ' · cloudflared 下载失败：' + tn.cloudflared_error;
+      } else {
+        t += ' · cloudflared 未下载';
+      }
+    }
     ts.textContent = t;
+    const manual = $('tunnelManual');
+    if (manual){
+      manual.style.display = tn.cloudflared ? 'none' : '';
+      if (tn.cloudflared_page) manual.querySelector('a').href = tn.cloudflared_page;
+    }
   }
   const conn = $('mcpConn'), row = $('mcpConnRow');
   if (row && conn){ const v = fm.connect_url || ''; conn.textContent = v || '—'; row.style.display = v ? '' : 'none'; }
@@ -268,6 +284,15 @@ $('mcpSave').onclick = async () => {
   finally { btn.disabled = false; }
 };
 $('mcpEnabled').onchange = () => $('mcpSave').click();
+$('mcpPick').onclick = async () => {
+  $('mcpPick').disabled = true;
+  try {
+    const {ok, j} = await postJson('/api/pick-dir', {path: $('mcpRoot').value.trim()});
+    if (!ok || !j.ok) { if (j.error && !/取消/.test(j.error)) alert(j.error); }
+    else { $('mcpRoot').value = j.path; $('mcpRoot')._synced = j.path; }
+  } catch(e){ alert('打开选择窗口失败: ' + e.message); }
+  finally { $('mcpPick').disabled = false; }
+};
 $('tunnelStart').onclick = async () => {
   const {ok, j} = await postJson('/api/tunnel', {action:'start'});
   if (!ok || !j.ok) alert(j.error || '启动隧道失败'); else { toast('隧道启动中…'); refresh(); }
