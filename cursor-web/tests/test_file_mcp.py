@@ -95,6 +95,14 @@ class FileMcpTests(unittest.IsolatedAsyncioTestCase):
                         esc = await s.call_tool('read_file', {'path': '../outside-root.txt'})
                         esc_text = esc.content[0].text
                         self.assertIn('outside the exposed project root', esc_text)
+                # 4) ?token= query parameter also authenticates (easy URL to paste
+                #    in a webpage's MCP settings)
+                async with streamablehttp_client(f'{url}?token=test-token-123',
+                                                 timeout=10, sse_read_timeout=30) as c:
+                    async with ClientSession(c[0], c[1]) as s:
+                        await s.initialize()
+                        read = await s.call_tool('read_file', {'path': 'src/a.py'})
+                        self.assertIn('line2', read.content[0].text)
             finally:
                 await self._stop(proc)
 

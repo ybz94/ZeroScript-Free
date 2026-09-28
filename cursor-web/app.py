@@ -17,6 +17,7 @@ import argparse
 import asyncio
 import json
 import os
+import re
 import secrets
 import shutil
 import subprocess
@@ -30,7 +31,7 @@ ENDPOINT_PORT = int(os.getenv('CURSOR_WEB_ENDPOINT_PORT', '17615'))
 UI_PORT = int(os.getenv('CURSOR_WEB_UI_PORT', '17616'))
 MODEL = 'web-ai'
 VERSION = '0.4.23'
-BUILD_ID = 'b11'  # printed in the banner: proves which build is actually running
+BUILD_ID = 'b12'  # printed in the banner: proves which build is actually running
 
 SITES = [
     ('deepseek', 'DeepSeek', 'https://chat.deepseek.com'),
@@ -47,9 +48,18 @@ SITES = [
 def _stable_dir():
     """Token files must survive restarts: next to the exe when frozen
     (_MEIPASS is a temp dir that vanishes), else in the cursor-web folder."""
+    env = os.getenv('CURSOR_WEB_STABLE_DIR')
+    if env:
+        return Path(env)
     if getattr(sys, 'frozen', False):
         return Path(sys.executable).resolve().parent
     return HERE
+
+
+def _tunnel_url_from_line(text):
+    """cloudflared quick-tunnel stdout prints the assigned address; grab it."""
+    m = re.search(r'https://[a-zA-Z0-9-]+\.trycloudflare\.com', text)
+    return m.group(0) if m else None
 
 
 class _TimestampedStream:
@@ -167,19 +177,39 @@ class Center:
         self.log_path = None
         self._byok_cache = None
         self.config_path = Path(stable / 'config.json')
-        self.file_extern = self._load_config_flag()
-        # make_prompt reads this env at request time (same process).
+        self._load_config()
         os.environ['ZW_FILE_EXTERN'] = '1' if self.file_extern else '0'
+        # in-process file MCP server
+        self._mcp_server = None
+        self._mcp_task = None
+        self.file_mcp_running = False
+        # cloudflared quick tunnel (child process)
+        self.tunnel_proc = None
+        self.tunnel_url = None
+        self.cloudflared_downloading = False
+        self._tunnel_reader_task = None
 
-    def _load_config_flag(self):
+    def _load_config(self):
+        data = {}
         try:
             data = json.loads(self.config_path.read_text(encoding='utf-8'))
-            return bool(data.get('file_extern', False))
         except Exception:
-            return False
+            pass
+        self.file_extern = bool(data.get('file_extern', False))
+        self.file_mcp_root = str(data.get('file_mcp_root') or '').strip()
+        self.file_mcp_enabled = bool(data.get('file_mcp_enabled', False))
+        try:
+            self.file_mcp_port = int(data.get('file_mcp_port', 17618))
+        except (TypeError, ValueError):
+            self.file_mcp_port = 17618
 
-    def _save_config_flag(self):
-        self.config_path.write_text(json.dumps({'file_extern': self.file_extern}), encoding='utf-8')
+    def _save_config(self):
+        self.config_path.write_text(json.dumps({
+            'file_extern': self.file_extern,
+            'file_mcp_root': self.file_mcp_root,
+            'file_mcp_enabled': self.file_mcp_enabled,
+            'file_mcp_port': self.file_mcp_port,
+        }), encoding='utf-8')
         os.environ['ZW_FILE_EXTERN'] = '1' if self.file_extern else '0'
 
     # -- lifecycle ----------------------------------------------------------
@@ -201,6 +231,10 @@ class Center:
         srv = uvicorn.Server(cfg)
         self._servers.append(srv)
         self._tasks.append(asyncio.create_task(srv.serve(), name='endpoint'))
+        if self.file_mcp_enabled:
+            ok, err = await self._start_file_mcp()
+            if not ok:
+                print(f'[file-mcp] 未启动：{err}', flush=True)
         from starlette.applications import Starlette
         from starlette.responses import HTMLResponse, JSONResponse
         from starlette.routing import Route
@@ -277,22 +311,69 @@ class Center:
 
         async def config(request):
             data = await request.json()
-            if 'file_extern' not in data or not isinstance(data.get('file_extern'), bool):
+            if 'file_extern' in data and not isinstance(data.get('file_extern'), bool):
                 return JSONResponse({'ok': False, 'error': 'file_extern must be a boolean'}, status_code=400)
-            self.file_extern = data['file_extern']
+            self.file_extern = data.get('file_extern', self.file_extern)
             try:
-                self._save_config_flag()
+                self._save_config()
             except Exception as exc:
                 return JSONResponse({'ok': False, 'error': f'保存失败: {exc}'}, status_code=500)
             print(f'[config] 文件外置(file_extern) = {str(self.file_extern).lower()}', flush=True)
             return JSONResponse({'ok': True, 'file_extern': self.file_extern})
+
+        async def file_mcp_cfg(request):
+            data = await request.json()
+            if 'enabled' in data and not isinstance(data.get('enabled'), bool):
+                return JSONResponse({'ok': False, 'error': 'enabled 必须是 true/false'}, status_code=400)
+            if 'root' in data:
+                self.file_mcp_root = str(data.get('root') or '').strip()
+            if 'port' in data:
+                try:
+                    self.file_mcp_port = int(data['port'])
+                except (TypeError, ValueError):
+                    return JSONResponse({'ok': False, 'error': '端口必须是数字'}, status_code=400)
+            if 'enabled' in data:
+                self.file_mcp_enabled = data['enabled']
+            try:
+                self._save_config()
+            except Exception as exc:
+                return JSONResponse({'ok': False, 'error': f'保存失败: {exc}'}, status_code=500)
+            if self.file_mcp_enabled and self._mcp_server is None:
+                ok, err = await self._start_file_mcp()
+                if not ok:
+                    self.file_mcp_enabled = False
+                    self._save_config()
+                    return JSONResponse({'ok': False, 'error': err}, status_code=500)
+            elif not self.file_mcp_enabled and self._mcp_server is not None:
+                await self._stop_file_mcp()
+            return JSONResponse({'ok': True, 'file_mcp': self.file_mcp_state()})
+
+        async def tunnel(request):
+            data = await request.json()
+            action = str(data.get('action') or 'status')
+            if action == 'start':
+                try:
+                    await self._start_tunnel()
+                except Exception as exc:
+                    return JSONResponse({'ok': False, 'error': str(exc)}, status_code=500)
+                return JSONResponse({'ok': True, 'tunnel': self.tunnel_state()})
+            if action == 'stop':
+                await self._stop_tunnel()
+                return JSONResponse({'ok': True, 'tunnel': self.tunnel_state()})
+            if action == 'download':
+                if not self.cloudflared_downloading:
+                    asyncio.create_task(self._download_cloudflared())
+                return JSONResponse({'ok': True, 'downloading': True})
+            return JSONResponse({'ok': True, 'tunnel': self.tunnel_state()})
 
         app = Starlette(routes=[Route('/', index), Route('/api/status', status),
                                 Route('/api/rebind', rebind, methods=['POST']),
                                 Route('/api/stop', stop, methods=['POST']),
                                 Route('/api/launch-browser', launch_browser, methods=['POST']),
                                 Route('/api/byok', byok, methods=['POST']),
-                                Route('/api/config', config, methods=['POST'])])
+                                Route('/api/config', config, methods=['POST']),
+                                Route('/api/file-mcp', file_mcp_cfg, methods=['POST']),
+                                Route('/api/tunnel', tunnel, methods=['POST'])])
         cfg2 = uvicorn.Config(app, host='127.0.0.1', port=self.ui_port, log_level='warning')
         srv2 = uvicorn.Server(cfg2)
         self._servers.append(srv2)
@@ -320,11 +401,164 @@ class Center:
             logging.getLogger(name).setLevel(logging.CRITICAL)
         for s in self._servers:
             s.should_exit = True
+        if self.tunnel_proc:  # stop the cloudflared child too
+            try:
+                self.tunnel_proc.terminate()
+            except Exception:
+                pass
         await asyncio.sleep(0.3)  # let the servers drain gracefully
         for t in self._tasks:
             t.cancel()
         await asyncio.gather(*self._tasks, return_exceptions=True)
         print('\n  已停止：Bridge、端点与控制界面均已关闭。', flush=True)
+
+    # -- file MCP (in-process) + cloudflared tunnel ---------------------------
+    def _file_mcp_token(self):
+        import file_mcp as fm
+        fm._root_override = self.file_mcp_root
+        return fm._token()
+
+    async def _start_file_mcp(self):
+        """Run the read-only file MCP in-process (no separate Python needed)."""
+        if not self.file_mcp_root or not Path(self.file_mcp_root).is_dir():
+            return False, f'项目目录不存在：{self.file_mcp_root or "（未设置）"}'
+        import file_mcp as fm
+        import uvicorn
+        fm._root_override = self.file_mcp_root
+        try:
+            app = fm._auth_app(fm.mcp.streamable_http_app())
+        except Exception as exc:
+            return False, f'文件 MCP 初始化失败：{exc}'
+        srv = uvicorn.Server(uvicorn.Config(app, host='127.0.0.1',
+                                            port=self.file_mcp_port, log_level='warning'))
+        self._mcp_server = srv
+        self._mcp_task = asyncio.create_task(srv.serve())
+        self._servers.append(srv)  # shutdown() stops it too
+        print(f'[file-mcp] 进程内启动：{self.file_mcp_root} → 127.0.0.1:{self.file_mcp_port}', flush=True)
+        return True, ''
+
+    async def _stop_file_mcp(self):
+        srv, task = self._mcp_server, self._mcp_task
+        self._mcp_server = self._mcp_task = None
+        if srv:
+            srv.should_exit = True
+        if task:
+            try:
+                await asyncio.wait_for(asyncio.shield(task), timeout=5)
+            except Exception:
+                pass
+        print('[file-mcp] 已停止', flush=True)
+
+    def file_mcp_state(self):
+        running = self._mcp_task is not None and not self._mcp_task.done()
+        token = None
+        # only touch the token file while the server is up or it already
+        # exists - /api/status polls every 2.5s and must not create files
+        if self.file_mcp_root and (running or (Path(self.file_mcp_root) / '.file-mcp-token').exists()):
+            try:
+                token = self._file_mcp_token()
+            except Exception:
+                token = None
+        local = f'http://127.0.0.1:{self.file_mcp_port}/mcp'
+        connect = f'{self.tunnel_url}/mcp?token={token}' if (self.tunnel_url and token) else None
+        return {'enabled': self.file_mcp_enabled,
+                'running': bool(self._mcp_task is not None and not self._mcp_task.done()),
+                'root': self.file_mcp_root, 'port': self.file_mcp_port,
+                'token': token, 'local_url': local, 'connect_url': connect}
+
+    CLOUDFLARED_DL = ('https://github.com/cloudflare/cloudflared/releases/latest/download/'
+                      'cloudflared-windows-amd64.exe')
+
+    def _cloudflared_path(self):
+        cands = [Path(_stable_dir()) / 'cloudflared.exe',
+                 Path(sys.executable).resolve().parent / 'cloudflared.exe']
+        for p in cands:
+            try:
+                if p.exists():
+                    return p
+            except Exception:
+                pass
+        found = shutil.which('cloudflared')
+        return Path(found) if found else None
+
+    async def _download_cloudflared(self):
+        if self.cloudflared_downloading:
+            return
+        self.cloudflared_downloading = True
+        import urllib.request
+
+        def _dl():
+            dst = Path(_stable_dir()) / 'cloudflared.exe'
+            tmp = dst.with_suffix('.exe.part')
+            urllib.request.urlretrieve(self.CLOUDFLARED_DL, tmp)
+            tmp.replace(dst)
+
+        try:
+            await asyncio.to_thread(_dl)
+            print('[tunnel] cloudflared.exe 下载完成', flush=True)
+        except Exception as exc:
+            print(f'[tunnel] cloudflared 下载失败：{exc}（可手动下载放到程序目录）', flush=True)
+        finally:
+            self.cloudflared_downloading = False
+
+    async def _start_tunnel(self):
+        if self.tunnel_proc and self.tunnel_proc.returncode is None:
+            return
+        exe = self._cloudflared_path()
+        if not exe:
+            raise RuntimeError('未找到 cloudflared.exe：先点「下载 cloudflared」，或把它放到 exe 同目录')
+        if not self._mcp_task or self._mcp_task.done():
+            raise RuntimeError('文件 MCP 未运行，请先启用')
+        flags = getattr(subprocess, 'CREATE_NO_WINDOW', 0)
+        # async subprocess: cancellation-safe (no executor thread left behind
+        # if the child keeps its stdout open), CREATE_NO_WINDOW keeps the
+        # window hidden on Windows.
+        self.tunnel_proc = await asyncio.create_subprocess_exec(
+            str(exe), 'tunnel', '--url', f'http://127.0.0.1:{self.file_mcp_port}',
+            '--no-autoupdate',
+            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT,
+            creationflags=flags)
+        self.tunnel_url = None
+        self._tunnel_reader_task = asyncio.create_task(self._tunnel_reader())
+        self._tasks.append(self._tunnel_reader_task)  # shutdown cancels it
+        print('[tunnel] cloudflared 已启动（等待隧道地址…）', flush=True)
+
+    async def _tunnel_reader(self):
+        proc = self.tunnel_proc
+        try:
+            while proc and proc.stdout:
+                line = await proc.stdout.readline()
+                if not line:
+                    break
+                text = line.decode(errors='replace').rstrip()
+                print(f'[tunnel] {text}', flush=True)
+                url = _tunnel_url_from_line(text)
+                if url and not self.tunnel_url:
+                    self.tunnel_url = url
+                    print(f'[tunnel] 隧道地址：{self.tunnel_url}', flush=True)
+        finally:
+            if self.tunnel_proc is proc:
+                self.tunnel_url = None
+                print('[tunnel] 隧道已退出', flush=True)
+
+    async def _stop_tunnel(self):
+        proc, self.tunnel_proc = self.tunnel_proc, None
+        self.tunnel_url = None
+        if proc and proc.returncode is None:
+            proc.terminate()
+            try:
+                await asyncio.wait_for(proc.wait(), timeout=6)
+            except Exception:
+                proc.kill()
+                await proc.wait()
+        print('[tunnel] 隧道已停止', flush=True)
+
+    def tunnel_state(self):
+        exe = self._cloudflared_path()
+        return {'cloudflared': str(exe) if exe else None,
+                'cloudflared_downloading': self.cloudflared_downloading,
+                'running': bool(self.tunnel_proc and self.tunnel_proc.returncode is None),
+                'url': self.tunnel_url}
 
     # -- state ----------------------------------------------------------------
     async def _poll(self):
@@ -373,6 +607,8 @@ class Center:
             'jobs': self.jobs,
             'byok': self.byok_state(),
             'file_extern': self.file_extern,
+            'file_mcp': self.file_mcp_state(),
+            'tunnel': self.tunnel_state(),
         }
 
 

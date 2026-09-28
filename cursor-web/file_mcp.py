@@ -32,9 +32,12 @@ MAX_CHARS = int(os.getenv('ZW_FILE_MCP_MAX_CHARS', '200000'))
 MAX_ENTRIES = 500
 
 
+_root_override = None  # set by app.py when running in-process (the exe)
+
+
 def _root() -> Path:
-    r = Path(os.getenv('ZW_FILE_MCP_ROOT', str(Path.cwd()))).resolve()
-    return r
+    r = _root_override if _root_override else os.getenv('ZW_FILE_MCP_ROOT', str(Path.cwd()))
+    return Path(r).resolve()
 
 
 def _token() -> str:
@@ -109,9 +112,29 @@ def read_file(path: str, start_line: int = 1, end_line: int = 0) -> dict:
             'showing': f'{start}-{min(end, total)}', 'content': body}
 
 
+def create_app():
+    """ASGI app for in-process use (the exe runs it on its own uvicorn task)."""
+    return _auth_app(mcp.streamable_http_app())
+
+
 def _auth_app(app):
-    """Pure-ASGI bearer-token gate in front of the MCP ASGI app."""
+    """Pure-ASGI bearer-token gate in front of the MCP ASGI app. Accepts the
+    token in the Authorization header OR as a ?token= query parameter
+    (so a webpage that only gets a URL to paste can still authenticate)."""
     token = _token()
+
+    def _check(scope):
+        headers = {k.decode(): v.decode() for k, v in scope.get('headers', [])}
+        auth = headers.get('authorization', '')
+        if auth.startswith('Bearer ') and secrets.compare_digest(auth[7:].strip(), token):
+            return True
+        try:
+            from urllib.parse import parse_qs
+            qs = parse_qs(scope.get('query_string', b'').decode())
+            t = (qs.get('token') or [''])[0]
+            return bool(t) and secrets.compare_digest(t, token)
+        except Exception:
+            return False
 
     async def deny(scope, receive, send):
         from starlette.responses import JSONResponse
@@ -122,9 +145,7 @@ def _auth_app(app):
         if scope['type'] not in ('http', 'websocket'):
             await app(scope, receive, send)
             return
-        headers = {k.decode(): v.decode() for k, v in scope.get('headers', [])}
-        auth = headers.get('authorization', '')
-        if not auth.startswith('Bearer ') or not secrets.compare_digest(auth[7:].strip(), token):
+        if not _check(scope):
             await deny(scope, receive, send)
             return
         await app(scope, receive, send)

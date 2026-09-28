@@ -136,10 +136,29 @@ a.site .pid{margin-left:auto;font-size:10px;color:var(--muted);font-family:ui-mo
       <button class="ghost mini" id="byokLaunch">启动 cursor-byok</button>
     </div>
     <div class="hint" id="byokHint"></div>
-    <label style="display:flex;align-items:center;gap:6px;margin-top:10px;cursor:pointer">
-      <input type="checkbox" id="fileExtern"> <b>文件外置</b>（文件内容走文件 MCP 按需获取，不占输入框预算）
-    </label>
-    <div class="hint">仅当专用网页已连接文件 MCP（file_mcp.py + 隧道）时打开；关闭即恢复原样。详见 BYOK_SETUP「文件外置」节。</div>
+    <div style="margin-top:12px;padding-top:10px;border-top:1px dashed #2a2f3a">
+      <div style="font-weight:600">文件外置（文件内容走文件 MCP，不占输入框）</div>
+      <label style="display:flex;align-items:center;gap:6px;margin-top:8px;cursor:pointer">
+        <input type="checkbox" id="mcpEnabled"> 启用文件 MCP（<b>进程内运行</b>，无需命令行）
+      </label>
+      <div class="kv" style="margin-top:6px"><span class="k">项目目录</span>
+        <input id="mcpRoot" class="mono" placeholder="例如 E:\ZeroScript-Free" style="flex:1;min-width:150px;background:#0e1116;border:1px solid #2a2f3a;border-radius:6px;color:inherit;padding:4px 8px;font-size:12px">
+        <button class="ghost mini" id="mcpSave">保存并启动</button>
+      </div>
+      <div class="hint" id="mcpStatus"></div>
+      <div style="display:flex;gap:6px;margin-top:8px;flex-wrap:wrap">
+        <button class="ghost mini" id="tunnelStart">启动隧道</button>
+        <button class="ghost mini" id="tunnelStop">停止隧道</button>
+        <button class="ghost mini" id="tunnelDl">下载 cloudflared</button>
+      </div>
+      <div class="hint" id="tunnelStatus"></div>
+      <div class="kv" id="mcpConnRow" style="display:none;margin-top:4px"><span class="k">连接地址（含 token）</span><span class="v mono" id="mcpConn"></span><button class="ghost mini" data-copy="mcpConn">复制</button></div>
+      <div class="hint">网页端：在专用网页里连接上面这个地址（MCP 链接填它），然后勾选下一项。</div>
+      <label style="display:flex;align-items:center;gap:6px;margin-top:8px;cursor:pointer">
+        <input type="checkbox" id="fileExtern"> 网页端开启文件外置（文件读取结果替换为引用，不占预算）
+      </label>
+      <div class="hint">未连接 MCP 时此项无害（没有可替换的内容）；关闭即恢复原样。详见 BYOK_SETUP「文件外置」节。</div>
+    </div>
     <div style="margin-top:12px"><button class="danger" id="stopBtn">停止程序</button>
       <span class="s-meta">停止 Bridge、端点与窗口；关闭窗口效果相同。</span></div>
   </div>
@@ -217,6 +236,50 @@ function renderConfig(s){
   // sync from server only when the server value changed since last apply
   if (fe._synced !== !!s.file_extern){ fe._synced = !!s.file_extern; if (!fe.disabled) fe.checked = !!s.file_extern; }
 }
+function renderFileMcp(s){
+  const fm = s.file_mcp || {}, tn = s.tunnel || {};
+  const en = $('mcpEnabled'), root = $('mcpRoot');
+  if (en && en._synced !== !!fm.enabled){ en._synced = !!fm.enabled; en.checked = !!fm.enabled; }
+  if (root && root._synced !== (fm.root||'')){ root._synced = fm.root||''; root.value = fm.root||''; }
+  const ms = $('mcpStatus');
+  if (ms) ms.textContent = fm.enabled ? (fm.running ? '✓ 文件 MCP 运行中 · 本机 ' + fm.local_url : '✗ 未运行') : '未启用';
+  const ts = $('tunnelStatus');
+  if (ts){
+    let t = '隧道：' + (tn.running ? (tn.url || '运行中（地址生成中…）') : '未运行');
+    if (!tn.cloudflared) t += ' · cloudflared 未下载（点「下载 cloudflared」）';
+    else if (tn.cloudflared_downloading) t += ' · cloudflared 下载中…';
+    ts.textContent = t;
+  }
+  const conn = $('mcpConn'), row = $('mcpConnRow');
+  if (row && conn){ const v = fm.connect_url || ''; conn.textContent = v || '—'; row.style.display = v ? '' : 'none'; }
+}
+async function postJson(url, body){
+  const r = await fetch(url, {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body)});
+  return {ok: r.ok, j: await r.json().catch(()=>({}))};
+}
+$('mcpSave').onclick = async () => {
+  const btn = $('mcpSave'); btn.disabled = true;
+  try {
+    const {ok, j} = await postJson('/api/file-mcp', {root: $('mcpRoot').value.trim(), enabled: $('mcpEnabled').checked});
+    if (!ok || !j.ok) alert(j.error || '保存失败');
+    else toast(j.file_mcp && j.file_mcp.running ? '文件 MCP 已启动' : '已保存');
+    refresh();
+  } catch(e){ alert('保存失败: ' + e.message); }
+  finally { btn.disabled = false; }
+};
+$('mcpEnabled').onchange = () => $('mcpSave').click();
+$('tunnelStart').onclick = async () => {
+  const {ok, j} = await postJson('/api/tunnel', {action:'start'});
+  if (!ok || !j.ok) alert(j.error || '启动隧道失败'); else { toast('隧道启动中…'); refresh(); }
+};
+$('tunnelStop').onclick = async () => {
+  const {ok, j} = await postJson('/api/tunnel', {action:'stop'});
+  if (!ok || !j.ok) alert(j.error || '停止失败'); else refresh();
+};
+$('tunnelDl').onclick = async () => {
+  const {ok, j} = await postJson('/api/tunnel', {action:'download'});
+  if (!ok || !j.ok) alert(j.error || '下载失败'); else toast('cloudflared 下载中（约 55MB，需联网）…');
+};
 $('fileExtern').onchange = async () => {
   $('fileExtern').disabled = true;
   try {
@@ -235,6 +298,7 @@ function render(s){
   renderSites(s);
   renderByok(s);
   renderConfig(s);
+  renderFileMcp(s);
   $('ver').textContent = `v${s.app.version} · ${s.app.frozen?'exe':'源码'} · 运行 ${Math.floor(s.app.uptime_s/60)} 分`;
   const ep = s.endpoint, anySession = s.sessions.length>0;
   $('statusline').innerHTML =

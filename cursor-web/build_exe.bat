@@ -65,9 +65,11 @@ if errorlevel 1 (
 
 echo.
 echo   [3/3] 打包中（PyInstaller 约 2-5 分钟，请耐心等待）...
+REM  文件 MCP 在 exe 进程内运行（mcp 库必须完整打包进去）
 %PY% -m PyInstaller --noconfirm --onefile --windowed --name CursorWebAssistant ^
   --add-data "web;web" --add-data "extension;extension" ^
   --collect-all webview ^
+  --collect-all mcp ^
   --hidden-import appdirs ^
   --hidden-import uvicorn.loops.auto ^
   app.py
@@ -87,7 +89,7 @@ for %F in ("%~dp0dist\CursorWebAssistant.exe") do echo     %~xF   %~zF 字节   
 echo.
 echo   运行后日志第一屏应出现:
 echo     [时:分:秒] ……（每行带时间）
-echo     版本: 0.4.23  (构建 b5)
+echo     版本: 0.4.23  (构建 b12)
 echo   如果没有 = 你运行的还是旧 exe，先关掉再重新打包。
 echo.
 echo   以后每天只需双击 dist\CursorWebAssistant.exe

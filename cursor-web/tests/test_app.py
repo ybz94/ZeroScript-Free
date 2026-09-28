@@ -417,5 +417,118 @@ class ByokEndpointTests(unittest.TestCase):
                           f"stdout:\n{r.stdout[-2000:]}\nstderr:\n{r.stderr[-2000:]}")
 
 
+class TunnelUrlTests(unittest.TestCase):
+    def test_tunnel_url_from_line(self):
+        import app as appmod
+        self.assertIsNone(appmod._tunnel_url_from_line('cloudflared 2026.1.0'))
+        self.assertIsNone(appmod._tunnel_url_from_line(''))
+        v = appmod._tunnel_url_from_line('Request URL: https://abc-def.trycloudflare.com')
+        self.assertEqual(v, 'https://abc-def.trycloudflare.com')
+        v = appmod._tunnel_url_from_line('INFO your quick tunnel has been created at https://x-y-z-1.trycloudflare.com')
+        self.assertEqual(v, 'https://x-y-z-1.trycloudflare.com')
+        # non-tunnel URLs are ignored
+        self.assertIsNone(appmod._tunnel_url_from_line('https://example.com/mcp'))
+
+
+class FileMcpInProcessTests(unittest.TestCase):
+    """The exe's promise: file MCP runs IN-PROCESS (no separate Python) and
+    the cloudflared tunnel is managed from the UI. On Linux the tunnel can
+    only be tested up to the cloudflared-binary lookup (Windows-only exe);
+    the MCP half is fully exercised over real HTTP + a real MCP client."""
+
+    def test_file_mcp_in_process_and_tunnel_state(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp = Path(tmp)
+            stable = tmp / 'stable'
+            root = tmp / 'project'
+            stable.mkdir()
+            (root / 'src').mkdir(parents=True)
+            (root / 'src' / 'a.py').write_text('hello-mcp\nworld\n', encoding='utf-8')
+            script = (
+                "import asyncio, os, sys, json, httpx\n"
+                f"sys.path.insert(0, r'{CURSOR_WEB}')\n"
+                f"os.environ['CURSOR_WEB_TOKEN_FILE'] = r'{tmp}/bridge-token'\n"
+                f"os.environ['CURSOR_WEB_ENDPOINT_TOKEN_FILE'] = r'{tmp}/endpoint-token'\n"
+                f"os.environ['CURSOR_WEB_STABLE_DIR'] = r'{stable}'\n"
+                "os.environ['CURSOR_WEB_PORT'] = '17762'\n"
+                "import app as appmod\n"
+                "async def main():\n"
+                "    center = appmod.Center('ext-dir', bridge_port=17762, endpoint_port=17763, ui_port=17764)\n"
+                "    await center.start()\n"
+                "    try:\n"
+                "        async with httpx.AsyncClient(base_url='http://127.0.0.1:17764', timeout=15) as ui:\n"
+                f"            root = r'{root}'\n"
+                "            # not enabled by default\n"
+                "            st = (await ui.get('/api/status')).json()\n"
+                "            assert st['file_mcp']['enabled'] is False and st['file_mcp']['running'] is False, st['file_mcp']\n"
+                "            # enable via the same endpoint the UI button uses\n"
+                "            r = await ui.post('/api/file-mcp', json={'root': root, 'enabled': True, 'port': 17765})\n"
+                "            assert r.status_code == 200 and r.json()['ok'], r.text\n"
+                "            assert r.json()['file_mcp']['running'] is True, r.text\n"
+                "            st = (await ui.get('/api/status')).json()\n"
+                "            assert st['file_mcp']['running'] is True and st['file_mcp']['root'] == root, st['file_mcp']\n"
+                "            token = st['file_mcp']['token']\n"
+                "            assert token, 'token missing in status'\n"
+                "            mcp_url = 'http://127.0.0.1:17765/mcp'\n"
+                "            # persisted to config.json next to the exe\n"
+                f"            cfg = json.load(open(r'{stable}/config.json', encoding='utf-8'))\n"
+                "            assert cfg['file_mcp_root'] == root and cfg['file_mcp_enabled'] is True, cfg\n"
+                "            # real MCP client, Bearer header\n"
+                "            from mcp import ClientSession\n"
+                "            from mcp.client.streamable_http import streamablehttp_client\n"
+                "            async with streamablehttp_client(mcp_url, headers={'Authorization': 'Bearer ' + token},\n"
+                "                                             timeout=10, sse_read_timeout=20) as c:\n"
+                "                async with ClientSession(c[0], c[1]) as s:\n"
+                "                    await s.initialize()\n"
+                "                    read = await s.call_tool('read_file', {'path': 'src/a.py'})\n"
+                "                    assert 'hello-mcp' in read.content[0].text, read.content\n"
+                "            # ... and the ?token= URL the UI shows for pasting\n"
+                "            async with streamablehttp_client(mcp_url + '?token=' + token,\n"
+                "                                             timeout=10, sse_read_timeout=20) as c:\n"
+                "                async with ClientSession(c[0], c[1]) as s:\n"
+                "                    await s.initialize()\n"
+                "                    assert 'world' in (await s.call_tool('read_file', {'path': 'src/a.py'})).content[0].text\n"
+                "            # tunnel state: no cloudflared binary on this box -> managed fields exist\n"
+                "            assert 'cloudflared' in st['tunnel'] and st['tunnel']['running'] is False, st['tunnel']\n"
+                "            r = await ui.post('/api/tunnel', json={'action': 'start'})\n"
+                "            assert r.status_code == 500 and 'cloudflared' in r.json()['error'], r.text\n"
+                "            import pathlib; stable = pathlib.Path(os.environ['CURSOR_WEB_STABLE_DIR'])\n"
+                "            fake = stable / 'cloudflared.exe'\n"
+                "            fake.write_text('#!/bin/sh\\necho \"Request URL: https://abc-def.trycloudflare.com\"\\nsleep 300\\n')\n"
+                "            _os_chmod = __import__('os').chmod\n"
+                "            _os_chmod(fake, 0o755)\n"
+                "            r = await ui.post('/api/tunnel', json={'action': 'start'})\n"
+                "            assert r.status_code == 200 and r.json()['ok'], r.text\n"
+                "            st = None\n"
+                "            for _ in range(50):\n"
+                "                st = (await ui.get('/api/status')).json()\n"
+                "                if st['tunnel']['url']:\n"
+                "                    break\n"
+                "                await asyncio.sleep(0.2)\n"
+                "            assert st['tunnel']['url'] == 'https://abc-def.trycloudflare.com', st['tunnel']\n"
+                "            assert st['tunnel']['running'] is True, st['tunnel']\n"
+                "            assert st['file_mcp']['connect_url'] == 'https://abc-def.trycloudflare.com/mcp?token=' + token, st['file_mcp']\n"
+                "            r = await ui.post('/api/tunnel', json={'action': 'stop'})\n"
+                "            assert r.status_code == 200 and r.json()['ok'], r.text\n"
+                "            st = (await ui.get('/api/status')).json()\n"
+                "            assert st['tunnel']['running'] is False and st['tunnel']['url'] is None, st['tunnel']\n"
+                "            assert st['file_mcp']['connect_url'] is None, st['file_mcp']\n"
+                "            # disable -> server stops\n"
+                "            r = await ui.post('/api/file-mcp', json={'enabled': False})\n"
+                "            assert r.status_code == 200 and r.json()['ok'], r.text\n"
+                "            st = (await ui.get('/api/status')).json()\n"
+                "            assert st['file_mcp']['running'] is False, st['file_mcp']\n"
+                "    finally:\n"
+                "        await center.shutdown()\n"
+                "    print('FILE-MCP-INPROC-OK')\n"
+                "asyncio.run(main())\n"
+            )
+            r = subprocess.run([sys.executable, "-c", script],
+                               capture_output=True, text=True, timeout=90,
+                               cwd=str(CURSOR_WEB))
+            self.assertIn("FILE-MCP-INPROC-OK", r.stdout,
+                          f"stdout:\n{r.stdout[-2000:]}\nstderr:\n{r.stderr[-2000:]}")
+
+
 if __name__ == "__main__":
     unittest.main()
