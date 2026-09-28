@@ -274,6 +274,58 @@ class EndpointTests(unittest.IsolatedAsyncioTestCase):
                          'expected exactly the two newest tool results to survive folding')
         self.assertIn('工具结果已折叠', prompt)
 
+    async def test_pass2_folds_many_medium_results_until_fit(self):
+        """b9 design gap (live 413: tool=27,408 of MEDIUM results): no single
+        result exceeds the 4000 preserve-threshold, so pass 1 folds nothing;
+        pass 2 must fold oldest-first down to the floor until the payload
+        fits, keeping the two newest results intact."""
+        self.web.provider = 'arena'  # 118,000 budget
+        msgs = [{'role': 'system', 'content': 's' * 11000}]
+        for i in range(32):
+            msgs.append({'role': 'assistant', 'content': None, 'tool_calls': [
+                {'id': f'call_{i}', 'type': 'function',
+                 'function': {'name': 'read_file', 'arguments': '{}'}}]})
+            msgs.append({'role': 'tool', 'tool_call_id': f'call_{i}',
+                         'content': 'x' * 3450 + f'M{i}M{i}'})  # ~3,456: under pass-1 threshold
+        msgs.append({'role': 'user', 'content': 'summarize the files you read'})
+        body = {'model': 'web-ai', 'messages': msgs, 'tools': [TOOL]}
+        os.environ['ZW_FOLD_MAX_UNITS'] = '0'  # sanity: unfolded payload is over budget
+        try:
+            with self.assertRaises(endpoint.AdapterError) as caught:
+                endpoint.make_prompt(body, 'feedface01234567', {'provider': 'arena'})
+            self.assertEqual(caught.exception.status, 413)
+        finally:
+            os.environ.pop('ZW_FOLD_MAX_UNITS')
+        prompt = endpoint.make_prompt(body, 'feedface01234567', {'provider': 'arena'})
+        # Pass 2 folds only as much as needed and stops once it fits
+        # (minimal loss): the two newest results survive, the oldest is gone,
+        # and whatever still fits the budget is left intact.
+        self.assertGreaterEqual(prompt.count('x' * 3400), 2)
+        self.assertLess(prompt.count('x' * 3400), 32)  # at least one was folded
+        self.assertNotIn('M0M0', prompt)  # oldest-first: the oldest is folded
+        self.assertIn('M30M30', prompt)
+        self.assertIn('M31M31', prompt)
+        r = await self.post(messages=msgs, tools=[TOOL])
+        self.assertEqual(r.status_code, 200, r.text)
+
+    async def test_floor_zero_disables_rescue_pass(self):
+        """ZW_FOLD_FLOOR_UNITS=0 keeps the payload exactly as pass 1 left it
+        (many medium results) and the guardrail must still refuse it."""
+        self.web.provider = 'arena'
+        msgs = [{'role': 'system', 'content': 's' * 11000}]
+        for i in range(32):
+            msgs.append({'role': 'assistant', 'content': None})
+            msgs.append({'role': 'tool', 'tool_call_id': f'c{i}', 'content': 'x' * 3450})
+        msgs.append({'role': 'user', 'content': 'go'})
+        os.environ['ZW_FOLD_FLOOR_UNITS'] = '0'
+        try:
+            with self.assertRaises(endpoint.AdapterError) as caught:
+                endpoint.make_prompt({'model': 'web-ai', 'messages': msgs},
+                                     'feedface01234567', {'provider': 'arena'})
+            self.assertEqual(caught.exception.status, 413)
+        finally:
+            os.environ.pop('ZW_FOLD_FLOOR_UNITS')
+
     async def test_guardrail_still_blocks_unfoldable_oversize(self):
         """Folding only shrinks stale tool results; a huge USER message is
         never folded, so the budget guardrail must still refuse it."""

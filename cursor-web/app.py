@@ -30,7 +30,7 @@ ENDPOINT_PORT = int(os.getenv('CURSOR_WEB_ENDPOINT_PORT', '17615'))
 UI_PORT = int(os.getenv('CURSOR_WEB_UI_PORT', '17616'))
 MODEL = 'web-ai'
 VERSION = '0.4.23'
-BUILD_ID = 'b9'  # printed in the banner: proves which build is actually running
+BUILD_ID = 'b10'  # printed in the banner: proves which build is actually running
 
 SITES = [
     ('deepseek', 'DeepSeek', 'https://chat.deepseek.com'),

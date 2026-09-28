@@ -177,14 +177,7 @@ def fold_old_tool_results(messages, max_units, keep_recent=2):
     return result, folded, saved
 
 
-def make_prompt(body, request_id, session=None):
-    # Context compression: fold stale large tool results so growing history
-    # stops hitting the site input budget. ZW_FOLD_MAX_UNITS=0 disables it.
-    try:
-        fold_max = int(os.getenv('ZW_FOLD_MAX_UNITS', '4000'))
-    except ValueError:
-        fold_max = 4000
-    messages, folded, saved = fold_old_tool_results(body['messages'], fold_max)
+def _build_prompt(body, messages, request_id):
     # All state is explicit: never heuristically truncate code or tool results.
     envelope = {'request_id': request_id, 'messages': messages,
                 'tools': body.get('tools', []), 'tool_choice': body.get('tool_choice', 'auto')}
@@ -200,7 +193,47 @@ Use null or a string for content. Use at most one tool call. For edits, copy the
 CURRENT_REQUEST:
 '''
     prompt += dumps(envelope)
+    return prompt
+
+
+def make_prompt(body, request_id, session=None):
+    # Context compression, two passes (ZW_FOLD_MAX_UNITS=0 disables both):
+    #  1) fold stale tool results over ZW_FOLD_MAX_UNITS (default 4000);
+    #  2) if still over budget, fold older results (oldest first) down to
+    #     ZW_FOLD_FLOOR_UNITS (default 600) until it fits - handles the
+    #     "many medium results" case where no single result is big enough
+    #     for pass 1 but their sum exceeds the site budget.
+    # The two newest results and all user/assistant/system content are
+    # never touched in either pass.
+    try:
+        fold_max = int(os.getenv('ZW_FOLD_MAX_UNITS', '4000'))
+    except ValueError:
+        fold_max = 4000
+    try:
+        fold_floor = int(os.getenv('ZW_FOLD_FLOOR_UNITS', '600'))
+    except ValueError:
+        fold_floor = 600
+    messages, folded, saved = fold_old_tool_results(body['messages'], fold_max)
+    prompt = _build_prompt(body, messages, request_id)
     error = size_error(prompt, session or {})
+    if error and fold_max > 0 and fold_floor > 0:
+        tool_idx = [i for i, m in enumerate(messages)
+                    if isinstance(m, dict) and m.get('role') == 'tool']
+        candidates = [i for i in tool_idx[:-2]
+                      if isinstance(messages[i].get('content'), str)
+                      and not messages[i]['content'].startswith('[工具结果已折叠')
+                      and utf16_units(messages[i]['content']) > fold_floor]
+        for i in candidates:  # oldest first
+            content = messages[i]['content']
+            units = utf16_units(content)
+            replacement = f'[工具结果已折叠（原 {units} UTF-16 单位）。如仍需该内容，请重新调用相应工具获取。]'
+            messages[i] = {**messages[i], 'content': replacement}
+            folded += 1
+            saved += units - utf16_units(replacement)
+            prompt = _build_prompt(body, messages, request_id)
+            error = size_error(prompt, session or {})
+            if error is None:
+                break
     if error:
         # Sizes only: never log or include code/system-prompt contents in errors.
         # Breakdown reflects the (folded) messages that WOULD be sent.
