@@ -159,8 +159,11 @@ def is_byok_running():
     if platform.system() != 'Windows':
         return False
     try:
+        # CREATE_NO_WINDOW: 无控制台的 --windowed exe 里，子进程默认会
+        # 新分配一个控制台 → 黑窗口反复闪一下。该调用每 10 秒一次，必须静默。
         out = subprocess.run(['tasklist', '/FI', 'IMAGENAME eq cursor-byok.exe'],
-                             capture_output=True, text=True, timeout=5).stdout
+                             capture_output=True, text=True, timeout=5,
+                             creationflags=0x08000000).stdout
         return 'cursor-byok.exe' in out
     except Exception:
         return False
