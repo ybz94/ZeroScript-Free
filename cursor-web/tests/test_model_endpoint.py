@@ -1,6 +1,7 @@
 import asyncio
 import importlib.util
 import json
+import os
 from pathlib import Path
 import unittest
 import sys
@@ -246,6 +247,42 @@ class EndpointTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn('SECRET-MARKER', r.text)
         self.assertFalse(self.web.sent)
 
+    async def test_compression_resolves_budget_exceeded_tool_history(self):
+        """The user's real-world 413 shape: many tool rounds accumulate in
+        history and re-sending them all exceeds the site budget. With folding
+        ON the same request must pass; with it OFF it must still 413."""
+        self.web.provider = 'arena'  # 118,000 budget
+        msgs = [{'role': 'system', 'content': 's' * 3000}]
+        for i in range(13):
+            msgs.append({'role': 'assistant', 'content': None, 'tool_calls': [
+                {'id': f'call_{i}', 'type': 'function',
+                 'function': {'name': 'read_file', 'arguments': '{}'}}]})
+            msgs.append({'role': 'tool', 'tool_call_id': f'call_{i}', 'content': 'x' * 9000})
+        msgs.append({'role': 'user', 'content': 'summarize the files you read'})
+        body = {'model': 'web-ai', 'messages': msgs, 'tools': [TOOL]}
+        os.environ['ZW_FOLD_MAX_UNITS'] = '0'  # compression off
+        try:
+            with self.assertRaises(endpoint.AdapterError) as caught:
+                endpoint.make_prompt(body, 'deadbeef01234567', {'provider': 'arena'})
+            self.assertEqual(caught.exception.status, 413)
+        finally:
+            os.environ.pop('ZW_FOLD_MAX_UNITS')
+        r = await self.post(messages=msgs, tools=[TOOL])  # compression on (default)
+        self.assertEqual(r.status_code, 200, r.text)
+        prompt = self.web.sent[0]['prompt']
+        self.assertEqual(prompt.count('x' * 5000), 2,  # only the two newest results stay intact
+                         'expected exactly the two newest tool results to survive folding')
+        self.assertIn('工具结果已折叠', prompt)
+
+    async def test_guardrail_still_blocks_unfoldable_oversize(self):
+        """Folding only shrinks stale tool results; a huge USER message is
+        never folded, so the budget guardrail must still refuse it."""
+        self.web.provider = 'arena'
+        r = await self.post(messages=[{'role': 'user', 'content': 'u' * 200000}])
+        self.assertEqual(r.status_code, 413)
+        self.assertIn('Nothing sent or truncated', r.json()['error']['message'])
+        self.assertFalse(self.web.sent)
+
     async def test_invalid_escape_one_shot_repair_and_retry_cache(self):
         self.web.escape_mode = 'once'
         r = await self.post(tools=[TOOL])
@@ -399,3 +436,53 @@ class EditOutputDiagnosticsTests(unittest.TestCase):
             endpoint.parse_answer(text, 'r', self.body, self.catalog)
         self.assertIn('line 1, column', str(caught.exception))
         self.assertNotIn('PRIVATE', str(caught.exception))
+
+
+class FoldTests(unittest.TestCase):
+    """Pure-function tests for context compression (fold_old_tool_results)."""
+
+    def _history(self):
+        msgs = [{'role': 'system', 'content': 's' * 5000}]
+        for i in range(5):
+            msgs.append({'role': 'assistant', 'content': None})
+            msgs.append({'role': 'tool', 'tool_call_id': f'c{i}', 'content': 'x' * 5000})
+        msgs.append({'role': 'tool', 'tool_call_id': 'small', 'content': 'tiny'})
+        msgs.append({'role': 'user', 'content': 'u' * 5000})
+        return msgs
+
+    def test_folds_only_old_large_tool_results(self):
+        msgs = self._history()
+        original = [dict(m) for m in msgs]
+        out, folded, saved = endpoint.fold_old_tool_results(msgs, 4000)
+        self.assertEqual(folded, 4)  # 6 tool results, two newest kept
+        self.assertGreater(saved, 0)
+        self.assertEqual(msgs, original)  # input never mutated
+        self.assertEqual(out[0]['content'], 's' * 5000)  # system intact
+        self.assertEqual(out[-1]['content'], 'u' * 5000)  # user intact
+        self.assertEqual(out[-2]['content'], 'tiny')  # newest result intact
+        self.assertEqual(out[-3]['content'], 'x' * 5000)  # second-newest intact
+        self.assertTrue(out[-5]['content'].startswith('[工具结果已折叠'))
+        self.assertIn('5000', out[-5]['content'])  # original size reported
+        self.assertEqual(out[-5]['tool_call_id'], 'c3')  # identity preserved
+
+    def test_small_and_recent_results_never_folded(self):
+        msgs = [{'role': 'tool', 'tool_call_id': 'a', 'content': 'small-old'},
+                {'role': 'tool', 'tool_call_id': 'b', 'content': 'x' * 9000}]
+        out, folded, saved = endpoint.fold_old_tool_results(msgs, 4000)
+        self.assertEqual((folded, saved), (0, 0))
+        self.assertEqual(out, msgs)
+
+    def test_disabled_with_zero_budget(self):
+        msgs = self._history()
+        out, folded, saved = endpoint.fold_old_tool_results(msgs, 0)
+        self.assertEqual((folded, saved), (0, 0))
+        self.assertEqual(out, msgs)
+
+    def test_non_string_tool_content_left_alone(self):
+        msgs = [{'role': 'tool', 'tool_call_id': 'a', 'content': 'x' * 9000},
+                {'role': 'tool', 'tool_call_id': 'b',
+                 'content': [{'type': 'text', 'text': 'y' * 9000}]},
+                {'role': 'tool', 'tool_call_id': 'c', 'content': 'x' * 9000}]
+        out, folded, _ = endpoint.fold_old_tool_results(msgs, 4000)
+        self.assertEqual(folded, 1)  # only the old plain-string one
+        self.assertEqual(out[1]['content'], [{'type': 'text', 'text': 'y' * 9000}])
