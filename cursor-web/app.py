@@ -30,7 +30,7 @@ ENDPOINT_PORT = int(os.getenv('CURSOR_WEB_ENDPOINT_PORT', '17615'))
 UI_PORT = int(os.getenv('CURSOR_WEB_UI_PORT', '17616'))
 MODEL = 'web-ai'
 VERSION = '0.4.23'
-BUILD_ID = 'b10'  # printed in the banner: proves which build is actually running
+BUILD_ID = 'b11'  # printed in the banner: proves which build is actually running
 
 SITES = [
     ('deepseek', 'DeepSeek', 'https://chat.deepseek.com'),
@@ -166,6 +166,21 @@ class Center:
         self.note = None
         self.log_path = None
         self._byok_cache = None
+        self.config_path = Path(stable / 'config.json')
+        self.file_extern = self._load_config_flag()
+        # make_prompt reads this env at request time (same process).
+        os.environ['ZW_FILE_EXTERN'] = '1' if self.file_extern else '0'
+
+    def _load_config_flag(self):
+        try:
+            data = json.loads(self.config_path.read_text(encoding='utf-8'))
+            return bool(data.get('file_extern', False))
+        except Exception:
+            return False
+
+    def _save_config_flag(self):
+        self.config_path.write_text(json.dumps({'file_extern': self.file_extern}), encoding='utf-8')
+        os.environ['ZW_FILE_EXTERN'] = '1' if self.file_extern else '0'
 
     # -- lifecycle ----------------------------------------------------------
     async def start(self):
@@ -260,11 +275,24 @@ class Center:
             self._byok_cache = None
             return JSONResponse(self.byok_state())
 
+        async def config(request):
+            data = await request.json()
+            if 'file_extern' not in data or not isinstance(data.get('file_extern'), bool):
+                return JSONResponse({'ok': False, 'error': 'file_extern must be a boolean'}, status_code=400)
+            self.file_extern = data['file_extern']
+            try:
+                self._save_config_flag()
+            except Exception as exc:
+                return JSONResponse({'ok': False, 'error': f'保存失败: {exc}'}, status_code=500)
+            print(f'[config] 文件外置(file_extern) = {str(self.file_extern).lower()}', flush=True)
+            return JSONResponse({'ok': True, 'file_extern': self.file_extern})
+
         app = Starlette(routes=[Route('/', index), Route('/api/status', status),
                                 Route('/api/rebind', rebind, methods=['POST']),
                                 Route('/api/stop', stop, methods=['POST']),
                                 Route('/api/launch-browser', launch_browser, methods=['POST']),
-                                Route('/api/byok', byok, methods=['POST'])])
+                                Route('/api/byok', byok, methods=['POST']),
+                                Route('/api/config', config, methods=['POST'])])
         cfg2 = uvicorn.Config(app, host='127.0.0.1', port=self.ui_port, log_level='warning')
         srv2 = uvicorn.Server(cfg2)
         self._servers.append(srv2)
@@ -344,6 +372,7 @@ class Center:
             'sessions': self.sessions,
             'jobs': self.jobs,
             'byok': self.byok_state(),
+            'file_extern': self.file_extern,
         }
 
 

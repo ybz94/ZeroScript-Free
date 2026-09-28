@@ -136,6 +136,10 @@ a.site .pid{margin-left:auto;font-size:10px;color:var(--muted);font-family:ui-mo
       <button class="ghost mini" id="byokLaunch">启动 cursor-byok</button>
     </div>
     <div class="hint" id="byokHint"></div>
+    <label style="display:flex;align-items:center;gap:6px;margin-top:10px;cursor:pointer">
+      <input type="checkbox" id="fileExtern"> <b>文件外置</b>（文件内容走文件 MCP 按需获取，不占输入框预算）
+    </label>
+    <div class="hint">仅当专用网页已连接文件 MCP（file_mcp.py + 隧道）时打开；关闭即恢复原样。详见 BYOK_SETUP「文件外置」节。</div>
     <div style="margin-top:12px"><button class="danger" id="stopBtn">停止程序</button>
       <span class="s-meta">停止 Bridge、端点与窗口；关闭窗口效果相同。</span></div>
   </div>
@@ -207,9 +211,30 @@ function renderByok(s){
   else hint.textContent = '全部就绪：Cursor 里选 web-ai 即可直接使用。';
 }
 
+function renderConfig(s){
+  const fe = $('fileExtern');
+  if (!fe) return;
+  // sync from server only when the server value changed since last apply
+  if (fe._synced !== !!s.file_extern){ fe._synced = !!s.file_extern; if (!fe.disabled) fe.checked = !!s.file_extern; }
+}
+$('fileExtern').onchange = async () => {
+  $('fileExtern').disabled = true;
+  try {
+    const r = await fetch('/api/config', {method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({file_extern: $('fileExtern').checked})});
+    const j = await r.json();
+    if (!r.ok || !j.ok) { alert('保存失败: ' + (j.error || '')); $('fileExtern').checked = !$('fileExtern').checked; return; }
+    $('fileExtern')._synced = $('fileExtern').checked;
+    toast($('fileExtern').checked ? '文件外置已开启' : '文件外置已关闭');
+    refresh();
+  } catch(e){ alert('保存失败: ' + e.message); $('fileExtern').checked = !$('fileExtern').checked; }
+  finally { $('fileExtern').disabled = false; }
+};
+
 function render(s){
   renderSites(s);
   renderByok(s);
+  renderConfig(s);
   $('ver').textContent = `v${s.app.version} · ${s.app.frozen?'exe':'源码'} · 运行 ${Math.floor(s.app.uptime_s/60)} 分`;
   const ep = s.endpoint, anySession = s.sessions.length>0;
   $('statusline').innerHTML =

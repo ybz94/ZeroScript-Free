@@ -326,6 +326,40 @@ class EndpointTests(unittest.IsolatedAsyncioTestCase):
         finally:
             os.environ.pop('ZW_FOLD_FLOOR_UNITS')
 
+    async def test_file_externalization_resolves_the_live_413_shape(self):
+        """Live 413 shape: user 30k + two file reads 27k + baseline ~60k >
+        118k. Folding cannot help (the file reads are the two NEWEST results),
+        but file externalization replaces them with MCP references and the
+        request fits - no file content travels through the input box."""
+        self.web.provider = 'arena'  # 118,000 budget
+        tools = [TOOL]
+        for i in range(10):  # ~49k of tool definitions, like real Agent mode
+            tools.append({'type': 'function', 'function': {
+                'name': f'tool_{i}', 'description': 'd' * 4800,
+                'parameters': {'type': 'object', 'properties': {'v': {'type': 'string'}},
+                               'required': ['v'], 'additionalProperties': False}}})
+        msgs = [{'role': 'system', 'content': 's' * 11000},
+                {'role': 'user', 'content': 'check the path issues in these two files' + 'q' * 30000}]
+        for i, p in enumerate(['src/a.py', 'src/b.py']):
+            msgs.append({'role': 'assistant', 'content': None, 'tool_calls': [
+                {'id': f'call_{i}', 'type': 'function',
+                 'function': {'name': 'read_file', 'arguments': {'path': p}}}]} )
+            msgs.append({'role': 'tool', 'tool_call_id': f'call_{i}', 'content': 'z' * 13500})
+        r0 = await self.post(messages=msgs, tools=tools)  # externalization OFF
+        self.assertEqual(r0.status_code, 413, r0.text)
+        self.assertNotIn('already folded', r0.text)  # folding had nothing to take
+        os.environ['ZW_FILE_EXTERN'] = '1'
+        try:
+            r = await self.post(messages=msgs, tools=tools)  # externalization ON
+        finally:
+            os.environ.pop('ZW_FILE_EXTERN')
+        self.assertEqual(r.status_code, 200, r.text)
+        prompt = self.web.sent[0]['prompt']
+        self.assertIn('文件内容已外置', prompt)
+        self.assertIn('src/a.py', prompt)
+        self.assertNotIn('z' * 5000, prompt)  # file contents did NOT go through the input box
+        self.assertIn('file MCP', prompt)  # protocol instructs the model to fetch
+
     async def test_guardrail_still_blocks_unfoldable_oversize(self):
         """Folding only shrinks stale tool results; a huge USER message is
         never folded, so the budget guardrail must still refuse it."""
@@ -538,3 +572,52 @@ class FoldTests(unittest.TestCase):
         out, folded, _ = endpoint.fold_old_tool_results(msgs, 4000)
         self.assertEqual(folded, 1)  # only the old plain-string one
         self.assertEqual(out[1]['content'], [{'type': 'text', 'text': 'y' * 9000}])
+
+
+class ExternalizeTests(unittest.TestCase):
+    """Pure-function tests for file externalization (MCP file fetching)."""
+
+    def _file_msgs(self, size=5000):
+        return [
+            {'role': 'system', 'content': 'sys'},
+            {'role': 'user', 'content': 'look at these files'},
+            {'role': 'assistant', 'content': None, 'tool_calls': [
+                {'id': 'call_1', 'type': 'function',
+                 'function': {'name': 'read_file', 'arguments': {'path': 'src/a.py'}}}]},
+            {'role': 'tool', 'tool_call_id': 'call_1', 'content': 'x' * size},
+            {'role': 'assistant', 'content': None, 'tool_calls': [
+                {'id': 'call_2', 'type': 'function',
+                 'function': {'name': 'run_terminal_cmd', 'arguments': {'command': 'ls'}}}]},
+            {'role': 'tool', 'tool_call_id': 'call_2', 'content': 'y' * size},
+            {'role': 'user', 'content': 'u'},
+        ]
+
+    def test_externalizes_only_large_file_reads(self):
+        msgs = self._file_msgs()
+        original = [dict(m) for m in msgs]
+        out, count, saved = endpoint.externalize_file_results(msgs, 4000)
+        self.assertEqual(count, 1)
+        self.assertGreater(saved, 0)
+        self.assertEqual(msgs, original)  # input never mutated
+        self.assertIn('文件内容已外置', out[3]['content'])
+        self.assertIn('src/a.py', out[3]['content'])
+        self.assertEqual(out[3]['tool_call_id'], 'call_1')  # identity preserved
+        self.assertEqual(out[5]['content'], 'y' * 5000)     # non-file result untouched
+        self.assertEqual(out[0]['content'], 'sys')
+        self.assertEqual(out[6]['content'], 'u')
+
+    def test_small_results_and_string_args(self):
+        out, count, _ = endpoint.externalize_file_results(self._file_msgs(size=100), 4000)
+        self.assertEqual(count, 0)
+        self.assertEqual(out[3]['content'], 'x' * 100)  # under threshold: kept
+        msgs = self._file_msgs()
+        msgs[2]['tool_calls'][0]['function']['arguments'] = json.dumps({'path': 'src/b.py'})
+        out2, count2, _ = endpoint.externalize_file_results(msgs, 4000)
+        self.assertEqual(count2, 1)  # string-form arguments are parsed
+        self.assertIn('src/b.py', out2[3]['content'])
+
+    def test_unknown_tool_call_id_is_left_alone(self):
+        msgs = self._file_msgs()
+        del msgs[2]['tool_calls'][0]['id']  # no id -> no matching call info
+        out, count, _ = endpoint.externalize_file_results(msgs, 4000)
+        self.assertEqual(count, 0)
