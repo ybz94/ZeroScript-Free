@@ -326,6 +326,20 @@ def make_prompt(body, request_id, session=None):
             note += ' Context compression already folded stale tool results but this request is still over budget.'
         if ext_count:
             note += ' File results were already externalized to MCP references but this request is still over budget: the fixed baseline (tools/system) or user content is too large, or the file MCP is not connected on the webpage side.'
+        # Per-message sizes (no contents) for the big ones: tells the user
+        # WHICH message bloats the request - e.g. a user turn where Cursor
+        # auto-attached file context (remove the attachment, let the web AI
+        # fetch the file via the file MCP instead).
+        big = []
+        for i, message in enumerate(messages):
+            u = utf16_units(dumps(message))
+            if u >= 2000:
+                big.append(f"{message['role']}#{i + 1}:{u}")
+                if len(big) >= 8:
+                    big.append('…')
+                    break
+        if big:
+            note += ' Largest messages (units, sizes only): ' + ' '.join(big)
         raise AdapterError(error + ' Breakdown (UTF-16 JSON units): ' + dumps(sizes) + note, 413)
     if ext_count:
         print(f'[{request_id[:8]}] externalized {ext_count} file result(s) to MCP references, '

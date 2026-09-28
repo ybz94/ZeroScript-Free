@@ -389,6 +389,34 @@ class EndpointTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn('Nothing sent or truncated', r.json()['error']['message'])
         self.assertFalse(self.web.sent)
 
+    async def test_oversize_breakdown_lists_big_messages(self):
+        """The 413 breakdown must say WHICH messages are big (sizes only,
+        never contents) - so a user can spot e.g. a Cursor auto-attached
+        file context in their own turn and remove it."""
+        self.web.provider = 'arena'
+        tools = [TOOL]
+        for i in range(10):  # ~49k of tool definitions, like real Agent mode
+            tools.append({'type': 'function', 'function': {
+                'name': f'tool_{i}', 'description': 'd' * 4800,
+                'parameters': {'type': 'object', 'properties': {'v': {'type': 'string'}},
+                               'required': ['v'], 'additionalProperties': False}}})
+        msgs = [
+            {'role': 'user', 'content': 'ctx' * 20000},          # ~60k: attached context
+            {'role': 'assistant', 'content': None, 'tool_calls': [
+                {'id': 'c1', 'type': 'function',
+                 'function': {'name': 'read_file', 'arguments': {'path': 'a.js'}}}]},
+            {'role': 'tool', 'tool_call_id': 'c1', 'content': 'x' * 15000},
+            {'role': 'user', 'content': 'fix the paths'},
+        ]
+        r = await self.post(messages=msgs, tools=tools)
+        self.assertEqual(r.status_code, 413, r.text)
+        msg = r.json()['error']['message']
+        self.assertIn('Largest messages', msg)
+        self.assertIn('user#1:', msg)          # the bloated user turn is named
+        self.assertIn('tool#3:', msg)          # the big tool result is named
+        self.assertNotIn('ctx' * 100, msg)     # contents never leak into the error
+        self.assertNotIn('x' * 100, msg)
+
     async def test_invalid_escape_one_shot_repair_and_retry_cache(self):
         self.web.escape_mode = 'once'
         r = await self.post(tools=[TOOL])
