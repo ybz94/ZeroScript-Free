@@ -4,6 +4,7 @@ serving a temp project root, driven by a real MCP client. Proves the
 file-read tools the webpage model would call."""
 import asyncio
 import importlib.util
+import json
 import os
 import socket
 import subprocess
@@ -103,6 +104,58 @@ class FileMcpTests(unittest.IsolatedAsyncioTestCase):
                         await s.initialize()
                         read = await s.call_tool('read_file', {'path': 'src/a.py'})
                         self.assertIn('line2', read.content[0].text)
+            finally:
+                await self._stop(proc)
+
+    async def test_tunnel_host_header_accepted(self):
+        """Requests routed through the Cloudflare tunnel arrive with the
+        random per-run trycloudflare.com Host header (the edge forwards its
+        own hostname). FastMCP bound to loopback auto-enables the SDK's
+        DNS-rebinding Host allowlist (localhost only), which rejected those
+        with `421 Invalid Host header` - the exact error the webpage hit.
+        Send the tunnel-style Host over a raw socket (the MCP client libs
+        always derive Host from the local URL, so they can't reproduce it)
+        and assert the server answers normally; the token gate must still
+        apply to foreign hosts."""
+        import http.client
+        with tempfile.TemporaryDirectory() as tmp:
+            port = _free_port()
+            proc = await self._start_server(Path(tmp), port)
+            try:
+                body = json.dumps({
+                    'jsonrpc': '2.0', 'id': 1, 'method': 'initialize',
+                    'params': {'protocolVersion': '2025-03-26', 'capabilities': {},
+                               'clientInfo': {'name': 'tunnel-repro', 'version': '1.0'}},
+                }).encode()
+
+                def raw_post(path, host):
+                    conn = http.client.HTTPConnection('127.0.0.1', port, timeout=10)
+                    conn.putrequest('POST', path, skip_accept_encoding=True)
+                    conn.putheader('Host', host)
+                    conn.putheader('Content-Type', 'application/json')
+                    conn.putheader('Accept', 'application/json, text/event-stream')
+                    conn.putheader('Content-Length', str(len(body)))
+                    conn.endheaders()
+                    conn.send(body)
+                    resp = conn.getresponse()
+                    payload = resp.read()
+                    conn.close()
+                    return resp.status, payload
+
+                # 1) tunnel-style Host + correct token -> initialize succeeds
+                status, payload = raw_post('/mcp?token=test-token-123',
+                                           'period-segment-helicopter-country.trycloudflare.com')
+                self.assertEqual(status, 200, payload[:300])
+                self.assertIn(b'cursor-web-files', payload)  # serverInfo in the result
+
+                # 2) token gate still enforced for a foreign Host
+                status, payload = raw_post('/mcp?token=wrong',
+                                           'period-segment-helicopter-country.trycloudflare.com')
+                self.assertEqual(status, 401, payload[:300])
+
+                # 3) loopback Host unaffected
+                status, _ = raw_post('/mcp?token=test-token-123', f'127.0.0.1:{port}')
+                self.assertEqual(status, 200)
             finally:
                 await self._stop(proc)
 

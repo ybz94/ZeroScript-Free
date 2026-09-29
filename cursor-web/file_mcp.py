@@ -13,6 +13,11 @@ Security model (by design):
     (no .., no absolute escapes, no symlink escapes out of the root)
   * bind 127.0.0.1 by default; expose via `cloudflared tunnel --url
     http://127.0.0.1:17618` (no open ports, HTTPS, no public IP of your own)
+  * the SDK's DNS-rebinding Host allowlist is disabled (see FastMCP call
+    below): through the tunnel every request arrives with the random
+    per-run trycloudflare.com hostname, which the localhost-only default
+    rejects with `421 Invalid Host header`. The bearer-token gate is the
+    auth boundary; the server itself stays loopback-only.
   * per-read size cap (ZW_FILE_MCP_MAX_CHARS, default 200000)
 
 Usage:
@@ -26,6 +31,7 @@ import secrets
 from pathlib import Path
 
 from mcp.server.fastmcp import FastMCP
+from mcp.server.transport_security import TransportSecuritySettings
 
 PORT = int(os.getenv('ZW_FILE_MCP_PORT', '17618'))
 MAX_CHARS = int(os.getenv('ZW_FILE_MCP_MAX_CHARS', '200000'))
@@ -63,7 +69,16 @@ def _confine(rel: str) -> Path:
     return cand
 
 
-mcp = FastMCP('cursor-web-files')
+mcp = FastMCP(
+    'cursor-web-files',
+    # Disable the SDK's DNS-rebinding Host/Origin validation. Bound to
+    # loopback, FastMCP auto-enables it with a localhost-only allowlist,
+    # but requests coming through the Cloudflare tunnel carry the random
+    # per-run trycloudflare.com Host and would all be rejected with
+    # `421 Invalid Host header`. Authentication is enforced by the
+    # bearer-token gate in create_app(); the server stays 127.0.0.1-only.
+    transport_security=TransportSecuritySettings(enable_dns_rebinding_protection=False),
+)
 
 
 @mcp.tool()
