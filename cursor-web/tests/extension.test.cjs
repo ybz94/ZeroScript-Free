@@ -10,7 +10,7 @@ function content(options = {}) {
   const messages = [], intervals = [];
   let listener, now = 0, sent = 0, old = {}, item = old, text = 'old answer', count = 1, key = '/c/1';
   let editorContent = options.draft || '', userCountVar = 1, turnAt = Infinity; // fake-time when OUR user turn becomes visible
-  let followupClicked = false, lastPrompt = '';
+  let followupClicked = false, lastPrompt = '', sweeps = 0, draftRestored = false;
   const markerText = options.markerText || '';
   const markerBlock = { // fake fenced code block for the 0.4.16 marker fallback
     textContent: markerText,
@@ -28,7 +28,10 @@ function content(options = {}) {
     // generating before we dispatched - then it is present from t=0.
     isHardGenerating:()=>!!options.hardGenerating && (options.hardGenAfterSend ? sent>0 : true),
     getEditor:()=>({tagName:'TEXTAREA', offsetParent:{}, placeholder:'Message', value:editorContent}),
-    editorText:()=>editorContent,
+    // One-shot "site restores the draft" event: at fake-time draftRestoreAt the
+    // composer re-fills with the previous prompt (draft autosave restore).
+    editorText:()=>{ if(!draftRestored && options.draftRestoreAt!==undefined && now>=options.draftRestoreAt){ draftRestored=true; if(editorContent==='') editorContent=options.draftRestoreText||'restored draft'; } return editorContent; },
+    clearComposer:()=>{ if(editorContent){ editorContent=''; sweeps++; return true; } return false; },
     assistantCount:()=>options.staleReads?1:count, userCount:()=>options.brokenUserCount?1:userCountVar+(turnAt!==Infinity&&now>=turnAt?1:0),
     lastAssistant:()=>options.staleReads?old:item, lastAssistantId:()=>options.staleReads?'old':(item===old?'old':'new'),
     clearFollowupPrompt:()=>{ if(options.followupPromptAt===undefined || now<options.followupPromptAt) return false; followupClicked=true; return true; },
@@ -61,7 +64,7 @@ function content(options = {}) {
   const first = messages[0];
   const dispatch = (extra={}) => {let ack;listener({type:'dispatch', job_id:'j1',session_id:first.id,expectedKey:'/c/1',prompt:'hi',...extra},{},v=>ack=v);return ack;};
   async function result(){for(let i=0;i<1000;i++){const r=messages.find(m=>m.type==='result');if(r)return r;await new Promise(setImmediate);}throw Error('No result');}
-  return {messages, dispatch, result, get sent(){return sent;}, get followupClicked(){return followupClicked;}, get lastPrompt(){return lastPrompt;}, intervals};
+  return {messages, dispatch, result, get sent(){return sent;}, get followupClicked(){return followupClicked;}, get lastPrompt(){return lastPrompt;}, get sweeps(){return sweeps;}, intervals};
 }
 test('content returns completed new response, not previous answer',async()=>{
   const c=content();assert.equal(c.dispatch().accepted,true);assert.equal((await c.result()).text,'new answer');assert.equal(c.sent,1);
@@ -260,6 +263,27 @@ test('dispatch ack carries the build stamp (stale dedicated-page detection)',asy
   assert.equal(ack.accepted,true);
   assert.ok(typeof ack.build==='string' && ack.build.length>0,
     'ack must carry the content-script build stamp for the endpoint');
+});
+test('stale draft reappearing in the composer during the reply wait is wiped',async()=>{
+  // Live report: after the first message is sent, while the reply streams,
+  // the site re-renders the PREVIOUS prompt back into the box (draft
+  // autosave restore). The reply-wait sweep must wipe it without failing
+  // the task.
+  const c=content({draftRestoreAt:300, draftRestoreText:'previous prompt content', turnDelayMs:10});
+  c.dispatch();
+  const r=await c.result();
+  assert.equal(r.error,undefined);
+  assert.equal(r.text,'new answer');
+  assert.equal(c.sweeps,1,'the re-appeared draft must be wiped exactly once');
+  assert.equal(r.diagnostics.draftSweeps,1);
+});
+test('a clean composer during the reply wait is never touched',async()=>{
+  const c=content();
+  c.dispatch();
+  const r=await c.result();
+  assert.equal(r.error,undefined);
+  assert.equal(c.sweeps,0);
+  assert.equal(r.diagnostics.draftSweeps,undefined);
 });
 test('scoped extraction failure is rescued by the request-id marker (0.4.18 multi-provider)',async()=>{
   // The reply turn IS visible (fresh) but the scoped block search fails (e.g.

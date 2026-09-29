@@ -208,6 +208,21 @@
         if (usersNow != null && usersNow > expectedUsers) {
           throw new Error('Dedicated page was operated during the task (an extra user message appeared - manual input or the site\'s follow-up prompt was clicked). Refresh the page, rebind the session, and retry; never use the dedicated page while a task runs');
         }
+        // The site may re-render a STALE DRAFT back into the composer while our
+        // reply streams (draft autosave restore - the user reported the
+        // previous prompt reappearing in the box mid-reply). The composer must
+        // stay empty during the task: if it re-fills, wipe it immediately so
+        // the previous content never sits there (and can never be sent by
+        // accident). Runs at the 250ms read cadence, never mid-confirm.
+        if (typeof P.clearComposer === 'function' && P.editorText) {
+          let boxText = '';
+          try { boxText = P.editorText() || ''; } catch {}
+          if (boxText.trim() !== '') {
+            diagnostics.draftSweeps = (diagnostics.draftSweeps || 0) + 1;
+            console.log('[zs] stale draft reappeared in the composer (' + boxText.length + ' chars) - wiping');
+            try { P.clearComposer(); } catch {}
+          }
+        }
         const currentKey = P.conversationKey();
         if (currentKey !== taskKey) {
           if (!mayCreateChat) {

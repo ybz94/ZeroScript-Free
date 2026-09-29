@@ -408,6 +408,21 @@ const ZSProvider = (() => {
     return false;
   }
 
+  // Public composer wipe (used by the core's reply-wait sweep): while the
+  // reply streams, the site can re-render a stale draft back into the box
+  // (draft autosave restore). Same select-all + delete / insertText('')
+  // strategy as the verified clear; never throws. Returns whether the box is
+  // empty afterwards.
+  function clearComposer() {
+    try {
+      const el = getEditor();
+      if (!el) return false;
+      if ((el.textContent || (el.value != null ? el.value : "") || "").trim() === "") return true;
+      bestEffortClear(el);
+      return (el.textContent || (el.value != null ? el.value : "") || "").trim() === "";
+    } catch { return false; }
+  }
+
   function snapshot() {
     try {
       const it = lastAssistant();
@@ -1169,7 +1184,7 @@ const ZSProvider = (() => {
     assistantCount, userCount, lastAssistant, lastAssistantId, readAssistant,
     streamLen, snapshot,
     // composer / state
-    getEditor, editorText, chatIsEmpty, isFreshChat, composerFrame, barAnchor,
+    getEditor, editorText, clearComposer, chatIsEmpty, isFreshChat, composerFrame, barAnchor,
     setInputLock, typeAndSend, stopGeneration,
     isGenerating, isBusyNow, isHardGenerating,
     enforceComposer, ensureComposerReady, modeWarning, captchaPresent, overlayBlocking,
