@@ -490,7 +490,13 @@ const ZSProvider = (() => {
       range.selectNodeContents(el);
       sel.removeAllRanges();
       sel.addRange(range);
-      document.execCommand("delete");
+      // ProseMirror can swallow execCommand("delete") (it processes beforeinput
+      // against its OWN selection, which may lag the DOM selection) - fall back
+      // to insertText(""), which replaces the full selection through the same
+      // path the chunked writes use.
+      if (!document.execCommand("delete") || (el.textContent || "").trim() !== "") {
+        document.execCommand("insertText", false, "");
+      }
     } catch {}
   }
   async function insertContentEditable(el, v) {
@@ -512,10 +518,13 @@ const ZSProvider = (() => {
     // survived and the new prompt APPENDED to it - the stacked-prompts
     // incident. An empty box makes append-at-end identical to insert.)
     let clearTries = 0;
-    while ((el.textContent || "").trim() !== "" && clearTries < 6) {
+    while ((el.textContent || "").trim() !== "" && clearTries < 12) {
       clearTries++;
       selectEnd(false);
-      document.execCommand("delete");
+      // Alternate delete / insertText(""): if the page's editor framework
+      // (ProseMirror) swallows one of them against a stale internal selection,
+      // the other goes through the insertText path the chunked writes use.
+      document.execCommand(clearTries % 2 === 1 ? "delete" : "insertText", false, "");
       await sleep(50);
     }
     if ((el.textContent || "").trim() !== "") {
@@ -647,6 +656,21 @@ const ZSProvider = (() => {
     } else {
       diag("arena.tas.skipAttach", { reason: !images || !images.length ? "no-images" : "same-set", imgId: images ? images.__zsId : null });
     }
+    // FINAL pre-click verification: the site may re-render a stale draft OVER
+    // our write between the write and the click (autosave draft restore, a
+    // late React re-render, the 60s sendReady wait above) - the right-after-
+    // write check leaves that window open, and the click would then PUBLISH
+    // the stacked text to the model. Check at the last possible instant; if
+    // the box re-grew well beyond our payload, wipe and refuse the send.
+    // (Floor of 400 chars: image attachment chips add at most a file name.)
+    {
+      const finalLen = (editorText() || "").length;
+      const excess = finalLen - payload.length;
+      if (excess > Math.max(400, payload.length * 0.15)) {
+        bestEffortClear(editor);
+        throw new Error(`Arena composer re-grew to ${finalLen} characters before the send click (the site re-rendered a stale draft over the write - ${excess} characters of extra content). Best-effort clear done; do NOT retry in this page: refresh the dedicated page and start a new conversation.（点击发送前输入框又被网页重新渲染回旧内容，已尽力清空；请勿在此页面重试：刷新专用页并新开对话）`);
+      }
+    }
     // Click and CONFIRM the send took (editor clears the instant Arena accepts
     // it, image AND text paths). Re-click until it clears so a single swallowed
     // click can't strand the message/attachment. No re-attach here.
@@ -656,9 +680,14 @@ const ZSProvider = (() => {
       if (sendReady()) {
         try { sendButton().click(); } catch {}
       } else if (!isHardGenerating()) {
-        const o = { key: "Enter", code: "Enter", keyCode: 13, which: 13, bubbles: true, cancelable: true };
-        editor.dispatchEvent(new KeyboardEvent("keydown", o));
-        editor.dispatchEvent(new KeyboardEvent("keyup", o));
+        // Never press Enter on a box that re-grew (stacked text): Enter would
+        // PUBLISH the draft+payload mix; fail as unconfirmed instead.
+        const grown = (editorText() || "").length > payload.length + Math.max(400, payload.length * 0.15);
+        if (!grown) {
+          const o = { key: "Enter", code: "Enter", keyCode: 13, which: 13, bubbles: true, cancelable: true };
+          editor.dispatchEvent(new KeyboardEvent("keydown", o));
+          editor.dispatchEvent(new KeyboardEvent("keyup", o));
+        }
       }
       sent = await waitFor(() => editorText().trim() === "", 700);
     }

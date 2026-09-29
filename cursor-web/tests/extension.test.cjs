@@ -415,18 +415,27 @@ function arenaSend(options = {}) {
   const document = {
     querySelectorAll(sel){
       if (sel === '[contenteditable]') return [editor];
-      if (sel === 'button') return [sendBtn];
+      if (sel === 'button') {
+        // reinjectAtSend: the site re-renders a stale draft over our write the
+        // first time the send button is polled (i.e. after the write).
+        if (options.reinjectAtSend && editor.textContent &&
+            editor.textContent.indexOf(options.reinjectAtSend) === -1) {
+          editor.textContent = options.reinjectAtSend + editor.textContent;
+        }
+        return [sendBtn];
+      }
       if (sel === 'form textarea') return [];
       return [];
     },
     createRange(){ return { selectNodeContents(){ wholeSelected = true; }, collapse(){ wholeSelected = false; } }; },
     execCommand(cmd){
       if (cmd === 'delete') { // select-all + delete wipes the composer
-        if (wholeSelected) { editor.textContent = ''; wholeSelected = false; }
+        if (wholeSelected && options.deleteWorks !== false) { editor.textContent = ''; wholeSelected = false; }
         return true;
       }
       if (cmd !== 'insertText') return false;
       const val = arguments[2];
+      if (val === '' && wholeSelected) { editor.textContent = ''; wholeSelected = false; return true; } // replace selection with empty
       calls.push(val.length);
       // reinjectDraft: the site re-renders its stale state on top of our write
       const reinject = options.reinjectDraft && editor.textContent === '' ? options.reinjectDraft : '';
@@ -481,5 +490,23 @@ test('arena refuses to send when the write appends to un-cleared leftover (no st
   assert.ok(err, 'expected the append guard to fail the send');
   assert.match(err.message, /was NOT replaced \(the write appended\)/);
   assert.equal(a.clicked, 0, 'must never click send with an appended payload');
+  assert.equal(a.editor.textContent, '', 'best-effort clear wiped the box');
+});
+test('arena clear falls back to insertText("") when the page swallows delete (ProseMirror selection lag)', async () => {
+  const a = arenaSend({ deleteWorks: false });
+  a.editor.textContent = 'leftover draft';
+  await a.P.typeAndSend('hello');
+  assert.equal(a.clicked, 1, 'send must proceed once the box is verified empty');
+  assert.equal(a.calls.length, 1);
+  assert.equal(a.calls[0], 'hello'.length, 'no leftover may survive into the write');
+});
+test('arena refuses the send when the site re-renders a stale draft over the write (pre-click re-check)', async () => {
+  const a = arenaSend({ reinjectAtSend: 'y'.repeat(3000) });
+  a.editor.textContent = 'stale draft';
+  let err;
+  try { await a.P.typeAndSend('x'.repeat(3000)); } catch (e) { err = e; }
+  assert.ok(err, 'expected the pre-click re-check to fail the send');
+  assert.match(err.message, /re-grew/);
+  assert.equal(a.clicked, 0, 'must never click send with stacked text');
   assert.equal(a.editor.textContent, '', 'best-effort clear wiped the box');
 });
