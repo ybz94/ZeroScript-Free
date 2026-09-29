@@ -3,6 +3,7 @@ import importlib.util
 import json
 import os
 from pathlib import Path
+import re
 import unittest
 import sys
 
@@ -40,6 +41,10 @@ class FakeWeb:
         self.repair_padding = ''
         self.bad_repair_schema = False
         self.diagnostics = {}
+        # Build stamp the "content script" reports in the task job: default is
+        # the current build (healthy page); set to a value to simulate a
+        # stale build, or None to simulate an extension older than the ack.
+        self.build = endpoint.EXTENSION_BUILD_ID
 
     async def __call__(self, payload):
         if payload['type'] == 'list':
@@ -59,13 +64,16 @@ class FakeWeb:
                 self.result = self.result.replace(r'\\project', r'\project')
             return {'job_id': 'job-1'}
         if self.failure:
-            return {'status': 'error', 'error': self.failure}
+            return {'status': 'error', 'error': self.failure,
+                    **({'build': self.build} if self.build else {})}
         if self.waiting:
-            return {'status': 'running'}
+            return {'status': 'running', **({'build': self.build} if self.build else {})}
         if self.mode == 'bad':
             return {'status': 'completed', 'result': 'please execute some code without JSON',
-                    'diagnostics': self.diagnostics}
-        return {'status': 'completed', 'result': self.result, 'diagnostics': self.diagnostics}
+                    'diagnostics': self.diagnostics,
+                    **({'build': self.build} if self.build else {})}
+        return {'status': 'completed', 'result': self.result, 'diagnostics': self.diagnostics,
+                **({'build': self.build} if self.build else {})}
 
 
 class EndpointTests(unittest.IsolatedAsyncioTestCase):
@@ -259,6 +267,42 @@ class EndpointTests(unittest.IsolatedAsyncioTestCase):
         again = await self.post(messages=[{'role': 'user', 'content': 'still fine'}])
         self.assertEqual(again.status_code, 200, again.text)
         self.assertEqual(len(self.web.sent), 5)
+
+    async def test_stale_extension_build_mismatch_refused(self):
+        # Live incident 2026-09-29 (second wave): the exe was rebuilt but the
+        # dedicated browser window was still running the OLDER extension (old
+        # English LANGUAGE line, no composer fixes) - everything misbehaved
+        # silently. The ack build stamp must make that fail fast with
+        # actionable instructions.
+        self.web.build = 'old-1'
+        self.web.waiting = True
+        first = asyncio.create_task(self.post())
+        async with asyncio.timeout(2):
+            while not self.web.sent:
+                await asyncio.sleep(.001)
+        r = await first
+        self.assertEqual(r.status_code, 409)
+        self.assertIn('旧版扩展', r.text)
+        self.assertIn('old-1', r.text)
+        self.web.waiting = False
+
+    async def test_stale_extension_silent_never_reports_build(self):
+        # An extension older than the ack feature never reports a stamp:
+        # after the ack grace, refuse with the same actionable 409.
+        self.app = endpoint.create_app('local-test-key', 'bound-page', self.web,
+                                       poll_interval=.001, heartbeat=.002,
+                                       fail_cooldown_s=90.0, ack_timeout_s=0.3)
+        self.life = self.app.router.lifespan_context(self.app)
+        await self.life.__aenter__()
+        self.client = httpx.AsyncClient(transport=httpx.ASGITransport(app=self.app),
+                                        base_url='http://local', headers=HEADERS)
+        self.web.build = None
+        self.web.waiting = True
+        first = asyncio.create_task(self.post())
+        r = await asyncio.wait_for(first, 5)
+        self.assertEqual(r.status_code, 409)
+        self.assertIn('构建号', r.text)
+        self.web.waiting = False
 
     async def test_busy_rejected_but_same_request_shared(self):
         self.web.waiting = True
@@ -1042,3 +1086,16 @@ class StaticExternIntegrationTests(unittest.IsolatedAsyncioTestCase):
                     os.environ.pop(k, None)
                 else:
                     os.environ[k] = v
+
+class ExtensionBuildSyncTests(unittest.TestCase):
+    """The endpoint refuses a dedicated page whose extension reports a
+    different build stamp (or never reports one). The two constants must stay
+    in lockstep, or a FRESH dedicated page would be refused."""
+
+    def test_content_script_build_id_matches_endpoint(self):
+        content = (ROOT / 'extension' / 'content.js').read_text(encoding='utf-8')
+        m = re.search(r"const BUILD_ID = '([^']+)'", content)
+        self.assertTrue(m, 'content.js: BUILD_ID constant not found')
+        self.assertEqual(m.group(1), endpoint.EXTENSION_BUILD_ID,
+                         'content.js BUILD_ID != endpoint EXTENSION_BUILD_ID: '
+                         'a fresh dedicated page would be reported as stale')

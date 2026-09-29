@@ -254,6 +254,13 @@ test('prompt goes out exactly as built (no appended boilerplate lines)',async()=
   await c.result();
   assert.equal(c.lastPrompt,'exact prompt text');
 });
+test('dispatch ack carries the build stamp (stale dedicated-page detection)',async()=>{
+  const c=content();
+  const ack=c.dispatch();
+  assert.equal(ack.accepted,true);
+  assert.ok(typeof ack.build==='string' && ack.build.length>0,
+    'ack must carry the content-script build stamp for the endpoint');
+});
 test('scoped extraction failure is rescued by the request-id marker (0.4.18 multi-provider)',async()=>{
   // The reply turn IS visible (fresh) but the scoped block search fails (e.g.
   // reasoning draft added a second code block on another site). The protocol

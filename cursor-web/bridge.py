@@ -51,12 +51,19 @@ async def handle(ws):
             if role == 'extension':
                 if kind == 'sessions':
                     clients[ws] = msg.get('sessions', [])
+                elif kind == 'ack':
+                    # Content-script build stamp: recorded on the job so the
+                    # endpoint can detect a stale (old-extension) page.
+                    job = jobs.get(msg.get('job_id'))
+                    if job and msg.get('build'):
+                        job['build'] = msg['build']
                 elif kind == 'result':
                     job = jobs.get(msg.get('job_id'))
                     if job and job['owner'] == ws and job['status'] == 'running':
                         job.update(status='error' if msg.get('error') else 'completed',
                                    result=msg.get('text', ''), error=msg.get('error'),
                                    diagnostics=msg.get('diagnostics', {}))
+                # Extension messages are fire-and-forget: never answered.
                 continue
             if kind == 'list':
                 result = {'sessions': [s for sessions in clients.values() for s in sessions]}

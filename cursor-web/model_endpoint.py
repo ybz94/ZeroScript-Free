@@ -27,6 +27,12 @@ from input_limits import size_error, utf16_units
 MODEL = 'web-ai'
 MAX_BODY = 1_000_000
 MAX_CACHE = 128
+# Must equal cursor-web/extension/content.js BUILD_ID (checked by test; the
+# version gate can't detect this because VERSION never bumps). A dedicated
+# page still running an OLDER extension (stale browser window from a previous
+# build) silently misbehaves - stale prompts, stranded composer, popup
+# failures - so the endpoint refuses it with an actionable 409.
+EXTENSION_BUILD_ID = '20260929.2'
 
 
 class AdapterError(Exception):
@@ -705,7 +711,8 @@ def sse_completion(result):
     yield 'data: [DONE]\n\n'
 
 
-def create_app(api_key, session, rpc=bridge_rpc, poll_interval=1, heartbeat=10, fail_cooldown_s=90.0):
+def create_app(api_key, session, rpc=bridge_rpc, poll_interval=1, heartbeat=10, fail_cooldown_s=90.0,
+               ack_timeout_s=10.0):
     # `session` is either a plain session-id string (CLI: --session ID) or a
     # zero-argument callable returning the CURRENT id (desktop app: live rebind
     # from the control window without restarting the endpoint).
@@ -736,10 +743,29 @@ def create_app(api_key, session, rpc=bridge_rpc, poll_interval=1, heartbeat=10, 
             raise AdapterError(submitted.get('error', 'Missing job_id'))
         jid = submitted['job_id']
         deadline = time.monotonic() + 270
+        started = time.monotonic()
+        build_ok = False
         while time.monotonic() < deadline:
             result = await rpc({'type': 'get', 'job_id': jid})
             if result.get('error') or result.get('status') == 'error':
                 raise AdapterError(f"Webpage task {jid} failed: {result.get('error', 'unknown failure')}")
+            # Stale-extension detection: the content script reports its build
+            # stamp in the dispatch ack. A DIFFERENT stamp = the page runs an
+            # older extension (stale browser window from a previous build) -
+            # refuse before trusting anything it typed or answered.
+            if result.get('build') and result['build'] != EXTENSION_BUILD_ID:
+                raise AdapterError(
+                    f"专属网页运行的是旧版扩展（构建 {result['build']}，本程序为 {EXTENSION_BUILD_ID}）："
+                    '旧版没有最近几轮的修复，行为不可信。请：1) 完全关闭旧的专用浏览器窗口；'
+                    '2) 从程序重新打开专用页（或刷新该页）；3) 重试。', 409)
+            elif result.get('build'):
+                build_ok = True
+            if not build_ok and time.monotonic() - started > ack_timeout_s:
+                # No stamp at all: an extension older than the ack feature
+                # never reports one - the page is running old code.
+                raise AdapterError(
+                    '专属网页的扩展没有报告构建号——该页面仍在运行旧版扩展（没有最近几轮的修复）。'
+                    '请：1) 完全关闭旧的专用浏览器窗口；2) 从程序重新打开专用页（或刷新该页）；3) 重试。', 409)
             if result.get('status') == 'completed':
                 return result.get('result', ''), result.get('diagnostics', {})
             if result.get('status') != 'running':

@@ -9,6 +9,11 @@
   P.init({diag: () => {}});
   let id = crypto.randomUUID(), key = P.conversationKey(), busy = false;
   const VERSION = '0.4.23';
+  // Build generation stamp: VERSION never bumps (version gate), so a stale
+  // dedicated page running an OLDER extension is otherwise invisible. The
+  // endpoint expects its own stamp; a mismatch (or no report at all) means the
+  // page still runs an old extension and must be closed/reopened.
+  const BUILD_ID = '20260929.2';
   const seen = new Set();
   // DOM events can wake the watcher even when background timers are throttled.
   // Keep a timer fallback for generation-state changes without DOM mutations.
@@ -348,7 +353,7 @@
     }
     if (busy || seen.has(msg.job_id)) {reply({error:'Busy or duplicate task'}); return;}
     seen.add(msg.job_id);
-    reply({accepted:true});
+    reply({accepted:true, build:BUILD_ID});
     run(msg);
   });
   announce();

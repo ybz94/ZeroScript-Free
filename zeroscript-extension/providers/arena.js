@@ -476,6 +476,28 @@ const ZSProvider = (() => {
   // a site-side input cap MID-write instead of after the whole payload.
   const INSERT_CHUNK = 8000;
   const INSERT_SETTLE_MS = 60;
+  // Close a visible site dialog that survived the previous task (the
+  // post-answer "此任务成功了吗?" feedback modal). Prefers a close control
+  // (aria-label or text matching close/关闭/cancel/×/esc); otherwise tries an
+  // Escape keydown on the dialog and the document. Never clicks an outcome
+  // option - that is user feedback the program must not fabricate. Never
+  // throws: a dialog we cannot close simply stays, and the next failure will
+  // surface as usual (send button blocked etc.).
+  function dismissBlockingDialog() {
+    try {
+      const dialogs = [...document.querySelectorAll('[role="dialog"],[role="alertdialog"]')]
+        .filter(d => d.offsetParent !== null && !d.closest("#zs-root"));
+      for (const d of dialogs) {
+        const btns = [...d.querySelectorAll("button")].filter(b => b.offsetParent !== null);
+        const closeBtn = btns.find(b => /close|cancel|关闭|取消|esc|×/i.test(
+          (b.getAttribute("aria-label") || "") + (b.textContent || "").trim()));
+        if (closeBtn) { try { closeBtn.click(); console.log('[zs] arena: dismissed blocking dialog (close button)'); return; } catch {} }
+        const o = { key: "Escape", code: "Escape", keyCode: 27, which: 27, bubbles: true, cancelable: true };
+        try { d.dispatchEvent(new KeyboardEvent("keydown", o)); document.dispatchEvent(new KeyboardEvent("keydown", o)); console.log('[zs] arena: Escape sent to blocking dialog'); } catch {}
+        return; // one dialog per preflight is enough; more will surface on retry
+      }
+    } catch {}
+  }
   // Best-effort wipe of a stranded draft (select-all + delete). Never throws.
   // Used on failure paths so the next attempt - or the user - starts from an
   // empty box instead of an append target. (NOT used when a send merely
@@ -589,6 +611,15 @@ const ZSProvider = (() => {
     if (isHardGenerating()) {
       throw new Error("Arena is still generating/working (Stop button present) - input refused. Wait for it to finish (or stop the generation), then retry; if the button is stuck, refresh the dedicated page. 建议：等网页生成完成（或点 Stop 停止生成）后再重试；若 Stop 按钮一直卡住，请刷新专用页。");
     }
+    // The site shows a post-answer feedback dialog (e.g. "此任务成功了吗?" with
+    // option buttons) that stays open after the reply and can block the
+    // composer for the NEXT task - the next dispatch then fails and the retry
+    // storm piles up. Dismiss it BEFORE typing: prefer a close control
+    // (aria-label/text matching close/关闭/cancel/×); otherwise try Escape on
+    // the dialog. We never click an outcome option (成功/失败) - that is user
+    // feedback the program must not fabricate (a dedicated dismiss click can
+    // be added once the dialog's exact buttons are known).
+    dismissBlockingDialog();
     const payload = truncateForSend(text);
     editor.focus();
     await setTextareaValue(editor, payload);

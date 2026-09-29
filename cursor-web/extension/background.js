@@ -36,6 +36,9 @@ async function connect() {
     try {
       const ack = await chrome.tabs.sendMessage(s.tabId, {...msg, expectedKey:s.key});
       if (!ack?.accepted) throw new Error(ack?.error || 'Page rejected task');
+      // Report the content script's build generation so the endpoint can
+      // detect a stale dedicated page (old extension) BEFORE the task runs.
+      if (ack.build) send({type:'ack', job_id:msg.job_id, build:ack.build});
     } catch (e) {
       routes.delete(msg.job_id);
       const m = String((e && e.message) || e);
