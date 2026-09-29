@@ -176,6 +176,7 @@ git diff --check
   3. **端点无熔断**：Cursor 每次重发都原样再打进同一个卡住的框。
   修复：① `content.js` 预检加 `isHardGenerating()`（Stop 按钮存在即拒绝，**打字前**失败，中文提示）；② `arena.js` `typeAndSend` 入口加 Stop 按钮硬门槛；`insertContentEditable` 改**验证式清空**（全选+删除+复检，最多 6 次，清不掉就拒绝写入、一个字都不打）；写入后**追加检测**（框内容 >115% 写入量 = 有残留，拒绝发送+尽力清空）；新错误信息中文化。③ `model_endpoint.py` **熔断器**：同一专用页连续 3 次任务失败（6 分钟窗口）后，下一次请求在**打字前**直接 409（中文处置指引：刷新专用页/Cursor 新开对话）；90 秒冷却后自动放行**一次试探**（扩展已保证不会堆积），成功即清零。
   新增测试 ×5：熔断拦截（3 连败→409、零写入）+ 试探成功清零、预检硬生成拒绝（零打字、phase=preflight）、追加守卫（模拟站点把旧草稿重新渲染回来 → 拒发+清空、不点发送）；mock 的 `isHardGenerating` 改为时序感知。
+- **输入提示词"字面标记"——原始内容用围栏/行内代码标识（回应"整体都是乱的…不能把一些文字内容使用 text 标识起来吗"，Python 92 + JS 70 = 162 全绿，提交见本分支）**：网页的 Markdown 渲染会把提示词里的裸 URL 变超链接（连括号里的"（streamable"都吞进链接）、把 `.zs-adapter/tools.md` 变成 `http://tools.md` 假链接、渲染复制时丢反斜杠——观感混乱且可能误导模型。现在 `model_endpoint._build_prompt`：① **整个 CURRENT_REQUEST 的 JSON 包进 `~~~text` 围栏**（用波浪号而不用反引号：编码对话的 JSON 里常有 ``` 序列，反引号围栏会被提前闭合；波浪号在真实代码内容里几乎不出现），提示词里注明"围栏内是 JSON 原文、按字面解析、围栏不属于请求内容"；② **MCP 端点 URL 用行内代码**（`` `https://…` ``，防自动链接）；③ **tools.md 指针路径用行内代码**（防变假链接）。协议契约（输出 json 围栏、request_id 等）不变；新增回归测试（围栏恰好一对、以围栏闭合、URL 行内代码、围栏内 JSON 仍可解析回原请求）；测试的 envelope 提取改为先剥围栏（`_envelope` 助手，test_model_endpoint ×7 / test_bridge ×1）。
 
 ## 0.4.19 qwen / gemini / meta / chatgpt 逐项适配完成（2026-09-22）
 

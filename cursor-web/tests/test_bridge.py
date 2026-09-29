@@ -190,7 +190,8 @@ class BridgeTests(unittest.IsolatedAsyncioTestCase):
             for turn in range(2):
                 dispatch = json.loads(await browser.recv())
                 self.assertEqual(dispatch.get('response_format'), 'json_code_block')
-                request = json.loads(dispatch['prompt'].split('CURRENT_REQUEST:\n')[1])
+                _rest = dispatch['prompt'][dispatch['prompt'].index('CURRENT_REQUEST'):]
+                request = json.loads(_rest.split('~~~text\n', 1)[1].rsplit('\n~~~', 1)[0])
                 if turn == 0:
                     answer = {'request_id': request['request_id'], 'content': None,
                               'tool_calls': [{'name': 'read_file', 'arguments': {'path': 'demo.js'}}]}

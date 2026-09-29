@@ -21,6 +21,13 @@ BODY = {'model': 'web-ai', 'messages': [{'role': 'user', 'content': 'Help with c
 HEADERS = {'Authorization': 'Bearer local-test-key'}
 
 
+def _envelope(prompt):
+    """Extract the CURRENT_REQUEST JSON (fenced as a ~~~text block since the
+    literal-marking change)."""
+    rest = prompt[prompt.index('CURRENT_REQUEST'):]
+    return json.loads(rest.split('~~~text\n', 1)[1].rsplit('\n~~~', 1)[0])
+
+
 class FakeWeb:
     def __init__(self):
         self.sent = []
@@ -39,7 +46,7 @@ class FakeWeb:
             return {'sessions': [{'id': 'bound-page', 'provider': self.provider}]}
         if payload['type'] == 'send':
             self.sent.append(payload)
-            envelope = json.loads(payload['prompt'].split('CURRENT_REQUEST:\n')[1])
+            envelope = _envelope(payload['prompt'])
             calls = [{'name': 'read_file', 'arguments': {'path': 'src/main.js'}}] if self.mode == 'tool' else []
             answer = {'request_id': envelope['request_id'], 'content': None if calls else '网页回答', 'tool_calls': calls}
             if self.escape_mode:
@@ -95,6 +102,34 @@ class EndpointTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn('围栏必须保留', self.web.sent[0]['prompt'])
         self.assertIn('你是本地编码客户端背后的唯一模型', self.web.sent[0]['prompt'])
 
+    async def test_prompt_marks_raw_content_as_literal(self):
+        # User request: raw content must be fenced / inline-coded so the page
+        # renders it literally (URLs not autolinked, paths not turned into fake
+        # links, backslashes kept in the rendered copy).
+        old_url = os.environ.get('ZW_FILE_MCP_URL')
+        os.environ['ZW_FILE_MCP_URL'] = 'https://tunnel.example/mcp?token=abc'
+        try:
+            r = await self.post()
+        finally:
+            if old_url is None:
+                os.environ.pop('ZW_FILE_MCP_URL', None)
+            else:
+                os.environ['ZW_FILE_MCP_URL'] = old_url
+        self.assertEqual(r.status_code, 200, r.text)
+        prompt = self.web.sent[0]['prompt']
+        # The whole request envelope is one ~~~text fence (tildes: the JSON
+        # content routinely contains ``` from coding conversations and would
+        # close a backtick fence early).
+        self.assertIn('~~~text\n', prompt)
+        self.assertEqual(prompt.count('~~~text'), 1)
+        self.assertTrue(prompt.rstrip().endswith('~~~'), 'envelope must be fence-closed')
+        # The MCP URL sits in inline code (no autolink).
+        self.assertIn('`https://tunnel.example/mcp?token=abc`', prompt)
+        self.assertNotIn('MCP：https://', prompt)
+        # The fenced envelope still round-trips to the exact request JSON.
+        env = _envelope(prompt)
+        self.assertEqual(env['messages'][0]['content'], 'Help with code')
+
     async def test_text_and_exact_retry_cached(self):
         r = await self.post()
         self.assertEqual(r.status_code, 200)
@@ -115,7 +150,7 @@ class EndpointTests(unittest.IsolatedAsyncioTestCase):
         messages = BODY['messages'] + [choice['message'], {'role': 'tool', 'tool_call_id': call['id'], 'content': 'actual file content'}]
         r = await self.post(messages=messages, tools=[TOOL])
         self.assertEqual(r.status_code, 200)
-        forwarded = json.loads(self.web.sent[-1]['prompt'].split('CURRENT_REQUEST:\n')[1])
+        forwarded = _envelope(self.web.sent[-1]['prompt'])
         self.assertEqual(forwarded['messages'][-1]['tool_call_id'], call['id'])
         self.assertEqual(forwarded['messages'][-1]['content'], 'actual file content')
 
@@ -276,7 +311,7 @@ class EndpointTests(unittest.IsolatedAsyncioTestCase):
         content = 'x' * 90000
         r = await self.post(messages=[{'role': 'system', 'content': content}] + BODY['messages'])
         self.assertEqual(r.status_code, 200)
-        forwarded = json.loads(self.web.sent[0]['prompt'].split('CURRENT_REQUEST:\n')[1])
+        forwarded = _envelope(self.web.sent[0]['prompt'])
         self.assertEqual(forwarded['messages'][0]['content'], content)
 
     async def test_provider_oversize_reports_role_sizes_without_contents(self):
@@ -939,7 +974,7 @@ class StaticExternIntegrationTests(unittest.IsolatedAsyncioTestCase):
             saved.update(self._set_env(ZW_CONTEXT_EXTERN='0', ZW_TOOL_DESC_MAX_UNITS='600'))
             r1 = await self.post(messages=body['messages'], tools=body['tools'])
             self.assertEqual(r1.status_code, 200, r1.text)
-            fwd1 = json.loads(self.web.sent[-1]['prompt'].split('CURRENT_REQUEST:\n')[1])
+            fwd1 = _envelope(self.web.sent[-1]['prompt'])
             self.assertLess(endpoint.utf16_units(json.dumps(fwd1['tools'])),
                             14 * 1100)  # every description capped (was ~70k, now ~13k)
             self.assertEqual(fwd1['tools'][0]['function']['parameters'],
@@ -952,7 +987,7 @@ class StaticExternIntegrationTests(unittest.IsolatedAsyncioTestCase):
                 r2 = await self.post(messages=body['messages'], tools=body['tools'])
                 self.assertEqual(r2.status_code, 200, r2.text)
                 prompt = self.web.sent[-1]['prompt']
-                envelope = json.loads(prompt.split('CURRENT_REQUEST:\n')[1])
+                envelope = _envelope(prompt)
                 self.assertIn('.zs-adapter/system.md', prompt)
                 for doc in ('rules.md', 'skills.md', 'mcp.md', 'tools.md'):
                     self.assertIn(f'.zs-adapter/{doc}', prompt)
@@ -979,7 +1014,7 @@ class StaticExternIntegrationTests(unittest.IsolatedAsyncioTestCase):
                 r3 = await self.post(messages=body['messages'], tools=body['tools'])
                 self.assertEqual(r3.status_code, 200, r3.text)
                 prompt = self.web.sent[-1]['prompt']
-                envelope = json.loads(prompt.split('CURRENT_REQUEST:\n')[1])
+                envelope = _envelope(prompt)
                 self.assertLess(endpoint.utf16_units(json.dumps(envelope)), 12000)
                 self.assertIn('请把登录按钮改成红色', prompt)
         finally:
@@ -999,7 +1034,7 @@ class StaticExternIntegrationTests(unittest.IsolatedAsyncioTestCase):
         try:
             r = await self.post(messages=body['messages'], tools=body['tools'])
             self.assertEqual(r.status_code, 413, r.text)
-            fwd = json.loads(self.web.sent[-1]['prompt'].split('CURRENT_REQUEST:\n')[1]) \
+            fwd = _envelope(self.web.sent[-1]['prompt']) \
                 if self.web.sent else None
             self.assertIsNone(fwd)  # nothing was sent: still over budget inline
         finally:
