@@ -771,3 +771,8 @@ b12 的绕行 = **把这些固定内容变成文档，让网页 AI 通过文件 
 - 若 `<rules>` 等块里引用的是**项目外**的路径（如 `C:\Users\…` 的其它目录），文档照常可读（在 `.zs-adapter` 里），但其中提到的外部文件路径本身仍需在 MCP 项目根内才可被读取。
 - 协议前言（约 1,100 单位的响应格式约定，已中文化）**保持内联**——它是"怎么回答"的契约，外置会让第一轮回答跑偏，不值得。
 - 相关环境变量（高级）：`ZW_CONTEXT_EXTERN`（默认 1）、`ZW_TOOL_DESC_MAX_UNITS`（默认 600）、`ZW_FILE_MCP_ROOT`（由窗口自动设置）。
+## 0.4.24（构建 b13）：文件 MCP 隧道 421 修复 + 版本号恢复递增（2026-09-29）
+
+**修复**：网页经隧道连文件 MCP 时必报 `421 Invalid Host header`。原因不在隧道——mcp Python SDK（1.12+，exe 内 1.30.0）内置 **DNS rebinding 防护默认开启**：`FastMCP` 绑回环时自动启用 Host 校验，默认白名单只放 `127.0.0.1`/`localhost`/`[::1]`；而隧道进来的请求 Host 是当次运行的随机 trycloudflare.com 域名 ⇒ 本地 MCP 服务对每个请求都 421。`file_mcp.py` 现在显式关闭该 SDK 校验（真实认证边界不变：bearer token 网关随机 token，服务仍只绑 127.0.0.1、只读）。回归测试：原始 socket 精确发送隧道形 Host（正确 token → 200 且 initialize 成功、错误 token → 仍 401、回环 Host 不受影响）。Python 96 + JS 71 = 167 全绿。
+
+**版本号**：0.4.23 → **0.4.24**——内容脚本 `VERSION`、manifest、8 个站点 provider 的 `version` 字段、程序横幅（app.py）与打包脚本**一处不漏**地同步；`versionsync` 回归测试读真实文件断言三处一致，版本漂移会当场红。新构建启动横幅应显示 `版本: 0.4.24  (构建 b13)`，`build_exe.bat` 末尾的核对提示同步更新。
