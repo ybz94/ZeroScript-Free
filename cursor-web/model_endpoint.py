@@ -432,10 +432,7 @@ def _build_prompt(body, messages, request_id, file_extern=False, tools_extern=Fa
         input_items.append(f'下方 CURRENT_REQUEST 的 tools 数组只列工具名与一行提示：完整描述与参数 schema 在文件 `{_CONTEXT_DIR}/tools.md`'
                            '（用文件 MCP 的 read_file 读取）——首次发起工具调用前必须先读取它，并严格按其中的 schema 构造参数。')
     input_section = '\n'.join(f'{i}. {t}' for i, t in enumerate(input_items, 1))
-    prompt = '''# 角色
-你是本地编码客户端背后的唯一模型，没有第二个模型会转述或解读你的回答。
-
-# 输入
+    prompt = '''# 输入
 ''' + input_section + '''
 
 # 工具

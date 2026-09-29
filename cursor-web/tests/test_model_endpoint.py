@@ -100,7 +100,6 @@ class EndpointTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(r.status_code, 200)
         self.assertEqual(self.web.sent[0]['response_format'], 'json_code_block')
         self.assertIn('围栏必须保留', self.web.sent[0]['prompt'])
-        self.assertIn('你是本地编码客户端背后的唯一模型', self.web.sent[0]['prompt'])
 
     async def test_prompt_marks_raw_content_as_literal(self):
         # User request: raw content must be fenced / inline-coded so the page
