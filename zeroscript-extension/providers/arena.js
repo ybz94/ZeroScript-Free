@@ -907,6 +907,7 @@ const ZSProvider = (() => {
         if (el.offsetParent === null) continue;
         if (el.closest(S.list)) continue; // inside a chat turn ⇒ model content
         const t = (el.innerText || "").trim();
+        if (looksLikeCode(t)) continue;
         if (t.length > 8 && t.length < 600 && RE.contextLimit.test(t)) return t.slice(0, 240);
       }
     } catch {}
@@ -923,13 +924,31 @@ const ZSProvider = (() => {
         if (el.offsetParent === null) continue;
         if (el.closest(S.list)) continue; // inside a chat turn ⇒ model content
         const t = (el.innerText || "").trim();
-        if (t.length >= 8 && t.length < 600) return t;
+        if (t.length >= 8 && t.length < 600) {
+          if (looksLikeCode(t)) continue; // preview-crash dialog showing app code: task content, not a site rejection
+          return t;
+        }
       }
     } catch {}
     return null;
   }
   const isTooLongMsg = (text) => RE.tooLong.test(text);
   const isBusyMsg = (text) => RE.busy.test(text);
+  // A preview-pane crash dialog on the page can display the user's APP CODE
+  // (minified source with CJK strings, e.g. a game's upgrade-effect text) as
+  // its "error" - that content matches [class*="error"]/[role="alert"] and
+  // used to fail every task in seconds (live incident 2026-09-29: 3 stacked
+  // failures tripped the circuit breaker). Real SITE errors are prose
+  // ("Login expired", "Something went wrong") - low code punctuation, and CJK
+  // prose has no spaces by nature. So: strip CJK, and if a remaining 12+ char
+  // token carries code punctuation, it is source code, not site chrome.
+  const looksLikeCode = (t) => {
+    const stripped = t.replace(/[\u3000-\u303f\u4e00-\u9fff\uff00-\uffef]+/g, " ");
+    for (const chunk of stripped.split(/\s+/)) {
+      if (chunk.length >= 12 && /[{}();=.`[\]]/.test(chunk)) return true;
+    }
+    return false;
+  };
 
   // ── Image attachment (validated live 2026-07 on /text/direct) ─────────────
   // Arena's composer <form> holds ONE always-mounted hidden `input[type=file]`

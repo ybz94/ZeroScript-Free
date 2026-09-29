@@ -412,9 +412,11 @@ function arenaSend(options = {}) {
     getAttribute: n => (n === 'aria-label' ? 'Send message' : null),
     click(){ clicked++; editor.textContent = ''; }, // site accepts: composer clears
   };
+  const errorEl = options.errorText ? { offsetParent: {}, closest: () => null, innerText: options.errorText } : null;
   const document = {
     querySelectorAll(sel){
       if (sel === '[contenteditable]') return [editor];
+      if (sel.indexOf('role="alert"') !== -1) return errorEl ? [errorEl] : []; // errorSurfaces probe
       if (sel === 'button') {
         // reinjectAtSend: the site re-renders a stale draft over our write the
         // first time the send button is polled (i.e. after the write).
@@ -509,4 +511,15 @@ test('arena refuses the send when the site re-renders a stale draft over the wri
   assert.match(err.message, /re-grew/);
   assert.equal(a.clicked, 0, 'must never click send with stacked text');
   assert.equal(a.editor.textContent, '', 'best-effort clear wiped the box');
+});
+test('arena errorText ignores a code-like preview-crash popup but keeps prose site errors', () => {
+  // Live incident 2026-09-29: the page showed the user's game code (minified
+  // JS + CJK) in an error dialog; the extension read it as a site error and
+  // failed the task 3x, tripping the circuit breaker.
+  const codey = arenaSend({ errorText: '{A?T.value(this.run):当前效果：获得对应升级后生效}).setColor(A?"#' });
+  assert.equal(codey.P.errorText(), null, 'code-like popup must not fail the task');
+  const prose = arenaSend({ errorText: 'Login expired, please sign in again' });
+  assert.equal(prose.P.errorText(), 'Login expired, please sign in again');
+  const cjkProse = arenaSend({ errorText: '登录已过期，请重新登录后再试' });
+  assert.equal(cjkProse.P.errorText(), '登录已过期，请重新登录后再试');
 });
