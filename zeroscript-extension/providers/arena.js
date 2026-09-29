@@ -538,7 +538,7 @@ const ZSProvider = (() => {
         editor = getEditor();
       }
     }
-    if (!editor) throw new Error("Arena input box not found after 15s (no visible TipTap composer or visible form textarea; the page may still be loading, or this may not be the chat page). Refresh the dedicated page, wait until the input box is visible, and retry.");
+    if (!editor) throw new Error("Arena input box not found after 15s (no visible TipTap composer or visible form textarea; the page may still be loading, or this may not be the chat page). If the conversation has been very long, the page itself is likely overloaded. Recovery: 1) click the Arena site card in Cursor Web Assistant to open a FRESH dedicated window (new tab = clean page); 2) start a NEW conversation in Cursor; 3) retry. 建议：一个任务用一条新对话——超长单页对话会把网页自身撑崩，这不是本程序的发送失败。");
     const payload = truncateForSend(text);
     editor.focus();
     await setTextareaValue(editor, payload);
