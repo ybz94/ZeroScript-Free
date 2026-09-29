@@ -116,7 +116,9 @@ class BridgeTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_busy_session(self):
         _, cursor, _ = await self.submit()
-        self.assertIn('busy', (await self.request(cursor, type='send', session_id='session-1', prompt='again'))['error'])
+        err = (await self.request(cursor, type='send', session_id='session-1', prompt='again'))['error']
+        self.assertIn('仍在回答上一个任务', err)  # actionable: wait, don't resend
+        self.assertIn('已运行', err)
 
     async def test_invalid_prompts(self):
         cursor = await self.client()
@@ -143,7 +145,7 @@ class BridgeTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_expiry_and_late_result(self):
         browser, cursor, job = await self.submit()
-        bridge.jobs[job['job_id']]['created'] -= 301
+        bridge.jobs[job['job_id']]['created'] -= 541  # past the 540s job cap
         result = await self.request(cursor, type='get', job_id=job['job_id'])
         self.assertEqual(result['status'], 'error')
         await browser.send(json.dumps({'type': 'result', 'job_id': job['job_id'], 'text': 'late'}))

@@ -32,7 +32,7 @@ MAX_CACHE = 128
 # page still running an OLDER extension (stale browser window from a previous
 # build) silently misbehaves - stale prompts, stranded composer, popup
 # failures - so the endpoint refuses it with an actionable 409.
-EXTENSION_BUILD_ID = '20260929.3'
+EXTENSION_BUILD_ID = '20260929.4'
 
 
 class AdapterError(Exception):
@@ -752,7 +752,7 @@ def create_app(api_key, session, rpc=bridge_rpc, poll_interval=1, heartbeat=10, 
         if submitted.get('error') or not submitted.get('job_id'):
             raise AdapterError(submitted.get('error', 'Missing job_id'))
         jid = submitted['job_id']
-        deadline = time.monotonic() + 270
+        deadline = time.monotonic() + 510  # agent turns using the file MCP take minutes; ladder: extension 480s < endpoint 510s < bridge 540s
         started = time.monotonic()
         build_ok = False
         while time.monotonic() < deadline:
@@ -781,7 +781,9 @@ def create_app(api_key, session, rpc=bridge_rpc, poll_interval=1, heartbeat=10, 
             if result.get('status') != 'running':
                 raise AdapterError('Invalid task status; do not resend')
             await asyncio.sleep(poll_interval)
-        raise AdapterError(f'Webpage task {jid} timed out; check the original webpage request before retrying', 504)
+        raise AdapterError(
+            f'网页回答超时（510 秒，任务 {jid[:8]}）。打开专用页查看网页是否仍在回答——'
+            '等它答完再重新发送；不要立即重发（任务可能仍在网页上运行，重发会报"网页忙"）', 504)
 
     def parse_with_diagnostics(raw, request_id, body, catalog, diagnostics):
         try:
@@ -906,8 +908,8 @@ def create_app(api_key, session, rpc=bridge_rpc, poll_interval=1, heartbeat=10, 
                 oldest = min(running, key=lambda e: e[1])[1]
                 wait_s = int(time.monotonic() - oldest)
                 raise AdapterError(
-                    f'Dedicated webpage is busy with another request (running {wait_s}s; a task can wait up to ~4.5 min). '
-                    'Wait for it to finish, or restart model_endpoint.py to clear it before retrying.', 409)
+                    f'网页仍在回答上一个请求（已运行 {wait_s} 秒；一个任务最长约 8.5 分钟）。'
+                    '请等它回答完成后再发送——期间重发只会失败；打开专用页可直接查看回答进度，无需重启程序', 409)
             if len(cache) >= MAX_CACHE:
                 raise AdapterError('Request cache full; finish the session before restarting the endpoint', 503)
             start = time.monotonic()

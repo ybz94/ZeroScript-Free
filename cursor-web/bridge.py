@@ -45,8 +45,11 @@ async def handle(ws):
             msg = json.loads(raw)
             kind = msg.get('type')
             for job in jobs.values():
-                if job['status'] == 'running' and time.time() - job['created'] > 300:
-                    job.update(status='error', error='Task deadline exceeded; webpage may still be running. Check it before retrying.')
+                # Outer safety net for a lost result (e.g. the extension's
+                # result message was dropped during a bridge restart). Ladder:
+                # extension 480s < endpoint 510s < bridge 540s.
+                if job['status'] == 'running' and time.time() - job['created'] > 540:
+                    job.update(status='error', error='任务超时（540 秒）：网页可能仍在回答，打开专用页查看进度，等它答完再重试')
             result = {'error': 'Unsupported request'}
             if role == 'extension':
                 if kind == 'sessions':
@@ -73,33 +76,39 @@ async def handle(ws):
                                    for j in jobs.values()]}
             elif kind == 'send':
                 sid, prompt = msg.get('session_id'), msg.get('prompt')
-                if not isinstance(prompt, str) or not prompt.strip() :
+                if not isinstance(prompt, str) or not prompt.strip():
                     result = {'error': 'Prompt must be a nonempty string'}
-                elif any(j['session_id'] == sid and j['status'] == 'running' for j in jobs.values()):
-                    result = {'error': 'Session busy; query the existing task instead of resending'}
                 else:
-                    owner = next((w for w, sessions in clients.items()
-                                  if any(s.get('id') == sid for s in sessions)), None)
-                    session = next((s for s in clients.get(owner, []) if s.get('id') == sid), {})
-                    oversize = size_error(prompt, session)
-                    if owner is None:
-                        result = {'error': 'Session unavailable; list sessions again'}
-                    elif oversize:
-                        result = {'error': oversize}
-                    elif len(jobs) >= 500:
-                        result = {'error': 'Task capacity reached; restart bridge after collecting results'}
+                    busy = next((j for j in jobs.values()
+                                 if j['session_id'] == sid and j['status'] == 'running'), None)
+                    if busy:
+                        elapsed = int(time.time() - busy['created'])
+                        result = {'error': (
+                            f"网页仍在回答上一个任务（{busy['job_id'][:8]}…，已运行 {elapsed} 秒；最长约 9 分钟）。"
+                            '请等网页回答完成后再发送——打开专用页可直接查看进度；重发会持续失败直到该任务结束')}
                     else:
-                        jid = str(uuid.uuid4())
-                        jobs[jid] = {'job_id': jid, 'session_id': sid, 'status': 'running',
-                                     'created': time.time(), 'owner': owner}
-                        try:
-                            await owner.send(json.dumps({'type': 'dispatch', 'job_id': jid,
-                                                        'session_id': sid, 'prompt': prompt,
-                                                        'response_format': msg.get('response_format')}))
-                            result = {'job_id': jid, 'status': 'running'}
-                        except Exception:
-                            jobs[jid].update(status='error', error='Browser disconnected; delivery uncertain. Do not automatically resend.')
-                            result = {'job_id': jid, 'error': jobs[jid]['error']}
+                        owner = next((w for w, sessions in clients.items()
+                                      if any(s.get('id') == sid for s in sessions)), None)
+                        session = next((s for s in clients.get(owner, []) if s.get('id') == sid), {})
+                        oversize = size_error(prompt, session)
+                        if owner is None:
+                            result = {'error': 'Session unavailable; list sessions again'}
+                        elif oversize:
+                            result = {'error': oversize}
+                        elif len(jobs) >= 500:
+                            result = {'error': 'Task capacity reached; restart bridge after collecting results'}
+                        else:
+                            jid = str(uuid.uuid4())
+                            jobs[jid] = {'job_id': jid, 'session_id': sid, 'status': 'running',
+                                         'created': time.time(), 'owner': owner}
+                            try:
+                                await owner.send(json.dumps({'type': 'dispatch', 'job_id': jid,
+                                                            'session_id': sid, 'prompt': prompt,
+                                                            'response_format': msg.get('response_format')}))
+                                result = {'job_id': jid, 'status': 'running'}
+                            except Exception:
+                                jobs[jid].update(status='error', error='Browser disconnected; delivery uncertain. Do not automatically resend.')
+                                result = {'job_id': jid, 'error': jobs[jid]['error']}
             elif kind == 'get':
                 job = jobs.get(msg.get('job_id'))
                 result = {k: v for k, v in job.items() if k != 'owner'} if job else {'error': 'Unknown task (bridge may have restarted)'}

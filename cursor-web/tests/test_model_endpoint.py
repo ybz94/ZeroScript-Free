@@ -34,6 +34,7 @@ class FakeWeb:
         self.sent = []
         self.result = None
         self.failure = None
+        self.send_error = None  # bridge-level send rejection (e.g. session busy)
         self.waiting = False
         self.mode = 'text'
         self.provider = 'unknown'
@@ -50,6 +51,8 @@ class FakeWeb:
         if payload['type'] == 'list':
             return {'sessions': [{'id': 'bound-page', 'provider': self.provider}]}
         if payload['type'] == 'send':
+            if self.send_error:
+                return {'error': self.send_error}
             self.sent.append(payload)
             envelope = _envelope(payload['prompt'])
             calls = [{'name': 'read_file', 'arguments': {'path': 'src/main.js'}}] if self.mode == 'tool' else []
@@ -325,6 +328,22 @@ class EndpointTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(self.web.sent), 4)  # every attempt reached exchange
         self.web.waiting = False
 
+    async def test_bridge_busy_error_surfaces_actionably(self):
+        # User incident 2026-09-29: the webpage was STILL answering when a
+        # resend hit the bridge's in-flight job - the raw machine-facing
+        # "Session busy; query the existing task instead of resending"
+        # reached the user verbatim and dead-ended. The endpoint must
+        # surface the (now actionable) bridge message instead of failing
+        # with an opaque error.
+        self.web.send_error = ('网页仍在回答上一个任务（abcd1234…，已运行 12 秒；最长约 9 分钟）。'
+                               '请等网页回答完成后再发送——打开专用页可直接查看进度；重发会持续失败直到该任务结束')
+        r = await self.post()
+        self.assertEqual(r.status_code, 502, r.text)
+        self.assertIn('仍在回答上一个任务', r.text)
+        self.assertIn('已运行 12 秒', r.text)
+        self.assertEqual(self.web.sent, [])  # nothing re-sent into the page
+        self.web.send_error = None
+
     async def test_busy_rejected_but_same_request_shared(self):
         self.web.waiting = True
         first = asyncio.create_task(self.post())
@@ -335,9 +354,9 @@ class EndpointTests(unittest.IsolatedAsyncioTestCase):
             other = await self.post(messages=[{'role': 'user', 'content': 'different request'}])
             self.assertEqual(other.status_code, 409)
             msg = other.json()['error']['message']
-            self.assertIn('busy with another request', msg)
-            self.assertRegex(msg, r'running \d+s')
-            self.assertIn('restart model_endpoint.py', msg)
+            self.assertIn('网页仍在回答上一个请求', msg)
+            self.assertRegex(msg, r'已运行 \d+ 秒')
+            self.assertNotIn('restart model_endpoint.py', msg)  # desktop: no CLI to restart
             retry = asyncio.create_task(self.post())
             await asyncio.sleep(.01)
             self.assertEqual(len(self.web.sent), 1)

@@ -194,6 +194,15 @@ git diff --check
 - **版本号**：程序 0.4.24 → **0.4.25**（构建 b14：横幅 + User-Agent + build_exe.bat 核对行）；**本轮扩展未改动**——content.js/manifest/providers 保持 0.4.24、BUILD_ID 保持 20260929.3（扩展代次未变则构建戳不升，否则用户当前 b13 页面会被全部误判为"旧版"）。
 - **环境备注（非代码）**：沙箱 venv / tests/node_modules 被清除后按 requirements 重建（mcp 1.30.x），新版 uvicorn/h11 严格拒绝**重复 Host 头** ⇒ `test_tunnel_host_header_accepted` 的原始 socket 改 `skip_host=True`（只发一个显式 Host），生产代码无变化。
 
+## 0.4.26 长回答（MCP 任务）不再被中途掐断 + "网页忙"报错可操作化（构建 b15，2026-09-29）
+
+- **长回答超时修复（回应实机"还是网页没回答完呢 报错了"——`Session busy; query the existing task instead of resending`；Python 99 + JS 71 = 170 全绿）**：旧超时阶梯（扩展 240s < 端点 270s < bridge 300s）对"网页 AI 走文件 MCP 读文件再回答"的分钟级任务全太短——健康的进行中回答在 240s 被扩展掐掉，端点 270s 放弃后，bridge 里**结果丢失的任务**（WS 瞬断窗口静默丢弃 / 程序重启残留）继续占住会话最多 300s，期间每次重发都失败，且用户看到的是 bridge 的英文机器语原文（对人不可操作）。修复：
+  1. **超时阶梯整体拉长**：扩展 240s→**480s**（content.js 等待循环 + 相关注释）、端点 270s→**510s**、bridge 任务上限 300s→**540s**（逐层递增，结果能按序传导；正常长回答 ≤8 分钟可答完）。
+  2. **全部超时/忙碌错误改可操作中文**：扩展超时"等待网页回答超时（480 秒）。网页可能仍在回答——打开专用页可直接查看进度…"；端点 504"网页回答超时（510 秒，任务 xxxx）…不要立即重发（任务可能仍在网页上运行，重发会报"网页忙"）"；端点在跑拒绝"网页仍在回答上一个请求（已运行 N 秒；一个任务最长约 8.5 分钟）…无需重启程序"（移除旧的 `restart model_endpoint.py` CLI 提示）；bridge 忙碌"网页仍在回答上一个任务（job xxxx，已运行 N 秒；最长约 9 分钟）。请等网页回答完成后再发送…"；bridge 超时"任务超时（540 秒）：网页可能仍在回答…"。
+  3. **background.js 结果防丢（outbox）**：原 `send()` 在 WS 非 OPEN 时**静默丢消息**——任务 result 恰逢程序重启窗口被丢 ⇒ bridge 任务永远 "running" ⇒ 之后每次重发都报 busy（用户报错的僵尸任务机制）。现在 result 发不出去时进 outbox（上限 50 条），下次 WS 握手成功后冲刷（bridge 对未知任务条目忽略，冲刷恒安全）。
+  4. bridge.py send 分支重构：busy 检查从 `elif any(...)` 改为取 job 引用（带 job_id 与已运行秒数）；重构时一次缩进回归（raise 被移出 if，30 项测试当场变红）被测试拦下并修复。
+  5. **版本号**：扩展 0.4.24→**0.4.25**（content.js + background.js 有改动；BUILD_ID 20260929.3→20260929.4），程序 0.4.25→**0.4.26**（构建 b15）。测试 +1（bridge busy 错误经端点原样带出且含"仍在回答上一个任务/已运行 12 秒"、零重发）；5 处断言同步新中文消息 / 540s 上限 / 3 个测试标题 240s→480s。
+
 ## 0.4.19 qwen / gemini / meta / chatgpt 逐项适配完成（2026-09-22）
 
 - Python 46 项、JavaScript 60 项，总计 106 项通过（`unittest discover` + `npm test`）。

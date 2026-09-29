@@ -30,8 +30,8 @@ BRIDGE_PORT = int(os.getenv('CURSOR_WEB_PORT', '17614'))
 ENDPOINT_PORT = int(os.getenv('CURSOR_WEB_ENDPOINT_PORT', '17615'))
 UI_PORT = int(os.getenv('CURSOR_WEB_UI_PORT', '17616'))
 MODEL = 'web-ai'
-VERSION = '0.4.25'
-BUILD_ID = 'b14'  # printed in the banner: proves which build is actually running
+VERSION = '0.4.26'
+BUILD_ID = 'b15'  # printed in the banner: proves which build is actually running
 
 SITES = [
     ('deepseek', 'DeepSeek', 'https://chat.deepseek.com'),
@@ -68,7 +68,7 @@ def download_file(url, dst, progress_cb=None):
     import urllib.request
     dst = Path(dst)
     tmp = dst.with_suffix(dst.suffix + '.part')
-    req = urllib.request.Request(url, headers={'User-Agent': 'CursorWebAssistant/0.4.25'})
+    req = urllib.request.Request(url, headers={'User-Agent': 'CursorWebAssistant/0.4.26'})
     with urllib.request.urlopen(req, timeout=30) as resp:
         total = int(resp.headers.get('Content-Length') or 0)
         if progress_cb:

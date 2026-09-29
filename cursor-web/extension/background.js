@@ -1,7 +1,20 @@
 let ws, authenticated = false;
 const sessions = new Map();
 const routes = new Map();
-const send = data => { if (authenticated && ws?.readyState === WebSocket.OPEN) ws.send(JSON.stringify(data)); };
+// Outbox: a result sent while the WS is down (bridge/exe restarting) would
+// otherwise be SILENTLY dropped, leaving the bridge job 'running' until its
+// deadline and making every resend fail with "Session busy". Results are the
+// only messages that must survive a reconnect - queue them and flush on the
+// next authenticated open. (Stale entries for jobs the new bridge doesn't
+// know about are ignored by the bridge, so flushing is always safe.)
+const outbox = [];
+const send = data => {
+  if (authenticated && ws?.readyState === WebSocket.OPEN) {
+    ws.send(JSON.stringify(data));
+  } else if (data.type === 'result' && outbox.length < 50) {
+    outbox.push(data);
+  }
+};
 function publish() {
   const now = Date.now();
   for (const [id, s] of sessions) if (now - s.seen > 180000) sessions.delete(id);
@@ -26,7 +39,11 @@ async function connect() {
     let msg;
     try { msg = JSON.parse(event.data); } catch { return; }
     if (!authenticated) {
-      if (msg.ok) {authenticated = true; publish(); chrome.storage.local.set({connectionStatus:'已连接本地 Bridge'});}
+      if (msg.ok) {
+        authenticated = true;
+        for (const queued of outbox.splice(0)) ws.send(JSON.stringify(queued));  // lost-window results
+        publish(); chrome.storage.local.set({connectionStatus:'已连接本地 Bridge'});
+      }
       return;
     }
     if (msg.type !== 'dispatch') return;

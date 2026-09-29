@@ -8,13 +8,13 @@
   const inputMaxLines = P.id === 'chatgpt' ? 600 : null;
   P.init({diag: () => {}});
   let id = crypto.randomUUID(), key = P.conversationKey(), busy = false;
-  const VERSION = '0.4.24';
+  const VERSION = '0.4.25';
   // Per-build stamp: a stale dedicated page running an OLDER extension is
   // otherwise invisible (the version gate only compares content script vs
   // providers, which travel in the same build). The endpoint expects its own
   // stamp; a mismatch (or no report at all) means the page still runs an old
   // extension and must be closed/reopened.
-  const BUILD_ID = '20260929.3';
+  const BUILD_ID = '20260929.4';
   const seen = new Set();
   // DOM events can wake the watcher even when background timers are throttled.
   // Keep a timer fallback for generation-state changes without DOM mutations.
@@ -31,7 +31,7 @@
   // The protocol reply is exactly one fenced JSON block, so a parseable
   // extraction IS a complete answer - regardless of the site's post-reply UI
   // (e.g. Arena Agent mode's "task complete? yes/no/continue" prompt leaves
-  // the page non-idle and would otherwise stall the wait to the 240s timeout).
+  // the page non-idle and would otherwise stall the wait to the 480s timeout).
   function isCompleteJson(t) {
     if (typeof t !== 'string') return false;
     const s = t.trim();
@@ -40,7 +40,7 @@
   }
   // Marker fallback (0.4.16): in some DOMs (fresh Agent-mode chats) the reply
   // turn does not match the provider's turn filter, so readAssistant() never
-  // reports it as fresh and the task would time out at 240s even though the
+  // reports it as fresh and the task would time out at 480s even though the
   // complete protocol JSON sits visible in the chat. The protocol reply is a
   // fenced block carrying this send's UNIQUE request id, so it can be located
   // by scanning code blocks directly - no turn structure assumptions.
@@ -188,7 +188,7 @@
       // chat's turn DOM structure.
       const ridMatch = msg.prompt.match(/"request_id":"([0-9a-fA-F]{6,})"/);
       const rid = ridMatch ? ridMatch[1] : null;
-      const deadline = Date.now() + 240000;
+      const deadline = Date.now() + 480000;  // 8 min: agent turns that use the file MCP take minutes
       let last = '', changed = Date.now(), idleSince = null, fresh = false, complete = false;
       let errorSince = null, lastReadAt = 0, fbLogged = false;
       while (Date.now() < deadline) {
@@ -204,7 +204,7 @@
         // Manual operation of the dedicated page (typing, or clicking the
         // site's post-reply follow-up prompt) injects extra user turns.
         // Fail in seconds with an actionable message instead of waiting out
-        // the 240s deadline reading a conversation we no longer own.
+        // the 480s deadline reading a conversation we no longer own.
         const usersNow = P.userCount ? P.userCount() : null;
         if (usersNow != null && usersNow > expectedUsers) {
           throw new Error('Dedicated page was operated during the task (an extra user message appeared - manual input or the site\'s follow-up prompt was clicked). Refresh the page, rebind the session, and retry; never use the dedicated page while a task runs');
@@ -239,7 +239,7 @@
         if (!fresh) {
           // A visible site error (toast/alert) with no reply means the page
           // rejected the request; fail in seconds instead of blocking the
-          // dedicated page for the full 240s wait. A reply that starts after
+          // dedicated page for the full 480s wait. A reply that starts after
           // the error cancels it (the error was about something else).
           const errText = P.errorText ? P.errorText() : null;
           if (errText) {
@@ -319,7 +319,7 @@
           break;
         }
       }
-      if (!complete) throw new Error('Timed out waiting for a complete new reply. Background throttling, login or website state may block progress. Activate the webpage and inspect the original request before retrying; do not automatically resend');
+      if (!complete) throw new Error('等待网页回答超时（480 秒）。网页可能仍在回答——打开专用页可直接查看进度，等它答完再重新发送；也可能是登录失效或页面被切到后台节流导致读不到回答。不要立即自动重发');
       if (text.length > 250000) throw new Error('Answer exceeds size limit; partial text returned. Request a shorter answer');
       console.log('[zs] reply complete: ' + text.length + ' chars, reason=' + (diagnostics.finalReason || 'idle'));
       diagnostics.phase = 'completed';

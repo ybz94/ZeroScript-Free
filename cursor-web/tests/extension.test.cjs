@@ -77,7 +77,7 @@ for(const [name,options,pattern] of [
   ['hard-generating page (Stop button present before send)',{hardGenerating:true},/already generating/],
   ['send failure',{sendError:true},/send failed/],
   ['truncated answer',{truncated:true},/truncated/],['stopped answer',{halted:true},/stopped/],
-  ['no new reply',{noReply:true},/Timed out/],
+  ['no new reply',{noReply:true},/等待网页回答超时/],
 ]) test(`content rejects ${name}`,async()=>{const c=content(options);c.dispatch();assert.match((await c.result()).error,pattern);});
 test('hard-generating page is refused BEFORE any typing (no stranded draft, no append pile-up)',async()=>{
   const c=content({hardGenerating:true,draft:'stuck unsent prompt from a failed attempt'});
@@ -96,7 +96,7 @@ test('leftover composer draft is recorded and replaced, not a hard failure',asyn
   assert.equal(r.diagnostics.composerDraftLen,'unsent manual work'.length);
   assert.equal(c.sent,1);
 });
-test('unconfirmed send (text stays in composer) fails fast, not after 240s',async()=>{
+test('unconfirmed send (text stays in composer) fails fast, not after 480s',async()=>{
   const c=content({sendNotConfirmed:true, hardGenerating:true, hardGenAfterSend:true});c.dispatch();
   const r=await c.result();
   assert.match(r.error,/Message was not sent/);
@@ -167,11 +167,11 @@ test('plain prose reply does NOT finalize via the JSON rule while page reports g
   const c=content({generating:true, answer:'plain prose'});
   c.dispatch({response_format:'json_code_block'});
   const r=await c.result();
-  assert.match(r.error,/Timed out/);
+  assert.match(r.error,/等待网页回答超时/);
   assert.equal(r.diagnostics.phase,'reading_reply');
   assert.equal(r.diagnostics.finalReason,undefined);
 });
-test('manual use of the dedicated page mid-task fails fast, not after 240s',async()=>{
+test('manual use of the dedicated page mid-task fails fast, not after 480s',async()=>{
   const c=content({extraUserTurns:1});
   c.dispatch();
   const r=await c.result();
@@ -231,7 +231,7 @@ test('marker fallback rejects the request envelope block (also carries the id), 
   const c=content({staleReads:true, markerBlocks:true, markerText:envelope});
   c.dispatch({prompt:'x {"request_id":"abcdef123456"} y', response_format:'json_code_block'});
   const r=await c.result();
-  assert.match(r.error,/Timed out/);
+  assert.match(r.error,/等待网页回答超时/);
   assert.equal(r.diagnostics.fallbackRead,undefined);
 });
 test('post-reply follow-up prompt is auto-answered (是) after a successful task',async()=>{
@@ -362,7 +362,7 @@ for (const options of [{hidden:true}, {hideAfterSend:true}]) {
 }
 test('background no reply returns actionable timeout without resend',async()=>{
   const c=content({hidden:true,noReply:true});c.dispatch();const r=await c.result();
-  assert.match(r.error,/Activate the webpage/);assert.equal(c.sent,1);
+  assert.match(r.error,/打开专用页/);assert.equal(c.sent,1);
   assert.equal(r.diagnostics.phase,'waiting_new_reply');
 });
 
@@ -392,7 +392,7 @@ test('model protocol returns code block extraction rather than rendered reply',a
   assert.equal(r.diagnostics.extraction_detail,'roots=1 scope=answer_roots turn_blocks=1');
   assert.equal(r.diagnostics.version,CONTENT_VERSION);
 });
-test('site error with no reply fails the task in seconds, not 240s',async()=>{
+test('site error with no reply fails the task in seconds, not 480s',async()=>{
   const c=content({noReply:true,siteError:'model channel not available'});
   c.dispatch();
   const r=await c.result();
