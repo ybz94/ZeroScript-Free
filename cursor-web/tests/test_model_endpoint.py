@@ -345,14 +345,18 @@ class EndpointTests(unittest.IsolatedAsyncioTestCase):
                 {'id': f'call_{i}', 'type': 'function',
                  'function': {'name': 'read_file', 'arguments': {'path': p}}}]} )
             msgs.append({'role': 'tool', 'tool_call_id': f'call_{i}', 'content': 'z' * 13500})
-        r0 = await self.post(messages=msgs, tools=tools)  # externalization OFF
-        self.assertEqual(r0.status_code, 413, r0.text)
-        self.assertNotIn('already folded', r0.text)  # folding had nothing to take
-        os.environ['ZW_FILE_EXTERN'] = '1'
+        os.environ['ZW_TOOL_DESC_MAX_UNITS'] = '0'  # pin the pre-slimming 49k-tools shape
         try:
-            r = await self.post(messages=msgs, tools=tools)  # externalization ON
+            r0 = await self.post(messages=msgs, tools=tools)  # externalization OFF
+            self.assertEqual(r0.status_code, 413, r0.text)
+            self.assertNotIn('already folded', r0.text)  # folding had nothing to take
+            os.environ['ZW_FILE_EXTERN'] = '1'
+            try:
+                r = await self.post(messages=msgs, tools=tools)  # externalization ON
+            finally:
+                os.environ.pop('ZW_FILE_EXTERN')
         finally:
-            os.environ.pop('ZW_FILE_EXTERN')
+            os.environ.pop('ZW_TOOL_DESC_MAX_UNITS')
         self.assertEqual(r.status_code, 200, r.text)
         prompt = self.web.sent[0]['prompt']
         self.assertIn('文件内容已外置', prompt)
@@ -408,7 +412,11 @@ class EndpointTests(unittest.IsolatedAsyncioTestCase):
             {'role': 'tool', 'tool_call_id': 'c1', 'content': 'x' * 15000},
             {'role': 'user', 'content': 'fix the paths'},
         ]
-        r = await self.post(messages=msgs, tools=tools)
+        os.environ['ZW_TOOL_DESC_MAX_UNITS'] = '0'  # pin the pre-slimming 49k-tools shape
+        try:
+            r = await self.post(messages=msgs, tools=tools)
+        finally:
+            os.environ.pop('ZW_TOOL_DESC_MAX_UNITS')
         self.assertEqual(r.status_code, 413, r.text)
         msg = r.json()['error']['message']
         self.assertIn('Largest messages', msg)
@@ -669,3 +677,226 @@ class ExternalizeTests(unittest.TestCase):
         del msgs[2]['tool_calls'][0]['id']  # no id -> no matching call info
         out, count, _ = endpoint.externalize_file_results(msgs, 4000)
         self.assertEqual(count, 0)
+
+
+class SlimToolsTests(unittest.TestCase):
+    """Pure-function tests for tool-description capping (绕行 lever 1)."""
+
+    def _tool(self, name, desc):
+        return {'type': 'function', 'function': {
+            'name': name, 'description': desc,
+            'parameters': {'type': 'object', 'properties': {'v': {'type': 'string'}},
+                           'required': ['v'], 'additionalProperties': False}}}
+
+    def test_long_descriptions_capped_schemas_intact(self):
+        tools = [self._tool('a', 'd' * 4800),
+                 self._tool('b', '规则：\n提交前先跑测试。\n' * 400)]  # CJK, >600 units
+        out = endpoint.slim_tools(tools, 600)
+        self.assertIsNot(out[0], tools[0])
+        for t in out:
+            fn = t['function']
+            self.assertLessEqual(endpoint.utf16_units(fn['description']), 600)
+            self.assertTrue(fn['description'].endswith('…（描述已截断以节省网页输入预算；参数 schema 不变）'))
+            self.assertEqual(fn['parameters'], tools[0]['function']['parameters'])  # schema untouched
+            self.assertEqual(fn['name'], t['function']['name'])
+        # short descriptions pass through unchanged (same object)
+        tools = [self._tool('c', 'tiny')]
+        self.assertIs(endpoint.slim_tools(tools, 600)[0], tools[0])
+
+    def test_zero_disables(self):
+        tools = [self._tool('a', 'd' * 4800)]
+        self.assertIs(endpoint.slim_tools(tools, 0), tools)
+
+    def test_newline_preferred_and_no_input_mutation(self):
+        desc = 'line1\n' + 'x' * 700 + '\nline3'
+        tools = [self._tool('a', desc)]
+        original = json.loads(json.dumps(tools))
+        out = endpoint.slim_tools(tools, 300)
+        self.assertEqual(tools, original)  # input never mutated
+        self.assertNotIn('\n', out[0]['function']['description'].split('…')[0][-40:])
+
+
+class ContextExternTests(unittest.TestCase):
+    """Pure-function tests for static-context externalization (绕行 lever 2)."""
+
+    def _body(self, system_units=3000, rules=1500, skills=1200, mcp=1100):
+        user = ('<rules>' + 'r' * rules + '</rules>\n'
+                '<agent_skills>' + 'k' * skills + '</agent_skills>\n'
+                '<mcp_file_system>' + 'm' * mcp + '</mcp_file_system>\n'
+                '请把登录按钮改成红色')
+        return {'model': 'web-ai',
+                'messages': [{'role': 'system', 'content': 's' * system_units},
+                             {'role': 'user', 'content': user}]}
+
+    def test_externalizes_system_and_blocks_writes_docs(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as root:
+            body = self._body()
+            nb, stats = endpoint.externalize_static_context(body, root)
+            self.assertGreater(stats['system'], 0)
+            self.assertEqual(set(stats['blocks']), {'rules', 'agent_skills', 'mcp_file_system'})
+            sysmsg = nb['messages'][0]['content']
+            self.assertIn('.zs-adapter/system.md', sysmsg)
+            self.assertNotIn('s' * 500, sysmsg)
+            user = nb['messages'][1]['content']
+            for doc in ('rules.md', 'skills.md', 'mcp.md'):
+                self.assertIn(f'.zs-adapter/{doc}', user)
+            self.assertNotIn('r' * 500, user)
+            self.assertNotIn('k' * 500, user)
+            self.assertIn('请把登录按钮改成红色', user)  # the REAL task stays inline
+            cdir = Path(root) / '.zs-adapter'
+            sysdoc = (cdir / 'system.md').read_text(encoding='utf-8')
+            self.assertTrue(sysdoc.startswith('<!-- sha256:'))  # hash marker line present
+            self.assertTrue(sysdoc.split('\n', 1)[1] == 's' * 3000)
+            self.assertEqual((cdir / 'rules.md').read_text(encoding='utf-8').split('\n', 1)[1], 'r' * 1500)
+            # input never mutated
+            self.assertIn('s' * 3000, body['messages'][0]['content'])
+
+    def test_small_blocks_and_short_system_kept_inline(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as root:
+            body = self._body(system_units=500, rules=200, skills=100, mcp=900)
+            nb, stats = endpoint.externalize_static_context(body, root, min_units=1000)
+            self.assertEqual(stats, {'system': 0, 'blocks': {}})
+            self.assertIs(nb, body)
+            self.assertFalse((Path(root) / '.zs-adapter').exists())
+
+    def test_no_root_is_a_noop(self):
+        body = self._body()
+        nb, stats = endpoint.externalize_static_context(body, None)
+        self.assertIs(nb, body)
+        self.assertEqual(stats, {'system': 0, 'blocks': {}})
+
+    def test_docs_rewritten_only_when_hash_changes(self):
+        import tempfile
+        from unittest import mock
+        import pathlib
+        with tempfile.TemporaryDirectory() as root:
+            body = self._body()
+            with mock.patch.object(pathlib.Path, 'write_text', autospec=True,
+                                   side_effect=pathlib.Path.write_text) as wt:
+                nb1, _ = endpoint.externalize_static_context(body, root)
+                nb2, _ = endpoint.externalize_static_context(body, root)  # same content
+            names = [str(c.args[0]) for c in wt.call_args_list]
+            self.assertEqual(len([n for n in names if n.endswith('system.md')]), 1)
+            self.assertEqual(nb1['messages'][0]['content'], nb2['messages'][0]['content'])
+            # changed content -> rewritten with a new marker
+            body2 = self._body(system_units=3001)
+            body2['messages'][0]['content'] += 't'
+            nb3, _ = endpoint.externalize_static_context(body2, root)
+            self.assertIn('.zs-adapter/system.md', nb3['messages'][0]['content'])
+
+
+class StaticExternIntegrationTests(unittest.IsolatedAsyncioTestCase):
+    """Live 413 shape (user's actual payload): tools 49k + system 11k +
+    user boilerplate 30k + real task ~500. 绕行 must bring it under the
+    118k arena budget WITHOUT touching the real conversation."""
+
+    async def asyncSetUp(self):
+        self.web = FakeWeb()
+        self.app = endpoint.create_app('local-test-key', 'bound-page', self.web, poll_interval=.001, heartbeat=.002)
+        self.life = self.app.router.lifespan_context(self.app)
+        await self.life.__aenter__()
+        self.client = httpx.AsyncClient(transport=httpx.ASGITransport(app=self.app), base_url='http://local', headers=HEADERS)
+
+    async def asyncTearDown(self):
+        await self.client.aclose()
+        await self.life.__aexit__(None, None, None)
+
+    async def post(self, **changes):
+        return await self.client.post('/v1/chat/completions', json={**BODY, **changes})
+
+    def _live_shape(self):
+        tools = [{'type': 'function', 'function': {
+            'name': f'tool_{i}', 'description': ('工作流指引：' + 'd' * 4700) if i % 2 else 'd' * 4800,
+            'parameters': {'type': 'object', 'properties': {'v': {'type': 'string'}},
+                           'required': ['v'], 'additionalProperties': False}}} for i in range(14)]
+        msgs = [{'role': 'system', 'content': 'sys-' + 's' * 12400},
+                {'role': 'user', 'content':
+                     '<rules>' + 'r' * 21000 + '</rules>\n'
+                     '<agent_skills>' + 'k' * 12000 + '</agent_skills>\n'
+                     '<mcp_file_system>' + 'm' * 6000 + '</mcp_file_system>\n'
+                     '请把登录按钮改成红色'}]
+        return {'model': 'web-ai', 'messages': msgs, 'tools': tools}
+
+    def _set_env(self, **env):
+        saved = {k: os.environ.get(k) for k in env}
+        for k, v in env.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
+        return saved
+
+    async def test_static_context_extern_resolves_the_live_413_shape(self):
+        import tempfile
+        self.web.provider = 'arena'  # 118,000 budget
+        body = self._live_shape()
+        saved = self._set_env(ZW_CONTEXT_EXTERN='0', ZW_TOOL_DESC_MAX_UNITS='0',
+                              ZW_FILE_MCP_URL=None, ZW_FILE_MCP_ROOT=None)
+        try:
+            r0 = await self.post(messages=body['messages'], tools=body['tools'])
+            self.assertEqual(r0.status_code, 413, r0.text)  # baseline: over budget
+            # Lever 1 alone: capping tool descriptions already fits it
+            saved.update(self._set_env(ZW_CONTEXT_EXTERN='0', ZW_TOOL_DESC_MAX_UNITS='600'))
+            r1 = await self.post(messages=body['messages'], tools=body['tools'])
+            self.assertEqual(r1.status_code, 200, r1.text)
+            fwd1 = json.loads(self.web.sent[-1]['prompt'].split('CURRENT_REQUEST:\n')[1])
+            self.assertLess(endpoint.utf16_units(json.dumps(fwd1['tools'])),
+                            14 * 1100)  # every description capped (was ~70k, now ~13k)
+            self.assertEqual(fwd1['tools'][0]['function']['parameters'],
+                             body['tools'][0]['function']['parameters'])  # schemas intact
+            # Lever 2 alone: externalizing system + boilerplate blocks fits it
+            with tempfile.TemporaryDirectory() as root:
+                saved.update(self._set_env(ZW_CONTEXT_EXTERN='1', ZW_TOOL_DESC_MAX_UNITS='0',
+                                           ZW_FILE_MCP_URL='https://tunnel.example/mcp?token=x',
+                                           ZW_FILE_MCP_ROOT=root))
+                r2 = await self.post(messages=body['messages'], tools=body['tools'])
+                self.assertEqual(r2.status_code, 200, r2.text)
+                prompt = self.web.sent[-1]['prompt']
+                self.assertIn('.zs-adapter/system.md', prompt)
+                for doc in ('rules.md', 'skills.md', 'mcp.md'):
+                    self.assertIn(f'.zs-adapter/{doc}', prompt)
+                self.assertNotIn('r' * 500, prompt)   # boilerplate left the input box
+                self.assertNotIn('s' * 500, prompt)   # system prompt left the input box
+                self.assertIn('请把登录按钮改成红色', prompt)  # real task stayed inline
+                cdir = Path(root) / '.zs-adapter'
+                for doc in ('system.md', 'rules.md', 'skills.md', 'mcp.md'):
+                    self.assertTrue((cdir / doc).is_file(), doc)
+            # Both levers: the whole per-message payload shrinks to ~15k
+            with tempfile.TemporaryDirectory() as root:
+                saved.update(self._set_env(ZW_CONTEXT_EXTERN='1', ZW_TOOL_DESC_MAX_UNITS='600',
+                                           ZW_FILE_MCP_URL='https://tunnel.example/mcp?token=x',
+                                           ZW_FILE_MCP_ROOT=root))
+                r3 = await self.post(messages=body['messages'], tools=body['tools'])
+                self.assertEqual(r3.status_code, 200, r3.text)
+                prompt = self.web.sent[-1]['prompt']
+                envelope = json.loads(prompt.split('CURRENT_REQUEST:\n')[1])
+                self.assertLess(endpoint.utf16_units(json.dumps(envelope)), 30000)
+                self.assertIn('请把登录按钮改成红色', prompt)
+        finally:
+            for k, v in saved.items():
+                if v is None:
+                    os.environ.pop(k, None)
+                else:
+                    os.environ[k] = v
+
+    async def test_context_extern_is_inert_without_tunnel(self):
+        """Fallback: with the file MCP/tunnel down, everything stays inline
+        (same 413 as baseline) - never a half-migrated prompt."""
+        self.web.provider = 'arena'
+        body = self._live_shape()
+        saved = self._set_env(ZW_CONTEXT_EXTERN='1', ZW_TOOL_DESC_MAX_UNITS='0',
+                              ZW_FILE_MCP_URL=None, ZW_FILE_MCP_ROOT='/nonexistent-root')
+        try:
+            r = await self.post(messages=body['messages'], tools=body['tools'])
+            self.assertEqual(r.status_code, 413, r.text)
+            fwd = json.loads(self.web.sent[-1]['prompt'].split('CURRENT_REQUEST:\n')[1]) \
+                if self.web.sent else None
+            self.assertIsNone(fwd)  # nothing was sent: still over budget inline
+        finally:
+            for k, v in saved.items():
+                if v is None:
+                    os.environ.pop(k, None)
+                else:
+                    os.environ[k] = v

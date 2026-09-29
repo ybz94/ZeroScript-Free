@@ -160,6 +160,10 @@ a.site .pid{margin-left:auto;font-size:10px;color:var(--muted);font-family:ui-mo
         <input type="checkbox" id="fileExtern"> 网页端开启文件外置（文件读取结果替换为引用，不占预算）
       </label>
       <div class="hint">未连接 MCP 时此项无害（没有可替换的内容）；关闭即恢复原样。详见 BYOK_SETUP「文件外置」节。</div>
+      <label style="display:flex;align-items:center;gap:6px;margin-top:8px;cursor:pointer">
+        <input type="checkbox" id="contextExtern"> <b>静态上下文外置</b>（绕行：每条消息的固定大段改为 MCP 引用）
+      </label>
+      <div class="hint">把<b>系统提示</b>与每条消息重复的 Cursor 样板（<b>项目规则 / 技能列表 / MCP 描述</b>，通常占整条消息 80~90%）写入 <span class="mono">.zs-adapter/*.md</span>，消息里只留一行“请通过文件 MCP 读取”的指针；长工具描述也自动截断（参数不变）。<b>仅当文件 MCP + 隧道已启动时生效</b>，否则自动保持原样，无需手动切换。</div>
     </div>
     <div style="margin-top:12px"><button class="danger" id="stopBtn">停止程序</button>
       <span class="s-meta">停止 Bridge、端点与窗口；关闭窗口效果相同。</span></div>
@@ -237,6 +241,8 @@ function renderConfig(s){
   if (!fe) return;
   // sync from server only when the server value changed since last apply
   if (fe._synced !== !!s.file_extern){ fe._synced = !!s.file_extern; if (!fe.disabled) fe.checked = !!s.file_extern; }
+  const ce = $('contextExtern');
+  if (ce && ce._synced !== !!s.context_extern){ ce._synced = !!s.context_extern; if (!ce.disabled) ce.checked = !!s.context_extern; }
 }
 function renderFileMcp(s){
   const fm = s.file_mcp || {}, tn = s.tunnel || {};
@@ -317,6 +323,19 @@ $('fileExtern').onchange = async () => {
     refresh();
   } catch(e){ alert('保存失败: ' + e.message); $('fileExtern').checked = !$('fileExtern').checked; }
   finally { $('fileExtern').disabled = false; }
+};
+$('contextExtern').onchange = async () => {
+  $('contextExtern').disabled = true;
+  try {
+    const r = await fetch('/api/config', {method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({context_extern: $('contextExtern').checked})});
+    const j = await r.json();
+    if (!r.ok || !j.ok) { alert('保存失败: ' + (j.error || '')); $('contextExtern').checked = !$('contextExtern').checked; return; }
+    $('contextExtern')._synced = $('contextExtern').checked;
+    toast($('contextExtern').checked ? '静态上下文外置已开启' : '静态上下文外置已关闭');
+    refresh();
+  } catch(e){ alert('保存失败: ' + e.message); $('contextExtern').checked = !$('contextExtern').checked; }
+  finally { $('contextExtern').disabled = false; }
 };
 
 function render(s){

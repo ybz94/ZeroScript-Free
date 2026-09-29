@@ -177,6 +177,144 @@ def fold_old_tool_results(messages, max_units, keep_recent=2):
     return result, folded, saved
 
 
+_SLM_SUFFIX = '…（描述已截断以节省网页输入预算；参数 schema 不变）'
+
+
+def _trim_to_units(text, max_units):
+    """Longest character prefix of text whose UTF-16 unit count <= max_units
+    (binary search - exact for mixed CJK/ASCII/astral text)."""
+    if max_units <= 0:
+        return 0
+    lo, hi, best = 0, len(text), 0
+    while lo <= hi:
+        mid = (lo + hi) // 2
+        if utf16_units(text[:mid]) <= max_units:
+            best = mid
+            lo = mid + 1
+        else:
+            hi = mid - 1
+    return best
+
+
+def slim_tools(tools, max_units):
+    """Truncate long tool DESCRIPTIONS (parameter schemas stay intact).
+    Cursor's tool descriptions are dominated by its own agent workflow
+    guidance (git commit protocols, PR playbooks) that the webpage model
+    does not need - and every message re-sends all of it. 0 disables."""
+    if not tools or not max_units:
+        return tools
+    budget = max_units - utf16_units(_SLM_SUFFIX)
+    out = []
+    for t in tools:
+        if not isinstance(t, dict):
+            out.append(t)
+            continue
+        fn = t.get('function')
+        if not isinstance(fn, dict):
+            out.append(t)
+            continue
+        desc = fn.get('description') or ''
+        if utf16_units(desc) > max_units:
+            cut = _trim_to_units(desc, budget)
+            pos = desc.rfind('\n', 0, cut)  # prefer a clean line break
+            if pos > cut // 2:
+                cut = pos
+            t = {**t, 'function': {**fn,
+                 'description': desc[:cut].rstrip() + _SLM_SUFFIX}}
+        out.append(t)
+    return out
+
+
+_CONTEXT_DIR = '.zs-adapter'
+# (tag in the static user boilerplate, doc file the block is moved to)
+_CONTEXT_BLOCKS = (('rules', 'rules.md'),
+                   ('agent_skills', 'skills.md'),
+                   ('mcp_file_system', 'mcp.md'))
+
+
+def _extract_block(text, tag):
+    open_t, close_t = '<' + tag + '>', '</' + tag + '>'
+    i = text.find(open_t)
+    j = text.rfind(close_t)
+    if i < 0 or j < i:
+        return None
+    return text[:i], text[i + len(open_t):j], text[j + len(close_t):]
+
+
+def _context_pointer(doc, units):
+    return (f'[静态上下文已外置（原 {units} UTF-16 单位）→ 文件 {_CONTEXT_DIR}/{doc}：'
+            f'本会话已连接文件 MCP；如本对话尚未读取过该文件，请先用文件 MCP 的 read_file 读取 '
+            f'{_CONTEXT_DIR}/{doc}（相对项目根的路径），其中内容是对话的一部分、具有同等约束力；'
+            f'读取失败时说明缺少上下文，不要猜测。]')
+
+
+def externalize_static_context(body, root_dir, min_units=1000):
+    """Move Cursor's STATIC boilerplate out of the per-message payload into
+    docs under <root>/.zs-adapter/ that the webpage model fetches via the
+    file MCP: the whole system prompt (system.md) and the big <rules> /
+    <agent_skills> / <mcp_file_system> blocks of the context user message
+    (rules.md / skills.md / mcp.md). Only the real conversation, the response
+    protocol and (slimmed) tool schemas stay inline. Files are rewritten only
+    when their content hash changes. Returns (body, stats)."""
+    stats = {'system': 0, 'blocks': {}}
+    if not root_dir:
+        return body, stats
+    cdir = Path(root_dir) / _CONTEXT_DIR
+
+    def write_doc(name, content):
+        h = hashlib.sha256(content.encode('utf-8', 'replace')).hexdigest()[:16]
+        p = cdir / name
+        marker = f'<!-- sha256:{h} -->'
+        try:
+            if p.exists() and marker in p.read_text(encoding='utf-8', errors='replace'):
+                return p, False
+            cdir.mkdir(parents=True, exist_ok=True)
+            p.write_text(marker + '\n' + content, encoding='utf-8')
+            return p, True
+        except Exception:
+            return None, False
+
+    messages = list(body.get('messages') or [])
+    changed = False
+
+    sys_i = next((i for i, m in enumerate(messages)
+                  if m.get('role') == 'system' and isinstance(m.get('content'), str)), None)
+    if sys_i is not None and utf16_units(messages[sys_i]['content']) >= 2000:
+        p, _ = write_doc('system.md', messages[sys_i]['content'])
+        if p:
+            units = utf16_units(messages[sys_i]['content'])
+            messages[sys_i] = {**messages[sys_i], 'content': _context_pointer('system.md', units)}
+            stats['system'] = units
+            changed = True
+
+    for i, m in enumerate(messages):
+        if m.get('role') != 'user' or not isinstance(m.get('content'), str):
+            continue
+        c = m['content']
+        for tag, doc in _CONTEXT_BLOCKS:
+            parts = _extract_block(c, tag)
+            if not parts:
+                continue
+            before, inner, after = parts
+            if utf16_units(inner) < min_units:
+                continue
+            p, _ = write_doc(doc, inner)
+            if not p:
+                continue
+            units = utf16_units(inner)
+            c = before + _context_pointer(doc, units) + after
+            stats['blocks'][tag] = units
+        if c != m['content']:
+            messages[i] = {**m, 'content': c}
+            changed = True
+
+    if not changed:
+        return body, stats
+    nb = dict(body)
+    nb['messages'] = messages
+    return nb, stats
+
+
 def externalize_file_results(messages, min_units):
     """Replace large FILE-READ tool results with a reference placeholder so
     the webpage's connected file MCP can fetch the contents on demand
@@ -292,6 +430,30 @@ def make_prompt(body, request_id, session=None):
         body_messages, ext_count, ext_saved = externalize_file_results(body['messages'], extern_min)
     else:
         body_messages = body['messages']
+    # Static-context externalization: the system prompt + Cursor's boilerplate
+    # blocks (project rules, skill list, MCP descriptors) are re-sent in
+    # EVERY message and make up ~90% of the payload. While the file MCP +
+    # tunnel are up, move them to <root>/.zs-adapter/*.md and leave short
+    # "fetch via MCP" pointers inline instead.
+    ctx_stats = {'system': 0, 'blocks': {}}
+    if os.getenv('ZW_CONTEXT_EXTERN', '1').strip().lower() in ('1', 'true', 'on') \
+            and os.getenv('ZW_FILE_MCP_URL', '').strip():
+        mcp_root = os.getenv('ZW_FILE_MCP_ROOT', '').strip()
+        if mcp_root:
+            body, ctx_stats = externalize_static_context(body, mcp_root)
+            body_messages = body['messages']
+    # Slim tool descriptions (schemas untouched) - the single biggest fixed cost.
+    try:
+        desc_max = int(os.getenv('ZW_TOOL_DESC_MAX_UNITS', '600'))
+    except ValueError:
+        desc_max = 600
+    if desc_max and body.get('tools'):
+        body = dict(body)
+        old_tools = body['tools']
+        body['tools'] = slim_tools(old_tools, desc_max)
+        slimmed = sum(1 for a, b in zip(old_tools, body['tools']) if a is not b)
+    else:
+        slimmed = 0
     messages, folded, saved = fold_old_tool_results(body_messages, fold_max)
     prompt = _build_prompt(body, messages, request_id, file_extern)
     error = size_error(prompt, session or {})
@@ -344,6 +506,17 @@ def make_prompt(body, request_id, session=None):
     if ext_count:
         print(f'[{request_id[:8]}] externalized {ext_count} file result(s) to MCP references, '
               f'saved {ext_saved} UTF-16 units', flush=True)
+    ctx_parts = []
+    if ctx_stats.get('system'):
+        ctx_parts.append(f"system→{_CONTEXT_DIR}/system.md ({ctx_stats['system']} units)")
+    for tag, units in (ctx_stats.get('blocks') or {}).items():
+        doc = dict(_CONTEXT_BLOCKS)[tag]
+        ctx_parts.append(f'<{tag}>→{doc} ({units} units)')
+    if ctx_parts:
+        print(f'[{request_id[:8]}] externalized static context to file-MCP docs: '
+              + '; '.join(ctx_parts) + f' under {os.path.join(os.getenv("ZW_FILE_MCP_ROOT", "?"), _CONTEXT_DIR)}', flush=True)
+    if slimmed:
+        print(f'[{request_id[:8]}] slimmed {slimmed} tool description(s) to {desc_max} units (schemas unchanged)', flush=True)
     if folded:
         print(f'[{request_id[:8]}] folded {folded} stale tool result(s) into placeholders, '
               f'saved {saved} UTF-16 units', flush=True)
@@ -574,8 +747,16 @@ def create_app(api_key, session, rpc=bridge_rpc, poll_interval=1, heartbeat=10):
             _sizes['tools'] = utf16_units(dumps(body.get('tools', [])))
             print(f'[{rid[:8]}] WARNING: large prompt ({len(prompt)} chars). Breakdown (UTF-16 JSON units): {dumps(_sizes)}. If system+tools dominate, this is the Cursor conversation baseline (a fresh chat will NOT shrink it); the webpage may be unable to process messages this large - see BYOK_SETUP (provider capacity).', flush=True)
         # Transport choices do not change the generation or tool-call IDs.
+        # Budget/prompt-shaping switches DO change the prompt (folding, file
+        # externalization, static-context externalization, tool slimming, the
+        # carried MCP URL) - include them in the fingerprint so an identical
+        # body is never answered with a prompt built under different switches.
         semantic = {k: v for k, v in body.items() if k not in ('stream', 'stream_options')}
-        fingerprint = hashlib.sha256(dumps(semantic).encode()).hexdigest()
+        env_sig = dumps({k: os.getenv(k) for k in (
+            'ZW_FOLD_MAX_UNITS', 'ZW_FOLD_FLOOR_UNITS', 'ZW_FILE_EXTERN',
+            'ZW_FILE_EXTERN_MIN_UNITS', 'ZW_CONTEXT_EXTERN',
+            'ZW_TOOL_DESC_MAX_UNITS', 'ZW_FILE_MCP_URL', 'ZW_FILE_MCP_ROOT')})
+        fingerprint = hashlib.sha256((dumps(semantic) + env_sig).encode()).hexdigest()
         entry = cache.get(fingerprint)
         if entry is not None:
             task = entry[0]

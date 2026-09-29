@@ -224,6 +224,7 @@ class Center:
         self.config_path = Path(stable / 'config.json')
         self._load_config()
         os.environ['ZW_FILE_EXTERN'] = '1' if self.file_extern else '0'
+        self._sync_context_extern_env()
         # in-process file MCP server
         self._mcp_server = None
         self._mcp_task = None
@@ -245,6 +246,7 @@ class Center:
         except Exception:
             pass
         self.file_extern = bool(data.get('file_extern', False))
+        self.context_extern = bool(data.get('context_extern', True))
         self.file_mcp_root = str(data.get('file_mcp_root') or '').strip()
         self.file_mcp_enabled = bool(data.get('file_mcp_enabled', False))
         try:
@@ -255,11 +257,15 @@ class Center:
     def _save_config(self):
         self.config_path.write_text(json.dumps({
             'file_extern': self.file_extern,
+            'context_extern': self.context_extern,
             'file_mcp_root': self.file_mcp_root,
             'file_mcp_enabled': self.file_mcp_enabled,
             'file_mcp_port': self.file_mcp_port,
         }), encoding='utf-8')
-        os.environ['ZW_FILE_EXTERN'] = '1' if self.file_extern else '0'
+        self._sync_context_extern_env()
+
+    def _sync_context_extern_env(self):
+        os.environ['ZW_CONTEXT_EXTERN'] = '1' if self.context_extern else '0'
 
     # -- lifecycle ----------------------------------------------------------
     async def start(self):
@@ -360,15 +366,19 @@ class Center:
 
         async def config(request):
             data = await request.json()
-            if 'file_extern' in data and not isinstance(data.get('file_extern'), bool):
-                return JSONResponse({'ok': False, 'error': 'file_extern must be a boolean'}, status_code=400)
+            for key in ('file_extern', 'context_extern'):
+                if key in data and not isinstance(data.get(key), bool):
+                    return JSONResponse({'ok': False, 'error': f'{key} must be a boolean'}, status_code=400)
             self.file_extern = data.get('file_extern', self.file_extern)
+            self.context_extern = data.get('context_extern', self.context_extern)
             try:
                 self._save_config()
             except Exception as exc:
                 return JSONResponse({'ok': False, 'error': f'保存失败: {exc}'}, status_code=500)
-            print(f'[config] 文件外置(file_extern) = {str(self.file_extern).lower()}', flush=True)
-            return JSONResponse({'ok': True, 'file_extern': self.file_extern})
+            print(f'[config] 文件外置(file_extern)={str(self.file_extern).lower()} '
+                  f'静态上下文外置(context_extern)={str(self.context_extern).lower()}', flush=True)
+            return JSONResponse({'ok': True, 'file_extern': self.file_extern,
+                                 'context_extern': self.context_extern})
 
         async def file_mcp_cfg(request):
             data = await request.json()
@@ -497,8 +507,10 @@ class Center:
                     url = None
         if url:
             os.environ['ZW_FILE_MCP_URL'] = url
+            os.environ['ZW_FILE_MCP_ROOT'] = self.file_mcp_root
         else:
             os.environ.pop('ZW_FILE_MCP_URL', None)
+            os.environ.pop('ZW_FILE_MCP_ROOT', None)
 
     async def _start_file_mcp(self):
         """Run the read-only file MCP in-process (no separate Python needed)."""
@@ -710,6 +722,7 @@ class Center:
             'jobs': self.jobs,
             'byok': self.byok_state(),
             'file_extern': self.file_extern,
+            'context_extern': self.context_extern,
             'file_mcp': self.file_mcp_state(),
             'tunnel': self.tunnel_state(),
         }
