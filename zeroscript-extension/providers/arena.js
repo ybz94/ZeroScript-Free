@@ -476,6 +476,23 @@ const ZSProvider = (() => {
   // a site-side input cap MID-write instead of after the whole payload.
   const INSERT_CHUNK = 8000;
   const INSERT_SETTLE_MS = 60;
+  // Best-effort wipe of a stranded draft (select-all + delete). Never throws.
+  // Used on failure paths so the next attempt - or the user - starts from an
+  // empty box instead of an append target. (NOT used when a send merely
+  // stays unconfirmed: the core's leftover check must still see the stranded
+  // text to report "N characters are still in the composer", and treating our
+  // own clear as "composer_cleared" evidence would mark a failed send as sent.)
+  function bestEffortClear(el) {
+    try {
+      el.focus();
+      const sel = window.getSelection();
+      const range = document.createRange();
+      range.selectNodeContents(el);
+      sel.removeAllRanges();
+      sel.addRange(range);
+      document.execCommand("delete");
+    } catch {}
+  }
   async function insertContentEditable(el, v) {
     console.log('[zs] arena: writing ' + v.length + ' chars (' + Math.ceil(v.length / INSERT_CHUNK) + ' chunks)');
     el.focus();
@@ -487,7 +504,23 @@ const ZSProvider = (() => {
       sel.removeAllRanges();
       sel.addRange(range);
     };
-    selectEnd(false); // first chunk replaces any existing draft
+    // VERIFIED CLEAR: the box may hold a stranded draft from a prior failed
+    // attempt. Select-all + delete, re-check, retry - and REFUSE to write if
+    // the box cannot be emptied. (The old "first chunk replaces the draft" was
+    // wrong in practice: the loop below's FIRST selectEnd(true) collapsed the
+    // selection to the end before the first insertText, so a leftover draft
+    // survived and the new prompt APPENDED to it - the stacked-prompts
+    // incident. An empty box makes append-at-end identical to insert.)
+    let clearTries = 0;
+    while ((el.textContent || "").trim() !== "" && clearTries < 6) {
+      clearTries++;
+      selectEnd(false);
+      document.execCommand("delete");
+      await sleep(50);
+    }
+    if ((el.textContent || "").trim() !== "") {
+      throw new Error(`Arena composer still holds ${(el.textContent || "").length} characters of a previous draft and will not clear - nothing was written. The page is likely wedged: refresh the dedicated page and retry.（本次未写入任何内容；页面疑似卡死，请刷新专用页后重试）`);
+    }
     let written = 0;
     for (let i = 0; i < v.length; i += INSERT_CHUNK) {
       selectEnd(true); // deterministic append point even after a site re-render
@@ -539,6 +572,14 @@ const ZSProvider = (() => {
       }
     }
     if (!editor) throw new Error("Arena input box not found after 15s (no visible TipTap composer or visible form textarea; the page may still be loading, or this may not be the chat page). If the conversation has been very long, the page itself is likely overloaded. Recovery: 1) click the Arena site card in Cursor Web Assistant to open a FRESH dedicated window (new tab = clean page); 2) start a NEW conversation in Cursor; 3) retry. 建议：一个任务用一条新对话——超长单页对话会把网页自身撑崩，这不是本程序的发送失败。");
+    // Never touch the composer while the page is actively generating: the send
+    // button is disabled in that state - including the "thinking" window where
+    // no tokens stream - so a write would be stranded and each retry would
+    // APPEND to it (the live incident that stacked 3 full prompts in the box).
+    // Fail fast, before typing a single character.
+    if (isHardGenerating()) {
+      throw new Error("Arena is still generating/working (Stop button present) - input refused. Wait for it to finish (or stop the generation), then retry; if the button is stuck, refresh the dedicated page. 建议：等网页生成完成（或点 Stop 停止生成）后再重试；若 Stop 按钮一直卡住，请刷新专用页。");
+    }
     const payload = truncateForSend(text);
     editor.focus();
     await setTextareaValue(editor, payload);
@@ -556,6 +597,15 @@ const ZSProvider = (() => {
     // normalization (a newline rendered as a break costs its \n in textContent).
     if (landed.length < payload.length * 0.95) {
       throw new Error(`Arena composer clamped the input: wrote ${payload.length} characters, composer holds ${landed.length}. The page has an input limit below this payload; shrink the request and retry.`);
+    }
+    // Append protection: if a draft the verified clear could not see survived,
+    // the write APPENDED and the box now holds far more than we wrote (the
+    // stacked-prompts incident shape). Site normalization only ever SHRINKS
+    // textContent (newlines become block breaks), so >115% of what we wrote is
+    // unambiguous leftover - refuse the send and wipe what we can.
+    if (landed.length > payload.length * 1.15) {
+      bestEffortClear(editor);
+      throw new Error(`Arena composer holds ${landed.length} characters after writing ${payload.length} - the previous content was NOT replaced (the write appended). Best-effort clear done; do NOT retry in this page: refresh the dedicated page and start a new conversation.（本次写入未被替换而是追加，已尽力清空；请勿在此页面重试：刷新专用页并新开对话）`);
     }
     if (images && images.length) tagImages(images);
     diag("arena.tas.enter", {

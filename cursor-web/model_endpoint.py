@@ -678,7 +678,7 @@ def sse_completion(result):
     yield 'data: [DONE]\n\n'
 
 
-def create_app(api_key, session, rpc=bridge_rpc, poll_interval=1, heartbeat=10):
+def create_app(api_key, session, rpc=bridge_rpc, poll_interval=1, heartbeat=10, fail_cooldown_s=90.0):
     # `session` is either a plain session-id string (CLI: --session ID) or a
     # zero-argument callable returning the CURRENT id (desktop app: live rebind
     # from the control window without restarting the endpoint).
@@ -686,6 +686,22 @@ def create_app(api_key, session, rpc=bridge_rpc, poll_interval=1, heartbeat=10):
         return session() if callable(session) else session
 
     cache = {}  # fingerprint -> (task, started_monotonic); exact payload retries share a task, including its failures
+
+    # Circuit breaker for the dedicated webpage. Live incident 2026-09-29: the
+    # composer wedged with an unsent draft, the webpage kept (re)generating, and
+    # every Cursor resend was typed into the SAME box - three full prompts
+    # stacked. After FAIL_LIMIT consecutive failed tasks (within FAIL_WINDOW_S)
+    # the endpoint refuses further attempts with an actionable 409 BEFORE
+    # anything is typed, while FAIL_COOLDOWN_S suppresses the Cursor retry storm.
+    # Once the cooldown has elapsed, a single PROBE attempt is allowed through:
+    # the extension now refuses to touch a generating page and verifies its
+    # clear, so a probe into a still-wedged box stacks nothing - and a healthy
+    # page answers the probe and resets the counter. Any successful task
+    # (probe or not) resets the breaker.
+    FAIL_LIMIT = 3
+    FAIL_WINDOW_S = 360.0
+    FAIL_COOLDOWN_S = float(fail_cooldown_s)
+    recent_failures = []  # monotonic timestamps of consecutive failed tasks
 
     async def exchange(prompt):
         submitted = await rpc({'type': 'send', 'session_id': sid(), 'prompt': prompt, 'response_format': 'json_code_block'})
@@ -787,6 +803,17 @@ def create_app(api_key, session, rpc=bridge_rpc, poll_interval=1, heartbeat=10):
         bound = next((s for s in listing.get('sessions', []) if s.get('id') == sid()), None)
         if bound is None:
             raise AdapterError('Bound webpage session unavailable. Re-list sessions and restart endpoint with an explicit session ID.', 409)
+        # Circuit breaker: N consecutive failed tasks on this dedicated page
+        # (stuck composer, wedged generation) mean the next prompt would only
+        # pile up more text in the input box - refuse before typing anything.
+        now_mono = time.monotonic()
+        recent_failures[:] = [f for f in recent_failures if now_mono - f <= FAIL_WINDOW_S]
+        if (len(recent_failures) >= FAIL_LIMIT
+                and now_mono - recent_failures[-1] < FAIL_COOLDOWN_S):
+            raise AdapterError(
+                f'已连续 {len(recent_failures)} 次向该网页发送失败（输入框或页面可能处于异常状态）。'
+                '程序已暂停继续向输入框写入。处理：1) 刷新或重开网页专用页（点窗口里的站点卡片）；'
+                f'2) 在 Cursor 里新开一条对话；3) 处理后再试（约 {int(FAIL_COOLDOWN_S)} 秒后程序也会自动放行一次试探）。', 409)
         prompt = make_prompt(body, rid, bound)
         if len(prompt) > 90000:
             _sizes = {}
@@ -831,8 +858,11 @@ def create_app(api_key, session, rpc=bridge_rpc, poll_interval=1, heartbeat=10):
                     return
                 exc = t.exception()
                 if exc is not None:
-                    print(f'[{_tag}] task failed after {int(time.monotonic() - _start)}s: {str(exc)[:300]}', flush=True)
+                    recent_failures.append(time.monotonic())
+                    print(f'[{_tag}] task failed after {int(time.monotonic() - _start)}s: {str(exc)[:300]} '
+                          f'(consecutive failures: {len(recent_failures)}/{FAIL_LIMIT})', flush=True)
                 else:
+                    recent_failures.clear()
                     print(f'[{_tag}] task completed after {int(time.monotonic() - _start)}s', flush=True)
             # Retain outcome even if HTTP caller disconnects; never blindly resend.
             task.add_done_callback(_task_done)

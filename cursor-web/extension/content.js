@@ -103,7 +103,14 @@
       // Console breadcrumbs: when the tab freezes, the LAST [zs] line in
       // DevTools is the stage the freeze happened in.
       console.log('[zs] task start: prompt ' + msg.prompt.length + ' chars');
-      if (P.isBusyNow() || P.isGenerating()) throw new Error('Webpage is already generating');
+      // A Stop button on the page means it is actively generating - including
+      // the "thinking" window where no tokens stream, which the growth
+      // heuristics alone miss. The composer must not be touched in that state:
+      // the send button is disabled, the typed text strands, and each retry
+      // appends more (live incident 2026-09-29: 3 full prompts stacked in the
+      // box). Refuse before typing anything.
+      if (P.isBusyNow() || P.isGenerating() || (P.isHardGenerating && P.isHardGenerating()))
+        throw new Error('Webpage is already generating（网页正在生成/工作中，不能写入输入框。请等它完成，或点 Stop 停止生成后重试；若 Stop 按钮一直卡住，请刷新专用页。）');
       // Dedicated page: a leftover draft (from manual typing or a prior send
       // that never registered) must not wedge the workflow. typeAndSend below
       // replaces the composer content, so record the draft and proceed.

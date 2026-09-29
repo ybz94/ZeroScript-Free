@@ -186,6 +186,46 @@ class EndpointTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn('"finish_reason":"stop"', r.text)
         self.assertNotIn('"tool_calls":', r.text)
 
+    async def test_circuit_breaker_stops_the_retry_storm(self):
+        # Live incident 2026-09-29: the composer wedged with an unsent draft
+        # and every Cursor resend was typed into the SAME box - three full
+        # prompts stacked. After 3 consecutive failed tasks the endpoint must
+        # refuse with an actionable 409 BEFORE anything is typed, and a
+        # successful task must reset the counter.
+        self.web.failure = 'Message was not sent: 12000 characters are still in the composer'
+        for i in range(3):
+            r = await self.post(messages=[{'role': 'user', 'content': f'stuck attempt {i}'}])
+            self.assertEqual(r.status_code, 502, r.text)
+        self.assertEqual(len(self.web.sent), 3)
+        blocked = await self.post(messages=[{'role': 'user', 'content': 'stuck attempt 3'}])
+        self.assertEqual(blocked.status_code, 409)
+        self.assertIn('已连续 3 次', blocked.text)
+        self.assertIn('暂停继续向输入框写入', blocked.text)
+        self.assertEqual(len(self.web.sent), 3)  # nothing typed after the breaker tripped
+        blocked_again = await self.post(messages=[{'role': 'user', 'content': 'stuck attempt 4'}])
+        self.assertEqual(blocked_again.status_code, 409)
+        self.assertEqual(len(self.web.sent), 3)
+
+    async def test_circuit_breaker_probe_resets_on_success(self):
+        # Cooldown elapsed (0s here): the next attempt is a single probe. With
+        # the page now healthy it succeeds and resets the breaker.
+        self.app = endpoint.create_app('local-test-key', 'bound-page', self.web,
+                                       poll_interval=.001, heartbeat=.002, fail_cooldown_s=0)
+        self.life = self.app.router.lifespan_context(self.app)
+        await self.life.__aenter__()
+        self.client = httpx.AsyncClient(transport=httpx.ASGITransport(app=self.app),
+                                        base_url='http://local', headers=HEADERS)
+        self.web.failure = 'Message was not sent: 12000 characters are still in the composer'
+        for i in range(3):
+            r = await self.post(messages=[{'role': 'user', 'content': f'stuck attempt {i}'}])
+            self.assertEqual(r.status_code, 502, r.text)
+        self.web.failure = None
+        probe = await self.post(messages=[{'role': 'user', 'content': 'recovered attempt'}])
+        self.assertEqual(probe.status_code, 200, probe.text)
+        again = await self.post(messages=[{'role': 'user', 'content': 'still fine'}])
+        self.assertEqual(again.status_code, 200, again.text)
+        self.assertEqual(len(self.web.sent), 5)
+
     async def test_busy_rejected_but_same_request_shared(self):
         self.web.waiting = True
         first = asyncio.create_task(self.post())

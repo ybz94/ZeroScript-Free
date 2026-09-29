@@ -24,7 +24,9 @@ function content(options = {}) {
     version:options.providerVersion === undefined ? '0.4.23' : options.providerVersion, // null => pre-0.4.9 (no version field)
     init(){}, conversationKey:()=>key, isFreshChat:()=>false,
     isBusyNow:()=>!!options.busy, isGenerating:()=>!!options.generating && sent>0, // generating only AFTER our send (post-reply prompt state)
-    isHardGenerating:()=>!!options.hardGenerating,
+    // The Stop button appears mid-task (post-send) unless the page was ALREADY
+    // generating before we dispatched - then it is present from t=0.
+    isHardGenerating:()=>!!options.hardGenerating && (options.hardGenAfterSend ? sent>0 : true),
     getEditor:()=>({tagName:'TEXTAREA', offsetParent:{}, placeholder:'Message', value:editorContent}),
     editorText:()=>editorContent,
     assistantCount:()=>options.staleReads?1:count, userCount:()=>options.brokenUserCount?1:userCountVar+(turnAt!==Infinity&&now>=turnAt?1:0),
@@ -66,10 +68,19 @@ test('content returns completed new response, not previous answer',async()=>{
 });
 for(const [name,options,pattern] of [
   ['busy page',{busy:true},/already generating/],
+  ['hard-generating page (Stop button present before send)',{hardGenerating:true},/already generating/],
   ['send failure',{sendError:true},/send failed/],
   ['truncated answer',{truncated:true},/truncated/],['stopped answer',{halted:true},/stopped/],
   ['no new reply',{noReply:true},/Timed out/],
 ]) test(`content rejects ${name}`,async()=>{const c=content(options);c.dispatch();assert.match((await c.result()).error,pattern);});
+test('hard-generating page is refused BEFORE any typing (no stranded draft, no append pile-up)',async()=>{
+  const c=content({hardGenerating:true,draft:'stuck unsent prompt from a failed attempt'});
+  c.dispatch();
+  const r=await c.result();
+  assert.match(r.error,/already generating/);
+  assert.equal(c.sent,0);
+  assert.equal(r.diagnostics.phase,'preflight');
+});
 test('leftover composer draft is recorded and replaced, not a hard failure',async()=>{
   const c=content({draft:'unsent manual work'});c.dispatch();
   const r=await c.result();
@@ -80,7 +91,7 @@ test('leftover composer draft is recorded and replaced, not a hard failure',asyn
   assert.equal(c.sent,1);
 });
 test('unconfirmed send (text stays in composer) fails fast, not after 240s',async()=>{
-  const c=content({sendNotConfirmed:true, hardGenerating:true});c.dispatch();
+  const c=content({sendNotConfirmed:true, hardGenerating:true, hardGenAfterSend:true});c.dispatch();
   const r=await c.result();
   assert.match(r.error,/Message was not sent/);
   assert.match(r.error,/Stop button/);
@@ -395,6 +406,7 @@ function arenaSend(options = {}) {
     closest(){ return null; },
   };
   let clicked = 0;
+  let wholeSelected = false; // editor-wide selection (selectNodeContents w/o collapse)
   const sendBtn = {
     offsetParent: {}, disabled: false,
     getAttribute: n => (n === 'aria-label' ? 'Send message' : null),
@@ -407,12 +419,18 @@ function arenaSend(options = {}) {
       if (sel === 'form textarea') return [];
       return [];
     },
-    createRange(){ return { selectNodeContents(){}, collapse(){} }; },
+    createRange(){ return { selectNodeContents(){ wholeSelected = true; }, collapse(){ wholeSelected = false; } }; },
     execCommand(cmd){
+      if (cmd === 'delete') { // select-all + delete wipes the composer
+        if (wholeSelected) { editor.textContent = ''; wholeSelected = false; }
+        return true;
+      }
       if (cmd !== 'insertText') return false;
       const val = arguments[2];
       calls.push(val.length);
-      const t = editor.textContent + val;
+      // reinjectDraft: the site re-renders its stale state on top of our write
+      const reinject = options.reinjectDraft && editor.textContent === '' ? options.reinjectDraft : '';
+      const t = editor.textContent + reinject + val; // caret at end: append (verified-clear already emptied the box)
       editor.textContent = t.length > cap ? t.slice(0, cap) : t; // simulate site cap
       return true;
     },
@@ -454,4 +472,14 @@ test('arena still replaces a leftover draft and sends in one chunk when short', 
   assert.equal(a.clicked, 1);
   assert.equal(a.calls.length, 1);
   assert.equal(a.calls[0], 'hello'.length);
+});
+test('arena refuses to send when the write appends to un-cleared leftover (no stacked prompts)', async () => {
+  const a = arenaSend({ reinjectDraft: 'leftover draft' });
+  a.editor.textContent = 'leftover draft';
+  let err;
+  try { await a.P.typeAndSend('hello'); } catch (e) { err = e; }
+  assert.ok(err, 'expected the append guard to fail the send');
+  assert.match(err.message, /was NOT replaced \(the write appended\)/);
+  assert.equal(a.clicked, 0, 'must never click send with an appended payload');
+  assert.equal(a.editor.textContent, '', 'best-effort clear wiped the box');
 });
