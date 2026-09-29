@@ -246,29 +246,13 @@ test('no follow-up prompt: task completes and reports followupCleared=false',asy
   assert.equal(c.followupClicked,false);
   assert.equal(r.diagnostics.followupCleared,false);
 });
-test('Chinese browser: prompt carries the 简体中文 reply directive (0.4.20 language follow)',async()=>{
+test('prompt goes out exactly as built (no appended boilerplate lines)',async()=>{
+  // User review 2026-09-29: the trailing language-rule line was removed; the
+  // dispatched prompt must be byte-identical to the endpoint's prompt.
   const c=content({language:'zh-CN'});
-  c.dispatch();
+  c.dispatch({prompt:'exact prompt text'});
   await c.result();
-  assert.match(c.lastPrompt, /简体中文/);
-  assert.match(c.lastPrompt, /request_id[\s\S]*永不翻译/);
-});
-test('non-Chinese browser: prompt carries the mirror-the-user language rule',async()=>{
-  const c=content({language:'en-US'});
-  c.dispatch();
-  await c.result();
-  assert.match(c.lastPrompt, /必须与用户所用的语言一致/);
-  assert.doesNotMatch(c.lastPrompt, /简体中文/);
-});
-test('language rule never pushes a payload over its input budget',async()=>{
-  // Mock provider budget = 60000 UTF-16 units. A prompt at the cap must go
-  // out unchanged (the rule is skipped), never oversized.
-  const atCap='x'.repeat(59995);
-  const c=content({language:'zh-CN'});
-  c.dispatch({prompt:atCap});
-  await c.result();
-  assert.equal(c.lastPrompt.length, 59995);
-  assert.doesNotMatch(c.lastPrompt, /简体中文/);
+  assert.equal(c.lastPrompt,'exact prompt text');
 });
 test('scoped extraction failure is rescued by the request-id marker (0.4.18 multi-provider)',async()=>{
   // The reply turn IS visible (fresh) but the scoped block search fails (e.g.

@@ -567,10 +567,10 @@ npm test --prefix cursor-web/tests
 
 ### 3. 回复跟随用户语言（合并自 01a0a947 分支 83e0f69）
 
-协议提示词是全英文的，会把网页模型带偏成英文回复。现在：
+协议提示词曾经靠显式语言指令避免英文漂移。现在：
 
-- **cursor-web 管道**（content.js `withLangRule`）：发送时读浏览器语言——`zh-*` 浏览器追加"content 字段用简体中文"指令，其它语言追加"用用户所用语言回复"；**request_id/JSON 键/工具名/代码/路径永不翻译**；payload 已顶格时自动跳过该指令（绝不超预算）
-- **主 ZeroScript 扩展**（core/config.js + core/main.js）：移植 01a0a947 分支 83e0f69 的 `userLang` 系统提示规则（zh 浏览器 → 显式简体中文指令）
+- **cursor-web 管道**：原 content.js `withLangRule`（发送时按浏览器语言追加"content 字段用简体中文/跟随用户语言"指令）已按用户审核**移除**（2026-09-29）——提示词本身已全中文，模型自然跟随用户所用语言，不再追加任何尾部语言行
+- **主 ZeroScript 扩展**（core/config.js + core/main.js）：保留 01a0a947 分支 83e0f69 的 `userLang` 系统提示规则（zh 浏览器 → 显式简体中文指令）——与 cursor-web 管道无关，未动
 
 说明：01a0a947 分支的其它提交（去 Roblox / 通用 MCP 模式 / Streamable HTTP 桥）属于旧 agent 循环架构，本分支的 cursor-web 直连管道不使用 core/ 那套，未合并。
 
