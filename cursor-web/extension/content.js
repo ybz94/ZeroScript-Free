@@ -43,8 +43,8 @@
     try {
       const lang = String(((navigator.languages && navigator.languages[0]) || navigator.language) || '');
       const rule = lang.toLowerCase().startsWith('zh')
-        ? 'LANGUAGE: the user\'s browser is Chinese - write the "content" field of your JSON reply in 简体中文 (Simplified Chinese). If the user writes in another language, follow THEIR language instead. NEVER translate request_id, JSON keys, tool names, code or file paths.'
-        : 'LANGUAGE: write the "content" field of your JSON reply in the SAME language the user writes in (Chinese → Chinese, Japanese → Japanese, English → English). NEVER translate request_id, JSON keys, tool names, code or file paths.';
+        ? '语言规则：用户浏览器为中文——JSON 回答的 "content" 字段必须用简体中文书写。若用户改用其它语言书写，则跟随用户所用的语言。request_id、JSON 键名、工具名、代码与文件路径永不翻译。'
+        : '语言规则：JSON 回答的 "content" 字段必须与用户所用的语言一致（中文→中文，日文→日文，英文→英文）。request_id、JSON 键名、工具名、代码与文件路径永不翻译。';
       if (prompt.length + rule.length + 2 > inputMaxChars) return prompt;
       return prompt + '\n' + rule;
     } catch { return prompt; }

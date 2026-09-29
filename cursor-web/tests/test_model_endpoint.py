@@ -92,7 +92,8 @@ class EndpointTests(unittest.IsolatedAsyncioTestCase):
         r = await self.post()
         self.assertEqual(r.status_code, 200)
         self.assertEqual(self.web.sent[0]['response_format'], 'json_code_block')
-        self.assertIn('code fence is mandatory', self.web.sent[0]['prompt'])
+        self.assertIn('围栏必须保留', self.web.sent[0]['prompt'])
+        self.assertIn('你是本地编码客户端背后的唯一模型', self.web.sent[0]['prompt'])
 
     async def test_text_and_exact_retry_cached(self):
         r = await self.post()
@@ -242,6 +243,7 @@ class EndpointTests(unittest.IsolatedAsyncioTestCase):
         self.web.provider = 'deepseek'
         r = await self.post(messages=[{'role': 'system', 'content': 'SECRET-MARKER' + 'x' * 161000}])
         self.assertEqual(r.status_code, 413)
+        self.assertIn('网页输入预算超限', r.json()['error']['message'])
         self.assertIn('limit=160000', r.json()['error']['message'])
         self.assertIn('Breakdown', r.json()['error']['message'])
         self.assertNotIn('SECRET-MARKER', r.text)
@@ -349,7 +351,7 @@ class EndpointTests(unittest.IsolatedAsyncioTestCase):
         try:
             r0 = await self.post(messages=msgs, tools=tools)  # externalization OFF
             self.assertEqual(r0.status_code, 413, r0.text)
-            self.assertNotIn('already folded', r0.text)  # folding had nothing to take
+            self.assertNotIn('已折叠旧工具结果', r0.text)  # folding had nothing to take
             os.environ['ZW_FILE_EXTERN'] = '1'
             try:
                 r = await self.post(messages=msgs, tools=tools)  # externalization ON
@@ -362,7 +364,7 @@ class EndpointTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn('文件内容已外置', prompt)
         self.assertIn('src/a.py', prompt)
         self.assertNotIn('z' * 5000, prompt)  # file contents did NOT go through the input box
-        self.assertIn('file MCP', prompt)  # protocol instructs the model to fetch
+        self.assertIn('文件 MCP', prompt)  # protocol instructs the model to fetch
 
     async def test_file_mcp_connection_is_auto_carried_in_prompt(self):
         """While tunnel + in-process MCP are up, the desktop app sets
@@ -377,8 +379,8 @@ class EndpointTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(r.status_code, 200, r.text)
         prompt = self.web.sent[0]['prompt']
         self.assertIn('https://abc-def.trycloudflare.com/mcp?token=tok123', prompt)
-        self.assertIn('list_dir, read_file', prompt)
-        self.assertIn('connect to it now', prompt)
+        self.assertIn('list_dir、read_file', prompt)
+        self.assertIn('现在就连接', prompt)
         # without the env var the note is gone (opt-in, no noise otherwise)
         r = await self.post(messages=[{'role': 'user', 'content': 'hi again'}])
         self.assertEqual(r.status_code, 200, r.text)
@@ -390,7 +392,7 @@ class EndpointTests(unittest.IsolatedAsyncioTestCase):
         self.web.provider = 'arena'
         r = await self.post(messages=[{'role': 'user', 'content': 'u' * 200000}])
         self.assertEqual(r.status_code, 413)
-        self.assertIn('Nothing sent or truncated', r.json()['error']['message'])
+        self.assertIn('未发送、未截断', r.json()['error']['message'])
         self.assertFalse(self.web.sent)
 
     async def test_oversize_breakdown_lists_big_messages(self):
@@ -419,7 +421,7 @@ class EndpointTests(unittest.IsolatedAsyncioTestCase):
             os.environ.pop('ZW_TOOL_DESC_MAX_UNITS')
         self.assertEqual(r.status_code, 413, r.text)
         msg = r.json()['error']['message']
-        self.assertIn('Largest messages', msg)
+        self.assertIn('最大消息', msg)
         self.assertIn('user#1:', msg)          # the bloated user turn is named
         self.assertIn('tool#3:', msg)          # the big tool result is named
         self.assertNotIn('ctx' * 100, msg)     # contents never leak into the error
@@ -432,7 +434,7 @@ class EndpointTests(unittest.IsolatedAsyncioTestCase):
         call = r.json()['choices'][0]['message']['tool_calls'][0]
         self.assertEqual(json.loads(call['function']['arguments'])['path'], r'C:\project\file.js')
         self.assertEqual(len(self.web.sent), 2)
-        self.assertIn('FORMAT REPAIR ONLY', self.web.sent[1]['prompt'])
+        self.assertIn('只做格式修复', self.web.sent[1]['prompt'])
         self.assertIn('previous_output', self.web.sent[1]['prompt'])
         again = await self.post(tools=[TOOL])
         self.assertEqual(again.json(), r.json())
@@ -441,7 +443,7 @@ class EndpointTests(unittest.IsolatedAsyncioTestCase):
     async def test_invalid_escape_repair_stops_after_one_attempt(self):
         self.web.escape_mode = 'always'
         r = await self.post(tools=[TOOL], stream=True)
-        self.assertIn('Single format-repair attempt failed', r.text)
+        self.assertIn('一次性格式修复仍未通过', r.text)
         self.assertIn('web_output_json', r.text)
         self.assertNotIn('"finish_reason":"tool_calls"', r.text)
         self.assertEqual(len(self.web.sent), 2)
@@ -716,6 +718,62 @@ class SlimToolsTests(unittest.TestCase):
         self.assertNotIn('\n', out[0]['function']['description'].split('…')[0][-40:])
 
 
+class ToolsExternTests(unittest.TestCase):
+    """Pure-function tests for tool-definition externalization (绕行 lever 3)."""
+
+    def _tools(self):
+        return [
+            {'type': 'function', 'function': {
+                'name': 'Read', 'description': 'Reads a file from the local filesystem.\nSecond line detail.\n',
+                'parameters': {'type': 'object', 'properties': {'path': {'type': 'string'}},
+                               'required': ['path'], 'additionalProperties': False}}},
+            {'type': 'function', 'function': {
+                'name': 'Shell', 'description': 'd' * 5000,
+                'parameters': {'type': 'object', 'properties': {'command': {'type': 'string'}},
+                               'required': ['command'], 'additionalProperties': False}}},
+        ]
+
+    def test_writes_full_schemas_and_returns_compact_names(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as root:
+            tools = self._tools()
+            original = json.loads(json.dumps(tools))
+            compact, ok = endpoint.externalize_tools(tools, root)
+            self.assertTrue(ok)
+            self.assertEqual(tools, original)  # input never mutated
+            self.assertEqual([c['name'] for c in compact], ['Read', 'Shell'])
+            self.assertEqual(compact[0]['hint'], 'Reads a file from the local filesystem.')  # first line
+            self.assertLessEqual(endpoint.utf16_units(compact[1]['hint']), 60)  # long desc -> 1 line
+            self.assertNotIn('parameters', compact[0])  # schema left the message
+            doc = (Path(root) / '.zs-adapter' / 'tools.md').read_text(encoding='utf-8')
+            self.assertTrue(doc.startswith('<!-- sha256:'))
+            parsed = json.loads(doc.split('\n', 1)[1])  # the file holds the FULL original definitions
+            self.assertEqual(parsed, original)
+            # hash gate: same content -> no second write; changed content -> rewrite
+            from unittest import mock
+            import pathlib
+            with mock.patch.object(pathlib.Path, 'write_text', autospec=True,
+                                   side_effect=pathlib.Path.write_text) as wt:
+                endpoint.externalize_tools(tools, root)
+                self.assertEqual(len(wt.call_args_list), 0)
+
+    def test_no_root_or_empty_is_noop(self):
+        tools = self._tools()
+        self.assertEqual(endpoint.externalize_tools(tools, None), (tools, False))
+        self.assertEqual(endpoint.externalize_tools([], 'C:\\some-root'), ([], False))
+
+    def test_unwritable_root_falls_back(self):
+        import tempfile
+        # root is itself a FILE, so mkdir(parents=True, exist_ok=True) must fail
+        file_root = Path(tempfile.gettempdir()) / 'zs-adapter-block-file'
+        file_root.write_text('x', encoding='utf-8')
+        try:
+            compact, ok = endpoint.externalize_tools(self._tools(), str(file_root))
+        finally:
+            file_root.unlink(missing_ok=True)
+        self.assertFalse(ok)
+
+
 class ContextExternTests(unittest.TestCase):
     """Pure-function tests for static-context externalization (绕行 lever 2)."""
 
@@ -846,7 +904,7 @@ class StaticExternIntegrationTests(unittest.IsolatedAsyncioTestCase):
                             14 * 1100)  # every description capped (was ~70k, now ~13k)
             self.assertEqual(fwd1['tools'][0]['function']['parameters'],
                              body['tools'][0]['function']['parameters'])  # schemas intact
-            # Lever 2 alone: externalizing system + boilerplate blocks fits it
+            # Lever 2: externalizing system + boilerplate + tool definitions fits it
             with tempfile.TemporaryDirectory() as root:
                 saved.update(self._set_env(ZW_CONTEXT_EXTERN='1', ZW_TOOL_DESC_MAX_UNITS='0',
                                            ZW_FILE_MCP_URL='https://tunnel.example/mcp?token=x',
@@ -854,16 +912,26 @@ class StaticExternIntegrationTests(unittest.IsolatedAsyncioTestCase):
                 r2 = await self.post(messages=body['messages'], tools=body['tools'])
                 self.assertEqual(r2.status_code, 200, r2.text)
                 prompt = self.web.sent[-1]['prompt']
+                envelope = json.loads(prompt.split('CURRENT_REQUEST:\n')[1])
                 self.assertIn('.zs-adapter/system.md', prompt)
-                for doc in ('rules.md', 'skills.md', 'mcp.md'):
+                for doc in ('rules.md', 'skills.md', 'mcp.md', 'tools.md'):
                     self.assertIn(f'.zs-adapter/{doc}', prompt)
                 self.assertNotIn('r' * 500, prompt)   # boilerplate left the input box
                 self.assertNotIn('s' * 500, prompt)   # system prompt left the input box
+                self.assertNotIn('d' * 500, prompt)   # tool descriptions left the input box
                 self.assertIn('请把登录按钮改成红色', prompt)  # real task stayed inline
+                # tools array is now name + one-line hint (schemas live in tools.md)
+                for t in envelope['tools']:
+                    self.assertIn('name', t)
+                    self.assertNotIn('function', t)
+                    self.assertLessEqual(endpoint.utf16_units(t.get('hint') or ''), 60)
+                self.assertEqual(envelope['tools'][0]['name'], body['tools'][0]['function']['name'])
                 cdir = Path(root) / '.zs-adapter'
-                for doc in ('system.md', 'rules.md', 'skills.md', 'mcp.md'):
+                for doc in ('system.md', 'rules.md', 'skills.md', 'mcp.md', 'tools.md'):
                     self.assertTrue((cdir / doc).is_file(), doc)
-            # Both levers: the whole per-message payload shrinks to ~15k
+                tools_doc = json.loads((cdir / 'tools.md').read_text(encoding='utf-8').split('\n', 1)[1])
+                self.assertEqual(tools_doc, body['tools'])  # FULL original definitions in the doc
+            # Both levers: the whole per-message payload shrinks to a few k
             with tempfile.TemporaryDirectory() as root:
                 saved.update(self._set_env(ZW_CONTEXT_EXTERN='1', ZW_TOOL_DESC_MAX_UNITS='600',
                                            ZW_FILE_MCP_URL='https://tunnel.example/mcp?token=x',
@@ -872,7 +940,7 @@ class StaticExternIntegrationTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(r3.status_code, 200, r3.text)
                 prompt = self.web.sent[-1]['prompt']
                 envelope = json.loads(prompt.split('CURRENT_REQUEST:\n')[1])
-                self.assertLess(endpoint.utf16_units(json.dumps(envelope)), 30000)
+                self.assertLess(endpoint.utf16_units(json.dumps(envelope)), 12000)
                 self.assertIn('请把登录按钮改成红色', prompt)
         finally:
             for k, v in saved.items():

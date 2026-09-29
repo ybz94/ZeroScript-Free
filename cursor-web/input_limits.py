@@ -27,7 +27,7 @@ def size_error(text, session):
     units = utf16_units(text)
     lines = text.count('\n') + 1
     if units > cap or (lines_cap is not None and lines > lines_cap):
-        return (f"Webpage input budget exceeded: provider={session.get('provider', 'unknown')}, "
-                f"utf16_units={units}, limit={cap}, lines={lines}, line_limit={lines_cap}. "
-                "Nothing sent or truncated. Reduce unrelated tools/history, or use a fresh conversation.")
+        return (f"网页输入预算超限：provider={session.get('provider', 'unknown')}, "
+                f"utf16_units={units}, limit={cap}, lines={lines}, line_limit={lines_cap}。"
+                "未发送、未截断。请减少无关工具/历史，或新开一条对话。")
     return None

@@ -240,13 +240,13 @@ test('Chinese browser: prompt carries the 简体中文 reply directive (0.4.20 l
   c.dispatch();
   await c.result();
   assert.match(c.lastPrompt, /简体中文/);
-  assert.match(c.lastPrompt, /NEVER translate request_id/);
+  assert.match(c.lastPrompt, /request_id[\s\S]*永不翻译/);
 });
 test('non-Chinese browser: prompt carries the mirror-the-user language rule',async()=>{
   const c=content({language:'en-US'});
   c.dispatch();
   await c.result();
-  assert.match(c.lastPrompt, /SAME language the user writes in/);
+  assert.match(c.lastPrompt, /必须与用户所用的语言一致/);
   assert.doesNotMatch(c.lastPrompt, /简体中文/);
 });
 test('language rule never pushes a payload over its input budget',async()=>{
