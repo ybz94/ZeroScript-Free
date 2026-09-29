@@ -130,7 +130,9 @@ class FileMcpTests(unittest.IsolatedAsyncioTestCase):
 
                 def raw_post(path, host):
                     conn = http.client.HTTPConnection('127.0.0.1', port, timeout=10)
-                    conn.putrequest('POST', path, skip_accept_encoding=True)
+                    # skip_host=True: we set the (foreign, tunnel-style) Host
+                    # ourselves; a duplicate Host is malformed HTTP.
+                    conn.putrequest('POST', path, skip_accept_encoding=True, skip_host=True)
                     conn.putheader('Host', host)
                     conn.putheader('Content-Type', 'application/json')
                     conn.putheader('Accept', 'application/json, text/event-stream')

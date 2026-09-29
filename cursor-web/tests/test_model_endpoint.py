@@ -304,6 +304,27 @@ class EndpointTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn('构建号', r.text)
         self.web.waiting = False
 
+    async def test_stale_extension_failures_do_not_trip_breaker(self):
+        # Live incident 2026-09-29 (third wave): an orphaned dedicated
+        # browser kept the OLD extension running after a rebuild, so every
+        # task died with the stale-extension 409; after three of those, the
+        # 4th request showed the GENERIC breaker 409 ("已连续 3 次…输入框
+        # 异常") instead of the actionable stale-extension message. Stale
+        # failures fail BEFORE anything is typed - they must not feed the
+        # composer breaker, so the user always sees the specific message.
+        self.web.build = 'old-1'
+        self.web.waiting = True
+        for i in range(3):
+            r = await self.post(messages=[{'role': 'user', 'content': f'stale attempt {i}'}])
+            self.assertEqual(r.status_code, 409, r.text)
+            self.assertIn('旧版扩展', r.text)
+        r = await self.post(messages=[{'role': 'user', 'content': 'stale attempt 3'}])
+        self.assertEqual(r.status_code, 409, r.text)
+        self.assertIn('旧版扩展', r.text)      # still the specific message…
+        self.assertNotIn('已连续', r.text)      # …not the generic breaker one
+        self.assertEqual(len(self.web.sent), 4)  # every attempt reached exchange
+        self.web.waiting = False
+
     async def test_busy_rejected_but_same_request_shared(self):
         self.web.waiting = True
         first = asyncio.create_task(self.post())

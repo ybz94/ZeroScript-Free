@@ -30,8 +30,8 @@ BRIDGE_PORT = int(os.getenv('CURSOR_WEB_PORT', '17614'))
 ENDPOINT_PORT = int(os.getenv('CURSOR_WEB_ENDPOINT_PORT', '17615'))
 UI_PORT = int(os.getenv('CURSOR_WEB_UI_PORT', '17616'))
 MODEL = 'web-ai'
-VERSION = '0.4.24'
-BUILD_ID = 'b13'  # printed in the banner: proves which build is actually running
+VERSION = '0.4.25'
+BUILD_ID = 'b14'  # printed in the banner: proves which build is actually running
 
 SITES = [
     ('deepseek', 'DeepSeek', 'https://chat.deepseek.com'),
@@ -68,7 +68,7 @@ def download_file(url, dst, progress_cb=None):
     import urllib.request
     dst = Path(dst)
     tmp = dst.with_suffix(dst.suffix + '.part')
-    req = urllib.request.Request(url, headers={'User-Agent': 'CursorWebAssistant/0.4.24'})
+    req = urllib.request.Request(url, headers={'User-Agent': 'CursorWebAssistant/0.4.25'})
     with urllib.request.urlopen(req, timeout=30) as resp:
         total = int(resp.headers.get('Content-Length') or 0)
         if progress_cb:
@@ -794,6 +794,38 @@ def _open_system_app_window(ui_url):
         return None, None
 
 
+def _kill_stale_dedicated(profile_dir):
+    """Kill orphaned dedicated-browser instances left over from previous
+    builds.
+
+    Closing the program does NOT close the dedicated browser: Chromium
+    keeps running with our profile dir and the extension it loaded at
+    startup, and a later launch on the same --user-data-dir REUSES that
+    live instance, silently ignoring the fresh --load-extension. After a
+    rebuild, "reopen from the program" would therefore keep running the
+    OLD extension (the live 2026-09-29 409 storm). We find processes
+    whose command line carries our profile dir (only the dedicated
+    instance ever does - the user's main browser is untouched) and kill
+    their trees. Returns the number of killed process trees; 0 = nothing
+    found / not Windows / best-effort failure (never blocks the launch).
+    """
+    if os.name != 'nt':
+        return 0
+    ps = ("Get-CimInstance Win32_Process | "
+          "Where-Object { $_.Name -notmatch 'powershell|pwsh' -and "
+          "$_.CommandLine -like '*%s*' } | "
+          "ForEach-Object { taskkill /PID $_.ProcessId /T /F 2>$null | Out-Null } | "
+          "Measure-Object | Select-Object -ExpandProperty Count") % profile_dir.replace("'", "''")
+    try:
+        out = subprocess.run(
+            ['powershell', '-NoProfile', '-NonInteractive', '-Command', ps],
+            capture_output=True, text=True, timeout=30,
+            creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
+        return int((out.stdout or '').strip() or 0)
+    except Exception:
+        return 0
+
+
 def _dedicated_browser_command(browser_exe, profile_dir, ext_dir, url):
     """argv to open a DEDICATED browser instance: private profile + our
     extension pre-loaded (no chrome://extensions, no manual install)."""
@@ -810,6 +842,9 @@ def _launch_dedicated_browser(ext_dir, url, profile_dir):
     """Launch the system browser as a dedicated instance with the extension
     pre-loaded, pointed at `url`. Returns (label, Popen) or (None, None)."""
     import subprocess
+    killed = _kill_stale_dedicated(profile_dir)
+    print('[dedicated] ' + (f'已清理 {killed} 个残留的旧专用浏览器进程（它们仍加载着上一构建的扩展）'
+                            if killed else '无残留的旧专用浏览器进程'), flush=True)
     for exe, label in _find_system_browsers():
         try:
             proc = subprocess.Popen(_dedicated_browser_command(exe, profile_dir, ext_dir, url))

@@ -43,6 +43,16 @@ class AdapterError(Exception):
         self.repairable_escape = False
 
 
+class StaleExtensionError(AdapterError):
+    """The dedicated page runs an OLDER extension (BUILD_ID mismatch in the
+    dispatch ack, or no ack at all). Fails BEFORE anything is typed, so it
+    must NOT feed the composer circuit breaker - its 409 is already
+    actionable (close the stale dedicated browser), and counting it would
+    replace that message with the generic breaker one (live incident
+    2026-09-29: 3 stale-409s -> the 4th request showed only "已连续 3 次
+    发送失败", hiding the real cause)."""
+
+
 def dumps(value):
     return json.dumps(value, ensure_ascii=False, separators=(',', ':'), allow_nan=False)
 
@@ -754,7 +764,7 @@ def create_app(api_key, session, rpc=bridge_rpc, poll_interval=1, heartbeat=10, 
             # older extension (stale browser window from a previous build) -
             # refuse before trusting anything it typed or answered.
             if result.get('build') and result['build'] != EXTENSION_BUILD_ID:
-                raise AdapterError(
+                raise StaleExtensionError(
                     f"专属网页运行的是旧版扩展（构建 {result['build']}，本程序为 {EXTENSION_BUILD_ID}）："
                     '旧版没有最近几轮的修复，行为不可信。请：1) 完全关闭旧的专用浏览器窗口；'
                     '2) 从程序重新打开专用页（或刷新该页）；3) 重试。', 409)
@@ -763,7 +773,7 @@ def create_app(api_key, session, rpc=bridge_rpc, poll_interval=1, heartbeat=10, 
             if not build_ok and time.monotonic() - started > ack_timeout_s:
                 # No stamp at all: an extension older than the ack feature
                 # never reports one - the page is running old code.
-                raise AdapterError(
+                raise StaleExtensionError(
                     '专属网页的扩展没有报告构建号——该页面仍在运行旧版扩展（没有最近几轮的修复）。'
                     '请：1) 完全关闭旧的专用浏览器窗口；2) 从程序重新打开专用页（或刷新该页）；3) 重试。', 409)
             if result.get('status') == 'completed':
@@ -911,9 +921,12 @@ def create_app(api_key, session, rpc=bridge_rpc, poll_interval=1, heartbeat=10, 
                     return
                 exc = t.exception()
                 if exc is not None:
-                    recent_failures.append(time.monotonic())
+                    stale = isinstance(exc, StaleExtensionError)
+                    if not stale:
+                        recent_failures.append(time.monotonic())
                     print(f'[{_tag}] task failed after {int(time.monotonic() - _start)}s: {str(exc)[:300]} '
-                          f'(consecutive failures: {len(recent_failures)}/{FAIL_LIMIT})', flush=True)
+                          + ('(stale extension - not counted by the breaker)' if stale
+                             else f'(consecutive failures: {len(recent_failures)}/{FAIL_LIMIT})'), flush=True)
                 else:
                     recent_failures.clear()
                     print(f'[{_tag}] task completed after {int(time.monotonic() - _start)}s', flush=True)

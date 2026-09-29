@@ -237,6 +237,44 @@ class DesktopAppTests(unittest.TestCase):
         finally:
             sys.path.pop(0)
 
+    def test_kill_stale_dedicated(self):
+        """Before opening the dedicated page, kill orphaned instances left
+        over from previous builds: they still hold our profile dir and the
+        OLD extension, and Chromium reuses that live instance (ignoring the
+        fresh --load-extension) - the live 2026-09-29 409 storm. Matching is
+        by our profile dir in the command line only (the user's main browser
+        is never touched); best-effort - never blocks the launch."""
+        import unittest.mock as mock
+        sys.path.insert(0, str(CURSOR_WEB))
+        try:
+            import app as appmod
+            prof = r'E:\app\cursor-web-profile'
+            # non-Windows: no-op, subprocess never touched
+            with mock.patch.object(appmod.os, 'name', 'posix'), \
+                 mock.patch.object(appmod.subprocess, 'run') as run:
+                self.assertEqual(appmod._kill_stale_dedicated(prof), 0)
+                run.assert_not_called()
+            # Windows: powershell scan + hidden console; count from stdout
+            class R:
+                stdout = '  2\n'
+            with mock.patch.object(appmod.os, 'name', 'nt'), \
+                 mock.patch.object(appmod.subprocess, 'run', return_value=R()) as run:
+                self.assertEqual(appmod._kill_stale_dedicated(prof), 2)
+            cmd = run.call_args.args[0]
+            kw = run.call_args.kwargs
+            self.assertEqual(cmd[0], 'powershell')
+            joined = ' '.join(cmd)
+            self.assertIn(prof, joined)          # match on OUR profile dir
+            self.assertIn('taskkill', joined)    # kill the process trees
+            self.assertIn('powershell', joined)  # …but never the scanner itself
+            self.assertIn(kw.get('creationflags', 0), (0, 0x08000000))  # CREATE_NO_WINDOW
+            # failures (timeout/parse) are best-effort: 0, never raises
+            with mock.patch.object(appmod.os, 'name', 'nt'), \
+                 mock.patch.object(appmod.subprocess, 'run', side_effect=OSError('boom')):
+                self.assertEqual(appmod._kill_stale_dedicated(prof), 0)
+        finally:
+            sys.path.pop(0)
+
     def test_launch_browser_endpoint(self):
         """/api/launch-browser opens the dedicated browser for the chosen site
         (launcher mocked; unknown site => 400)."""
