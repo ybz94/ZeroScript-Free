@@ -93,7 +93,7 @@ for %F in ("%~dp0dist\CursorWebAssistant.exe") do echo     %~xF   %~zF 字节   
 echo.
 echo   运行后日志第一屏应出现:
 echo     [时:分:秒] ……（每行带时间）
-echo     版本: 0.4.29  (构建 b18)
+echo     版本: 0.4.30  (构建 b19)
 echo   如果没有 = 你运行的还是旧 exe，先关掉再重新打包。
 echo.
 echo   以后每天只需双击 dist\CursorWebAssistant.exe

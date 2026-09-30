@@ -350,25 +350,73 @@ class EndpointTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.web.sent, [])  # nothing re-sent into the page
         self.web.send_error = None
 
-    async def test_busy_rejected_but_same_request_shared(self):
+    async def test_new_content_is_queued_behind_running_task(self):
+        # User request (2026-09-30): a NEW message arriving while the page is
+        # still answering must WAIT, not error out - it is sent automatically
+        # once the running task finishes. Same-content resends still share the
+        # in-flight task.
         self.web.waiting = True
         first = asyncio.create_task(self.post())
         try:
             async with asyncio.timeout(2):
                 while not self.web.sent:
                     await asyncio.sleep(.001)
-            other = await self.post(messages=[{'role': 'user', 'content': 'different request'}])
-            self.assertEqual(other.status_code, 409)
-            msg = other.json()['error']['message']
-            self.assertIn('网页仍在回答上一个请求', msg)
-            self.assertRegex(msg, r'已运行 \d+ 秒')
-            self.assertNotIn('restart model_endpoint.py', msg)  # desktop: no CLI to restart
+            other = asyncio.create_task(self.post(messages=[{'role': 'user', 'content': 'different request'}]))
             retry = asyncio.create_task(self.post())
-            await asyncio.sleep(.01)
-            self.assertEqual(len(self.web.sent), 1)
+            await asyncio.sleep(0.05)
+            self.assertEqual(len(self.web.sent), 1)  # the new message is queued, NOT sent yet
             self.web.waiting = False
-            a, b = await asyncio.gather(first, retry)
-            self.assertEqual(a.json(), b.json())
+            a, b, c = await asyncio.gather(first, other, retry)
+            self.assertEqual(a.status_code, 200, a.text)
+            self.assertEqual(b.status_code, 200, b.text)  # queued, then sent, then answered
+            self.assertEqual(c.json(), a.json())  # same content -> shared in-flight task
+            self.assertEqual(len(self.web.sent), 2)  # the queued prompt was sent exactly once
+        finally:
+            self.web.waiting = False
+            await first
+
+    async def test_queued_stream_shows_waiting_status_line(self):
+        # The queued message's stream says IMMEDIATELY (visible in Cursor)
+        # that it is waiting, so the user never sees a dead silence or an
+        # opaque "webpage busy" error.
+        self.web.waiting = True
+        first = asyncio.create_task(self.post())
+        try:
+            async with asyncio.timeout(2):
+                while not self.web.sent:
+                    await asyncio.sleep(.001)
+            other = asyncio.create_task(self.post(stream=True, messages=[{'role': 'user', 'content': 'queued request'}]))
+            await asyncio.sleep(0.05)
+            self.web.waiting = False
+            a, b = await asyncio.gather(first, other)
+            self.assertEqual(a.status_code, 200, a.text)
+            self.assertEqual(b.status_code, 200, b.text)
+            data = [line[6:] for line in b.text.splitlines() if line.startswith('data: ')]
+            self.assertIn('排队', json.loads(data[0])['choices'][0]['delta']['content'])
+            self.assertEqual(data[-1], '[DONE]')
+            self.assertEqual(len(self.web.sent), 2)
+        finally:
+            self.web.waiting = False
+            await first
+
+    async def test_second_waiting_message_is_refused(self):
+        # One running + ONE queued is the limit: a second waiting message is
+        # refused with a clear reason (no unbounded pile-up).
+        self.web.waiting = True
+        first = asyncio.create_task(self.post())
+        try:
+            async with asyncio.timeout(2):
+                while not self.web.sent:
+                    await asyncio.sleep(.001)
+            q1 = asyncio.create_task(self.post(messages=[{'role': 'user', 'content': 'queued one'}]))
+            await asyncio.sleep(0.03)
+            refused = await self.post(messages=[{'role': 'user', 'content': 'queued two'}])
+            self.assertEqual(refused.status_code, 409)
+            self.assertIn('排队', refused.text)
+            self.web.waiting = False
+            a, b = await asyncio.gather(first, q1)
+            self.assertEqual(a.status_code, 200, a.text)
+            self.assertEqual(b.status_code, 200, b.text)
         finally:
             self.web.waiting = False
             await first

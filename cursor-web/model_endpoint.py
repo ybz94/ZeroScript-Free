@@ -832,6 +832,34 @@ def create_app(api_key, session, rpc=bridge_rpc, poll_interval=1, heartbeat=10, 
             '等它答完再重新发送；不要立即重发（任务可能仍在网页上运行，重发会报"网页忙"；'
             '若任务一直占着会话，约 30 秒后系统会自动释放它）', 504)
 
+    async def queued_complete(blocker, body, catalog, prompt, request_id, fingerprint):
+        # A NEW (different-content) message arriving while a task is running:
+        # instead of erroring out ("webpage busy"), QUEUE it - wait for the
+        # in-flight task to reach its terminal state, then send this one.
+        # The page's own preflight (send-button / Stop-button / generating
+        # check) remains the final gate before anything is typed, so a still
+        # generating page refuses the dispatch before input, never mid-box.
+        try:
+            await asyncio.wait({blocker})
+        except Exception:
+            pass
+        self_t = asyncio.current_task()
+        if self_t is not None:
+            self_t.is_queued = False  # the queue has drained: this task is live now
+        print(f'[{request_id[:8]}] queue drained, sending the queued task', flush=True)
+        deadline = time.monotonic() + 90  # bridge-job free-up window (endpoint 510s -> sweep 540s)
+        while True:
+            try:
+                return await complete(body, catalog, prompt, request_id, fingerprint)
+            except AdapterError as exc:
+                # The page's job may outlive its endpoint task by ~30s (the
+                # 510s->540s ladder): retry briefly instead of failing the
+                # queued message.
+                if '仍在回答上一个任务' in str(exc) and time.monotonic() < deadline:
+                    await asyncio.sleep(2)
+                    continue
+                raise
+
     def parse_with_diagnostics(raw, request_id, body, catalog, diagnostics):
         try:
             return parse_answer(raw, request_id, body, catalog)
@@ -998,20 +1026,30 @@ def create_app(api_key, session, rpc=bridge_rpc, poll_interval=1, heartbeat=10, 
                 task_started = time.monotonic()
                 cache[fingerprint] = (task, task_started)
         else:
-            running = [(t, started) for t, started in cache.values() if not t.done()]
-            if running:
-                oldest = min(running, key=lambda e: e[1])[1]
-                wait_s = int(time.monotonic() - oldest)
-                raise AdapterError(
-                    f'网页仍在回答上一个请求（已运行 {wait_s} 秒；一个任务最长约 8.5 分钟）——同一页同时只能跑一个任务。'
-                    '若你发的是与上一个相同的内容：无需任何操作，回答会自动到达。'
-                    '若这是不同的新内容：请等上一个任务完成（打开专用页可查看进度），'
-                    '或在程序窗口"任务日志"点"取消"终止它后再发送', 409)
-            if len(cache) >= MAX_CACHE:
-                raise AdapterError('Request cache full; finish the session before restarting the endpoint', 503)
-            start = time.monotonic()
-            print(f'[{rid[:8]}] task started on dedicated webpage (prompt {len(prompt)} chars, {prompt.count(chr(10)) + 1} lines)', flush=True)
-            task = asyncio.create_task(complete(body, catalog, prompt, rid, fingerprint))
+            live = [(t, started) for t, started in cache.values()
+                    if not t.done() and not getattr(t, 'is_queued', False)]
+            queued_count = sum(1 for t, _ in cache.values()
+                               if not t.done() and getattr(t, 'is_queued', False))
+            if live:
+                # ONE task runs on the page at a time; ONE newer message may
+                # WAIT behind it. A second waiting message is refused (with a
+                # clear reason) instead of piling up.
+                if queued_count >= 1:
+                    raise AdapterError(
+                        '已有新消息在排队等当前任务——同一页同时只能跑一个任务，且只保留一个排队位置。'
+                        '请等前面的任务完成（打开专用页可查看进度），或在程序窗口"任务日志"点"取消"后再发送', 409)
+                blocker, blocker_start = min(live, key=lambda e: e[1])
+                wait_s = int(time.monotonic() - blocker_start)
+                start = time.monotonic()
+                print(f'[{rid[:8]}] queued behind a running task (running {wait_s}s)', flush=True)
+                task = asyncio.create_task(queued_complete(blocker, body, catalog, prompt, rid, fingerprint))
+                task.is_queued = True  # stream() shows an immediate "queued" status line
+            else:
+                if len(cache) >= MAX_CACHE:
+                    raise AdapterError('Request cache full; finish the session before restarting the endpoint', 503)
+                start = time.monotonic()
+                print(f'[{rid[:8]}] task started on dedicated webpage (prompt {len(prompt)} chars, {prompt.count(chr(10)) + 1} lines)', flush=True)
+                task = asyncio.create_task(complete(body, catalog, prompt, rid, fingerprint))
 
             def _task_done(t, _tag=rid[:8], _start=start, _key=fingerprint):
                 # Suppression via .exception() also feeds the console log.
@@ -1043,6 +1081,18 @@ def create_app(api_key, session, rpc=bridge_rpc, poll_interval=1, heartbeat=10, 
                 yield ': waiting for webpage; no generated tokens yet\n\n'
                 try:
                     status_sent = False
+                    if getattr(task, 'is_queued', False):
+                        # Queued behind a running task: say so IMMEDIATELY
+                        # (visible) - the message is not lost, it is waiting
+                        # for the page to finish its current task.
+                        base = {'id': 'chatcmpl-queued', 'created': int(time.time()),
+                                'model': MODEL, 'object': 'chat.completion.chunk'}
+                        yield 'data: ' + dumps({**base, 'choices': [{'index': 0,
+                            'delta': {'content':
+                                '⏳ 网页还在回答上一个任务——本条消息已排队，等它完成后自动发送'
+                                '（一个任务最长约 8.5 分钟）。若不想等：在程序窗口"任务日志"点"取消"可立即终止当前任务。\n\n'},
+                            'finish_reason': None}]}) + '\n\n'
+                        status_sent = True
                     while not task.done():
                         done, _ = await asyncio.wait({task}, timeout=heartbeat)
                         if not done:
