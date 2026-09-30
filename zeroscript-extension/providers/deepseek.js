@@ -609,8 +609,11 @@ const ZSProvider = (() => {
     const mds = [...item.querySelectorAll(S.markdown)].filter((m) => !m.closest(S.thinking));
     return {
       present: true,
+      replyRoots: mds,
       reply: mds.map((m) => m.textContent).join("\n").trim(),
       thinking: th ? th.textContent.trim() : "",
+      // Protocol reader: whole-turn fallback must skip the reasoning area.
+      thinkingSel: S.thinking,
       item,
     };
   }
@@ -685,6 +688,13 @@ const ZSProvider = (() => {
     editor.focus();
     text = truncateForSend(text);
     setTextareaValue(editor, text);
+    // If the text did not land in the composer (wrong/hidden element, page
+    // blocking input, React dropped it), fail NOW instead of waiting for a
+    // send button that will never enable on an empty composer.
+    if (editorText().trim() === "") {
+      throw new Error("DeepSeek composer did not accept the input (the text did not appear). The page may block input right now or the composer element changed. Check the dedicated webpage and retry.");
+    }
+    const landed = (editorText() || "").length;
     // Attach images LAST, right before the send click - see gemini.js's
     // typeAndSend for why (attaching before retyping the text can sever the
     // site's binding between the pending upload and the message being sent).
@@ -706,9 +716,9 @@ const ZSProvider = (() => {
           try { btn.click(); } catch {}
         }
         // Editor cleared = the message left; stop square up = generation started.
-        if (await waitFor(() => editorText().trim() === "" || isHardGenerating(), 1200)) return;
+        if (await waitFor(() => editorText().trim() === "" || isHardGenerating(), 1200)) return { sent: true, landedLen: landed };
       }
-      return;
+      return { sent: false, landedLen: landed };
     }
     // Text-only: wait for React to re-enable the send button, then click.
     await waitFor(() => {
@@ -718,6 +728,12 @@ const ZSProvider = (() => {
     if (!clickSendButton() && !isBusyNow()) {
       pressEnter(editor);
     }
+    // Report the outcome so the caller can confirm the send with the provider's
+    // own evidence (composer cleared / generation started) instead of relying
+    // on user-turn counting alone (0.4.15 interface).
+    const sent = await waitFor(() => (editorText() || "").trim() === "" || isHardGenerating(), 3000);
+    diag("deepseek.sent", { sent, landedLen: landed });
+    return { sent: !!sent, landedLen: landed };
   }
 
   // Click DeepSeek's stop only if it is actually in the stop state (<rect>), so
@@ -738,6 +754,21 @@ const ZSProvider = (() => {
       }
     } catch {}
     if (!getEditor()) return "The input box disappeared (session ended?).";
+    return null;
+  }
+  // Any visible site-side error text (toast/alert chrome, never chat content).
+  // The standalone Cursor Web Assistant uses this to fail a task in seconds
+  // when the page rejects a request instead of waiting for a reply that
+  // will never arrive. Returns null when nothing is visible.
+  function errorText() {
+    try {
+      for (const el of document.querySelectorAll(S.errorSurfaces)) {
+        if (el.offsetParent === null) continue;
+        if (el.closest(S.chatItem)) continue; // inside a chat turn ⇒ model content
+        const t = (el.innerText || "").trim();
+        if (t.length >= 8 && t.length < 600) return t;
+      }
+    } catch {}
     return null;
   }
 
@@ -953,6 +984,7 @@ const ZSProvider = (() => {
 
   return {
     id: "deepseek",
+    version: "0.4.32",
     displayName: "DeepSeek",
     // DYNAMIC: DeepSeek's Instant/Expert models are text-only, but the V4 UI has a
     // dedicated "Vision" model tab. When the user selects Vision we honour it (see
@@ -972,7 +1004,7 @@ const ZSProvider = (() => {
       // Version beacon: stamp the loaded build onto <html> so a reload can be
       // confirmed from the page (read document.documentElement.dataset.zsDsVer).
       // BUMP DS_VER on meaningful deepseek.js changes worth verifying live.
-      try { document.documentElement.setAttribute("data-zs-ds-ver", "2026-09_unified-model"); } catch {}
+      try { document.documentElement.setAttribute("data-zs-ds-ver", "2026-09-21_site-error-fastfail"); } catch {}
     },
     // turns
     allItems, isUserItem, isAssistantItem, itemText, classifyText,
@@ -984,7 +1016,7 @@ const ZSProvider = (() => {
     isGenerating, isBusyNow, isHardGenerating, genDebug,
     enforceComposer, ensureComposerReady,
     turnHalted, findContinueBtn, clickContinueBtn,
-    scanError, isTooLongMsg, isBusyMsg,
+    scanError, errorText, isTooLongMsg, isBusyMsg,
     // actions
     attachImages, clearAttachments, conversationKey,
     installSendHooks, findToolBlockSpot,

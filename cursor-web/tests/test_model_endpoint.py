@@ -1,0 +1,1299 @@
+import asyncio
+import importlib.util
+import json
+import os
+from pathlib import Path
+import re
+import unittest
+import sys
+
+import httpx
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+spec = importlib.util.spec_from_file_location('model_endpoint', ROOT / 'model_endpoint.py')
+endpoint = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(endpoint)
+
+TOOL = {'type': 'function', 'function': {'name': 'read_file', 'parameters': {
+    'type': 'object', 'properties': {'path': {'type': 'string'}},
+    'required': ['path'], 'additionalProperties': False}}}
+BODY = {'model': 'web-ai', 'messages': [{'role': 'user', 'content': 'Help with code'}]}
+HEADERS = {'Authorization': 'Bearer local-test-key'}
+
+
+def _envelope(prompt):
+    """Extract the CURRENT_REQUEST JSON (fenced as a ~~~text block since the
+    literal-marking change)."""
+    rest = prompt[prompt.index('CURRENT_REQUEST'):]
+    return json.loads(rest.split('~~~text\n', 1)[1].rsplit('\n~~~', 1)[0])
+
+
+class FakeWeb:
+    def __init__(self):
+        self.sent = []
+        self.result = None
+        self.failure = None
+        self.send_error = None  # bridge-level send rejection (e.g. session busy)
+        self.waiting = False
+        self.mode = 'text'
+        self.provider = 'unknown'
+        self.escape_mode = None
+        self.repair_padding = ''
+        self.bad_repair_schema = False
+        self.diagnostics = {}
+        # Build stamp the "content script" reports in the task job: default is
+        # the current build (healthy page); set to a value to simulate a
+        # stale build, or None to simulate an extension older than the ack.
+        self.build = endpoint.EXTENSION_BUILD_ID
+        # Next N 'get' RPCs raise (simulates transient bridge blips that used
+        # to orphan a running job).
+        self.blip_gets = 0
+
+    async def __call__(self, payload):
+        if payload['type'] == 'list':
+            return {'sessions': [{'id': 'bound-page', 'provider': self.provider}]}
+        if payload['type'] == 'get' and self.blip_gets:
+            self.blip_gets -= 1
+            raise endpoint.AdapterError('Bridge unavailable (TimeoutError). Delivery may be uncertain; do not resubmit automatically.')
+        if payload['type'] == 'send':
+            if self.send_error:
+                return {'error': self.send_error}
+            self.sent.append(payload)
+            envelope = _envelope(payload['prompt'])
+            calls = [{'name': 'read_file', 'arguments': {'path': 'src/main.js'}}] if self.mode == 'tool' else []
+            answer = {'request_id': envelope['request_id'], 'content': None if calls else '网页回答', 'tool_calls': calls}
+            if self.escape_mode:
+                answer['content'] = self.repair_padding or None
+                answer['tool_calls'] = [{'name': 'read_file', 'arguments': {'path': r'C:\project\file.js'}}]
+                if len(self.sent) > 1 and self.bad_repair_schema:
+                    answer['tool_calls'][0]['arguments'] = {}
+            self.result = json.dumps(answer, ensure_ascii=False)
+            if self.escape_mode and (len(self.sent) == 1 or self.escape_mode == 'always'):
+                self.result = self.result.replace(r'\\project', r'\project')
+            return {'job_id': 'job-1'}
+        if self.failure:
+            return {'status': 'error', 'error': self.failure,
+                    **({'build': self.build} if self.build else {})}
+        if self.waiting:
+            return {'status': 'running', **({'build': self.build} if self.build else {})}
+        if self.mode == 'bad':
+            # A JSON-like answer that is truncated/corrupted: still held to
+            # the strict protocol (never mis-delivered as prose).
+            return {'status': 'completed', 'result': '{"request_id":"r","content":"x","tool_calls":',
+                    'diagnostics': self.diagnostics,
+                    **({'build': self.build} if self.build else {})}
+        if self.mode == 'prose':
+            # The webpage AI answered in plain text (no protocol JSON block),
+            # e.g. explaining an MCP connection problem.
+            return {'status': 'completed', 'result': 'MCP 服务暂时无法连接，先说明现状（纯文本，无 JSON 协议块）。',
+                    'diagnostics': self.diagnostics,
+                    **({'build': self.build} if self.build else {})}
+        return {'status': 'completed', 'result': self.result, 'diagnostics': self.diagnostics,
+                **({'build': self.build} if self.build else {})}
+
+
+class EndpointTests(unittest.IsolatedAsyncioTestCase):
+    async def asyncSetUp(self):
+        self.web = FakeWeb()
+        self.app = endpoint.create_app('local-test-key', 'bound-page', self.web, poll_interval=.001, heartbeat=.002)
+        self.life = self.app.router.lifespan_context(self.app)
+        await self.life.__aenter__()
+        self.client = httpx.AsyncClient(transport=httpx.ASGITransport(app=self.app), base_url='http://local', headers=HEADERS)
+
+    async def asyncTearDown(self):
+        await self.client.aclose()
+        await self.life.__aexit__(None, None, None)
+
+    async def post(self, **changes):
+        return await self.client.post('/v1/chat/completions', json={**BODY, **changes})
+
+    async def test_authentication_and_browser_origin(self):
+        for headers, status in [({'Authorization': ''}, 401), ({'Origin': 'https://example.com'}, 403)]:
+            r = await self.client.get('/v1/models', headers=headers)
+            self.assertEqual(r.status_code, status)
+        self.assertFalse(self.web.sent)
+
+    async def test_models_and_unsupported_responses(self):
+        self.assertEqual((await self.client.get('/v1/models')).json()['data'][0]['id'], 'web-ai')
+        r = await self.client.post('/v1/responses', json={})
+        self.assertEqual(r.status_code, 404)
+        self.assertIn('error', r.json())
+
+    async def test_protocol_requests_fenced_literal_extraction(self):
+        r = await self.post()
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(self.web.sent[0]['response_format'], 'json_code_block')
+        self.assertIn('围栏必须保留', self.web.sent[0]['prompt'])
+
+    async def test_prompt_marks_raw_content_as_literal(self):
+        # User request: raw content must be fenced / inline-coded so the page
+        # renders it literally (URLs not autolinked, paths not turned into fake
+        # links, backslashes kept in the rendered copy).
+        old_url = os.environ.get('ZW_FILE_MCP_URL')
+        os.environ['ZW_FILE_MCP_URL'] = 'https://tunnel.example/mcp?token=abc'
+        try:
+            r = await self.post()
+        finally:
+            if old_url is None:
+                os.environ.pop('ZW_FILE_MCP_URL', None)
+            else:
+                os.environ['ZW_FILE_MCP_URL'] = old_url
+        self.assertEqual(r.status_code, 200, r.text)
+        prompt = self.web.sent[0]['prompt']
+        # The whole request envelope is one ~~~text fence (tildes: the JSON
+        # content routinely contains ``` from coding conversations and would
+        # close a backtick fence early).
+        self.assertIn('~~~text\n', prompt)
+        self.assertEqual(prompt.count('~~~text'), 1)
+        self.assertTrue(prompt.rstrip().endswith('~~~'), 'envelope must be fence-closed')
+        # The MCP URL sits in inline code (no autolink).
+        self.assertIn('`https://tunnel.example/mcp?token=abc`', prompt)
+        self.assertNotIn('MCP：https://', prompt)
+        # The fenced envelope still round-trips to the exact request JSON.
+        env = _envelope(prompt)
+        self.assertEqual(env['messages'][0]['content'], 'Help with code')
+
+    async def test_text_and_exact_retry_cached(self):
+        r = await self.post()
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(r.json()['choices'][0]['message']['content'], '网页回答')
+        again = await self.post()
+        self.assertEqual(r.json(), again.json())
+        self.assertEqual(len(self.web.sent), 1)
+
+    async def test_tool_call_and_tool_result_followup(self):
+        self.web.mode = 'tool'
+        r = await self.post(tools=[TOOL], tool_choice='required')
+        self.assertEqual(r.status_code, 200)
+        choice = r.json()['choices'][0]
+        self.assertEqual(choice['finish_reason'], 'tool_calls')
+        call = choice['message']['tool_calls'][0]
+        self.assertEqual(json.loads(call['function']['arguments']), {'path': 'src/main.js'})
+        self.web.mode = 'text'
+        messages = BODY['messages'] + [choice['message'], {'role': 'tool', 'tool_call_id': call['id'], 'content': 'actual file content'}]
+        r = await self.post(messages=messages, tools=[TOOL])
+        self.assertEqual(r.status_code, 200)
+        forwarded = _envelope(self.web.sent[-1]['prompt'])
+        self.assertEqual(forwarded['messages'][-1]['tool_call_id'], call['id'])
+        self.assertEqual(forwarded['messages'][-1]['content'], 'actual file content')
+
+    async def test_stream_text_and_cached_nonstream_identity(self):
+        r = await self.post(stream=True)
+        self.assertIn('text/event-stream', r.headers['content-type'])
+        lines = [line[6:] for line in r.text.splitlines() if line.startswith('data: ')]
+        self.assertEqual(lines[-1], '[DONE]')
+        first = json.loads(lines[0])
+        self.assertEqual(first['choices'][0]['delta']['content'], '网页回答')
+        r2 = await self.post()
+        self.assertEqual(first['id'], r2.json()['id'])
+        self.assertEqual(len(self.web.sent), 1)
+
+    async def test_stream_tool_call_shape(self):
+        self.web.mode = 'tool'
+        r = await self.post(stream=True, tools=[TOOL])
+        events = [json.loads(line[6:]) for line in r.text.splitlines() if line.startswith('data: {')]
+        call = events[0]['choices'][0]['delta']['tool_calls'][0]
+        self.assertEqual(call['index'], 0)
+        self.assertEqual(call['function']['name'], 'read_file')
+        self.assertEqual(events[-1]['choices'][0]['finish_reason'], 'tool_calls')
+
+    async def test_bad_answer_is_error_and_not_resent(self):
+        self.web.mode = 'bad'
+        r = await self.post()
+        self.assertEqual(r.status_code, 502)
+        self.assertIn('error', r.json())
+        self.assertEqual((await self.post()).status_code, 502)
+        self.assertEqual(len(self.web.sent), 1)
+
+    async def test_task_lifecycle_is_logged(self):
+        import contextlib
+        import io
+        self.web.waiting = True
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            first = asyncio.create_task(self.post())
+            async with asyncio.timeout(2):
+                while not self.web.sent:
+                    await asyncio.sleep(.001)
+            self.web.waiting = False
+            await first
+        out = buf.getvalue()
+        self.assertIn('task started on dedicated webpage', out)
+        self.assertRegex(out, r'task completed after \d+s')
+
+    async def test_parse_error_includes_extraction_scope_diagnostics(self):
+        self.web.mode = 'bad'
+        self.web.diagnostics = {'extraction': 'code_text',
+                                'extraction_detail': 'roots=1 scope=answer_turn turn_blocks=1'}
+        r = await self.post()
+        self.assertEqual(r.status_code, 502)
+        self.assertIn('Extraction source=code_text', r.text)
+        self.assertIn('scope=answer_turn', r.text)
+
+    async def test_parse_error_unknown_extraction_flagged(self):
+        self.web.mode = 'bad'
+        self.web.diagnostics = {'extraction': 'something_new', 'extraction_detail': 'roots=0'}
+        r = await self.post()
+        self.assertEqual(r.status_code, 502)
+        self.assertIn('Extraction source=unverified_or_old_extension', r.text)
+
+    async def test_prose_answer_reaches_client_as_final_content(self):
+        # Live report 2026-09-30: the webpage AI answered in prose (no
+        # protocol JSON block). That content must reach the client as a
+        # final answer - not dead-end the request while the user sees the
+        # answer on the page but nothing in the client.
+        self.web.mode = 'prose'
+        r = await self.post()
+        self.assertEqual(r.status_code, 200, r.text)
+        choice = r.json()['choices'][0]
+        self.assertEqual(choice['finish_reason'], 'stop')
+        self.assertIn('纯文本', choice['message']['content'])
+        self.assertNotIn('tool_calls', choice['message'])
+        self.assertEqual(len(self.web.sent), 1)
+
+    async def test_stream_error_never_emits_success(self):
+        self.web.failure = 'Login expired'
+        r = await self.post(stream=True)
+        self.assertIn('"error":', r.text)
+        self.assertNotIn('"finish_reason":"stop"', r.text)
+        self.assertNotIn('"tool_calls":', r.text)
+
+    async def test_circuit_breaker_stops_the_retry_storm(self):
+        # Live incident 2026-09-29: the composer wedged with an unsent draft
+        # and every Cursor resend was typed into the SAME box - three full
+        # prompts stacked. After 3 consecutive failed tasks the endpoint must
+        # refuse with an actionable 409 BEFORE anything is typed, and a
+        # successful task must reset the counter.
+        self.web.failure = 'Message was not sent: 12000 characters are still in the composer'
+        for i in range(3):
+            r = await self.post(messages=[{'role': 'user', 'content': f'stuck attempt {i}'}])
+            self.assertEqual(r.status_code, 502, r.text)
+        self.assertEqual(len(self.web.sent), 3)
+        blocked = await self.post(messages=[{'role': 'user', 'content': 'stuck attempt 3'}])
+        self.assertEqual(blocked.status_code, 409)
+        self.assertIn('已连续 3 次', blocked.text)
+        self.assertIn('暂停继续向输入框写入', blocked.text)
+        self.assertEqual(len(self.web.sent), 3)  # nothing typed after the breaker tripped
+        blocked_again = await self.post(messages=[{'role': 'user', 'content': 'stuck attempt 4'}])
+        self.assertEqual(blocked_again.status_code, 409)
+        self.assertEqual(len(self.web.sent), 3)
+
+    async def test_circuit_breaker_probe_resets_on_success(self):
+        # Cooldown elapsed (0s here): the next attempt is a single probe. With
+        # the page now healthy it succeeds and resets the breaker.
+        self.app = endpoint.create_app('local-test-key', 'bound-page', self.web,
+                                       poll_interval=.001, heartbeat=.002, fail_cooldown_s=0)
+        self.life = self.app.router.lifespan_context(self.app)
+        await self.life.__aenter__()
+        self.client = httpx.AsyncClient(transport=httpx.ASGITransport(app=self.app),
+                                        base_url='http://local', headers=HEADERS)
+        self.web.failure = 'Message was not sent: 12000 characters are still in the composer'
+        for i in range(3):
+            r = await self.post(messages=[{'role': 'user', 'content': f'stuck attempt {i}'}])
+            self.assertEqual(r.status_code, 502, r.text)
+        self.web.failure = None
+        probe = await self.post(messages=[{'role': 'user', 'content': 'recovered attempt'}])
+        self.assertEqual(probe.status_code, 200, probe.text)
+        again = await self.post(messages=[{'role': 'user', 'content': 'still fine'}])
+        self.assertEqual(again.status_code, 200, again.text)
+        self.assertEqual(len(self.web.sent), 5)
+
+    async def test_stale_extension_build_mismatch_refused(self):
+        # Live incident 2026-09-29 (second wave): the exe was rebuilt but the
+        # dedicated browser window was still running the OLDER extension (old
+        # English LANGUAGE line, no composer fixes) - everything misbehaved
+        # silently. The ack build stamp must make that fail fast with
+        # actionable instructions.
+        self.web.build = 'old-1'
+        self.web.waiting = True
+        first = asyncio.create_task(self.post())
+        async with asyncio.timeout(2):
+            while not self.web.sent:
+                await asyncio.sleep(.001)
+        r = await first
+        self.assertEqual(r.status_code, 409)
+        self.assertIn('旧版扩展', r.text)
+        self.assertIn('old-1', r.text)
+        self.web.waiting = False
+
+    async def test_stale_extension_silent_never_reports_build(self):
+        # An extension older than the ack feature never reports a stamp:
+        # after the ack grace, refuse with the same actionable 409.
+        self.app = endpoint.create_app('local-test-key', 'bound-page', self.web,
+                                       poll_interval=.001, heartbeat=.002,
+                                       fail_cooldown_s=90.0, ack_timeout_s=0.3)
+        self.life = self.app.router.lifespan_context(self.app)
+        await self.life.__aenter__()
+        self.client = httpx.AsyncClient(transport=httpx.ASGITransport(app=self.app),
+                                        base_url='http://local', headers=HEADERS)
+        self.web.build = None
+        self.web.waiting = True
+        first = asyncio.create_task(self.post())
+        r = await asyncio.wait_for(first, 5)
+        self.assertEqual(r.status_code, 409)
+        self.assertIn('构建号', r.text)
+        self.web.waiting = False
+
+    async def test_stale_extension_failures_do_not_trip_breaker(self):
+        # Live incident 2026-09-29 (third wave): an orphaned dedicated
+        # browser kept the OLD extension running after a rebuild, so every
+        # task died with the stale-extension 409; after three of those, the
+        # 4th request showed the GENERIC breaker 409 ("已连续 3 次…输入框
+        # 异常") instead of the actionable stale-extension message. Stale
+        # failures fail BEFORE anything is typed - they must not feed the
+        # composer breaker, so the user always sees the specific message.
+        self.web.build = 'old-1'
+        self.web.waiting = True
+        for i in range(3):
+            r = await self.post(messages=[{'role': 'user', 'content': f'stale attempt {i}'}])
+            self.assertEqual(r.status_code, 409, r.text)
+            self.assertIn('旧版扩展', r.text)
+        r = await self.post(messages=[{'role': 'user', 'content': 'stale attempt 3'}])
+        self.assertEqual(r.status_code, 409, r.text)
+        self.assertIn('旧版扩展', r.text)      # still the specific message…
+        self.assertNotIn('已连续', r.text)      # …not the generic breaker one
+        self.assertEqual(len(self.web.sent), 4)  # every attempt reached exchange
+        self.web.waiting = False
+
+    async def test_bridge_busy_is_queued_not_errored(self):
+        # Live report 2026-09-30 (busy at 26s, fifth time): a send that hits
+        # an in-flight job whose endpoint task is GONE (died in transit while
+        # the page kept working) used to dead-end with the bridge's busy
+        # error verbatim. Now it QUEUES: the bridge refuses a busy send
+        # without creating a job, so the retried send is the first and only
+        # execution of this prompt. The stream says so visibly, and the
+        # answer arrives once the page frees up.
+        self.web.send_error = ('网页仍在回答上一个任务（abcd1234…，已运行 12 秒；最长约 9 分钟）。'
+                               '请等网页回答完成后再发送——打开专用页可直接查看进度；重发会持续失败直到该任务结束')
+        r_task = asyncio.create_task(self.post(stream=True))
+        try:
+            await asyncio.sleep(0.05)  # the task hits the busy send and queues
+            self.web.send_error = None  # the previous job finishes: page free
+            r = await asyncio.wait_for(r_task, 15)
+            self.assertEqual(r.status_code, 200, r.text)
+            data = [line[6:] for line in r.text.splitlines() if line.startswith('data: ')]
+            self.assertIn('排队', json.loads(data[0])['choices'][0]['delta']['content'])
+            self.assertEqual(data[-1], '[DONE]')
+            self.assertEqual(len(self.web.sent), 1)  # sent exactly once, after the page freed
+        finally:
+            self.web.send_error = None
+            if not r_task.done():
+                r_task.cancel()
+
+    async def test_new_content_is_queued_behind_running_task(self):
+        # User request (2026-09-30): a NEW message arriving while the page is
+        # still answering must WAIT, not error out - it is sent automatically
+        # once the running task finishes. Same-content resends still share the
+        # in-flight task.
+        self.web.waiting = True
+        first = asyncio.create_task(self.post())
+        try:
+            async with asyncio.timeout(2):
+                while not self.web.sent:
+                    await asyncio.sleep(.001)
+            other = asyncio.create_task(self.post(messages=[{'role': 'user', 'content': 'different request'}]))
+            retry = asyncio.create_task(self.post())
+            await asyncio.sleep(0.05)
+            self.assertEqual(len(self.web.sent), 1)  # the new message is queued, NOT sent yet
+            self.web.waiting = False
+            a, b, c = await asyncio.gather(first, other, retry)
+            self.assertEqual(a.status_code, 200, a.text)
+            self.assertEqual(b.status_code, 200, b.text)  # queued, then sent, then answered
+            self.assertEqual(c.json(), a.json())  # same content -> shared in-flight task
+            self.assertEqual(len(self.web.sent), 2)  # the queued prompt was sent exactly once
+        finally:
+            self.web.waiting = False
+            await first
+
+    async def test_queued_stream_shows_waiting_status_line(self):
+        # The queued message's stream says IMMEDIATELY (visible in Cursor)
+        # that it is waiting, so the user never sees a dead silence or an
+        # opaque "webpage busy" error.
+        self.web.waiting = True
+        first = asyncio.create_task(self.post())
+        try:
+            async with asyncio.timeout(2):
+                while not self.web.sent:
+                    await asyncio.sleep(.001)
+            other = asyncio.create_task(self.post(stream=True, messages=[{'role': 'user', 'content': 'queued request'}]))
+            await asyncio.sleep(0.05)
+            self.web.waiting = False
+            a, b = await asyncio.gather(first, other)
+            self.assertEqual(a.status_code, 200, a.text)
+            self.assertEqual(b.status_code, 200, b.text)
+            data = [line[6:] for line in b.text.splitlines() if line.startswith('data: ')]
+            self.assertIn('排队', json.loads(data[0])['choices'][0]['delta']['content'])
+            self.assertEqual(data[-1], '[DONE]')
+            self.assertEqual(len(self.web.sent), 2)
+        finally:
+            self.web.waiting = False
+            await first
+
+    async def test_second_waiting_message_is_refused(self):
+        # One running + ONE queued is the limit: a second waiting message is
+        # refused with a clear reason (no unbounded pile-up).
+        self.web.waiting = True
+        first = asyncio.create_task(self.post())
+        try:
+            async with asyncio.timeout(2):
+                while not self.web.sent:
+                    await asyncio.sleep(.001)
+            q1 = asyncio.create_task(self.post(messages=[{'role': 'user', 'content': 'queued one'}]))
+            await asyncio.sleep(0.03)
+            refused = await self.post(messages=[{'role': 'user', 'content': 'queued two'}])
+            self.assertEqual(refused.status_code, 409)
+            self.assertIn('排队', refused.text)
+            self.web.waiting = False
+            a, b = await asyncio.gather(first, q1)
+            self.assertEqual(a.status_code, 200, a.text)
+            self.assertEqual(b.status_code, 200, b.text)
+        finally:
+            self.web.waiting = False
+            await first
+
+    async def test_stream_shows_visible_progress_line_while_waiting(self):
+        # MCP long tasks produce no visible output for 1-5 minutes; without a
+        # signal the user resends within ~30s and dead-ends on "webpage
+        # busy". The stream must show a visible progress line.
+        self.app = endpoint.create_app('local-test-key', 'bound-page', self.web,
+                                       poll_interval=.001, heartbeat=.005,
+                                       visible_heartbeat_after_s=0.03)
+        self.life = self.app.router.lifespan_context(self.app)
+        await self.life.__aenter__()
+        self.client = httpx.AsyncClient(transport=httpx.ASGITransport(app=self.app),
+                                        base_url='http://local', headers=HEADERS)
+        try:
+            self.web.waiting = True
+            first = asyncio.create_task(self.post(stream=True))
+            await asyncio.sleep(0.08)  # let the visible heartbeat fire
+            self.web.waiting = False
+            r = await asyncio.wait_for(first, 5)
+            self.assertEqual(r.status_code, 200, r.text)
+            data = [line[6:] for line in r.text.splitlines() if line.startswith('data: ')]
+            self.assertGreaterEqual(len(data), 3)
+            self.assertIn('专用网页', json.loads(data[0])['choices'][0]['delta']['content'])
+            self.assertEqual(json.loads(data[1])['choices'][0]['delta']['content'], '网页回答')
+            self.assertEqual(data[-1], '[DONE]')
+            self.assertEqual(len(self.web.sent), 1)
+        finally:
+            self.web.waiting = False
+            await self.client.aclose()
+            await self.life.__aexit__(None, None, None)
+
+    async def test_identical_retry_after_bridge_blip_adopts_running_job(self):
+        # The first task dies on a bridge blip while the page job KEEPS
+        # running; the IDENTICAL retry must adopt the running job (the answer
+        # arrives, the prompt is sent once) - not replay the blip error and
+        # not re-execute the prompt on the page.
+        self.web.waiting = True
+        self.web.blip_gets = 10
+        first = asyncio.create_task(self.post())
+        r1 = await asyncio.wait_for(first, 5)
+        self.assertEqual(r1.status_code, 502, r1.text)
+        self.assertIn('与 Bridge 的连接反复中断', r1.text)
+        self.assertEqual(len(self.web.sent), 1)
+        second = asyncio.create_task(self.post())  # identical retry
+        await asyncio.sleep(0.05)  # adoption is polling the still-running job
+        self.web.waiting = False   # the job now completes
+        r2 = await asyncio.wait_for(second, 5)
+        self.assertEqual(r2.status_code, 200, r2.text)
+        self.assertEqual(r2.json()['choices'][0]['message']['content'], '网页回答')
+        self.assertEqual(len(self.web.sent), 1)  # prompt NOT re-sent
+
+    async def test_identical_retry_harvests_already_completed_job(self):
+        # The first task died in transit, but the page job COMPLETED while the
+        # endpoint was blind: the identical retry harvests the finished
+        # answer instead of re-executing the prompt.
+        self.web.waiting = True
+        self.web.blip_gets = 10
+        first = asyncio.create_task(self.post())
+        r1 = await asyncio.wait_for(first, 5)
+        self.assertEqual(r1.status_code, 502, r1.text)
+        self.web.waiting = False  # the job completed in the blind window
+        r2 = await self.post()
+        self.assertEqual(r2.status_code, 200, r2.text)
+        self.assertEqual(r2.json()['choices'][0]['message']['content'], '网页回答')
+        self.assertEqual(len(self.web.sent), 1)
+
+    async def test_invalid_inputs_never_reach_webpage(self):
+        cases = [
+            {'model': 'unknown'}, {'messages': []}, {'stream': 'yes'}, {'tools': None},
+            {'parallel_tool_calls': True}, {'tool_choice': 'required'}, {'n': 2},
+            {'tool_choice': {'type': 'function', 'function': []}},
+            {'tool_choice': {'type': 'function', 'function': {'name': []}}},
+            {'stop': ['stop']}, {'response_format': {'type': 'json_object'}},
+            {'messages': [{'role': 'user', 'content': [{'type': 'image_url', 'image_url': {'url': 'secret'}}]}]},
+            {'tools': [{'type': 'function', 'function': {'name': 'remote', 'parameters': {'$ref': 'https://example.com/schema'}}}]},
+        ]
+        for case in cases:
+            with self.subTest(case=case):
+                self.assertEqual((await self.post(**case)).status_code, 400)
+        self.assertFalse(self.web.sent)
+
+    async def test_context_and_body_limits_no_truncation(self):
+        r = await self.post(messages=[{'role': 'user', 'content': 'x' * 60000}])
+        self.assertEqual(r.status_code, 413)
+        r = await self.client.post('/v1/chat/completions', content=b'x' * 1000001)
+        self.assertEqual(r.status_code, 413)
+        self.assertFalse(self.web.sent)
+
+    async def test_provider_budget_accepts_large_cursor_context(self):
+        self.web.provider = 'deepseek'
+        content = 'x' * 90000
+        r = await self.post(messages=[{'role': 'system', 'content': content}] + BODY['messages'])
+        self.assertEqual(r.status_code, 200)
+        forwarded = _envelope(self.web.sent[0]['prompt'])
+        self.assertEqual(forwarded['messages'][0]['content'], content)
+
+    async def test_provider_oversize_reports_role_sizes_without_contents(self):
+        self.web.provider = 'deepseek'
+        r = await self.post(messages=[{'role': 'system', 'content': 'SECRET-MARKER' + 'x' * 161000}])
+        self.assertEqual(r.status_code, 413)
+        self.assertIn('网页输入预算超限', r.json()['error']['message'])
+        self.assertIn('limit=160000', r.json()['error']['message'])
+        self.assertIn('Breakdown', r.json()['error']['message'])
+        self.assertNotIn('SECRET-MARKER', r.text)
+        self.assertFalse(self.web.sent)
+
+    async def test_compression_resolves_budget_exceeded_tool_history(self):
+        """The user's real-world 413 shape: many tool rounds accumulate in
+        history and re-sending them all exceeds the site budget. With folding
+        ON the same request must pass; with it OFF it must still 413."""
+        self.web.provider = 'arena'  # 118,000 budget
+        msgs = [{'role': 'system', 'content': 's' * 3000}]
+        for i in range(13):
+            msgs.append({'role': 'assistant', 'content': None, 'tool_calls': [
+                {'id': f'call_{i}', 'type': 'function',
+                 'function': {'name': 'read_file', 'arguments': '{}'}}]})
+            msgs.append({'role': 'tool', 'tool_call_id': f'call_{i}', 'content': 'x' * 9000})
+        msgs.append({'role': 'user', 'content': 'summarize the files you read'})
+        body = {'model': 'web-ai', 'messages': msgs, 'tools': [TOOL]}
+        os.environ['ZW_FOLD_MAX_UNITS'] = '0'  # compression off
+        try:
+            with self.assertRaises(endpoint.AdapterError) as caught:
+                endpoint.make_prompt(body, 'deadbeef01234567', {'provider': 'arena'})
+            self.assertEqual(caught.exception.status, 413)
+        finally:
+            os.environ.pop('ZW_FOLD_MAX_UNITS')
+        r = await self.post(messages=msgs, tools=[TOOL])  # compression on (default)
+        self.assertEqual(r.status_code, 200, r.text)
+        prompt = self.web.sent[0]['prompt']
+        self.assertEqual(prompt.count('x' * 5000), 2,  # only the two newest results stay intact
+                         'expected exactly the two newest tool results to survive folding')
+        self.assertIn('工具结果已折叠', prompt)
+
+    async def test_pass2_folds_many_medium_results_until_fit(self):
+        """b9 design gap (live 413: tool=27,408 of MEDIUM results): no single
+        result exceeds the 4000 preserve-threshold, so pass 1 folds nothing;
+        pass 2 must fold oldest-first down to the floor until the payload
+        fits, keeping the two newest results intact."""
+        self.web.provider = 'arena'  # 118,000 budget
+        msgs = [{'role': 'system', 'content': 's' * 11000}]
+        for i in range(32):
+            msgs.append({'role': 'assistant', 'content': None, 'tool_calls': [
+                {'id': f'call_{i}', 'type': 'function',
+                 'function': {'name': 'read_file', 'arguments': '{}'}}]})
+            msgs.append({'role': 'tool', 'tool_call_id': f'call_{i}',
+                         'content': 'x' * 3450 + f'M{i}M{i}'})  # ~3,456: under pass-1 threshold
+        msgs.append({'role': 'user', 'content': 'summarize the files you read'})
+        body = {'model': 'web-ai', 'messages': msgs, 'tools': [TOOL]}
+        os.environ['ZW_FOLD_MAX_UNITS'] = '0'  # sanity: unfolded payload is over budget
+        try:
+            with self.assertRaises(endpoint.AdapterError) as caught:
+                endpoint.make_prompt(body, 'feedface01234567', {'provider': 'arena'})
+            self.assertEqual(caught.exception.status, 413)
+        finally:
+            os.environ.pop('ZW_FOLD_MAX_UNITS')
+        prompt = endpoint.make_prompt(body, 'feedface01234567', {'provider': 'arena'})
+        # Pass 2 folds only as much as needed and stops once it fits
+        # (minimal loss): the two newest results survive, the oldest is gone,
+        # and whatever still fits the budget is left intact.
+        self.assertGreaterEqual(prompt.count('x' * 3400), 2)
+        self.assertLess(prompt.count('x' * 3400), 32)  # at least one was folded
+        self.assertNotIn('M0M0', prompt)  # oldest-first: the oldest is folded
+        self.assertIn('M30M30', prompt)
+        self.assertIn('M31M31', prompt)
+        r = await self.post(messages=msgs, tools=[TOOL])
+        self.assertEqual(r.status_code, 200, r.text)
+
+    async def test_floor_zero_disables_rescue_pass(self):
+        """ZW_FOLD_FLOOR_UNITS=0 keeps the payload exactly as pass 1 left it
+        (many medium results) and the guardrail must still refuse it."""
+        self.web.provider = 'arena'
+        msgs = [{'role': 'system', 'content': 's' * 11000}]
+        for i in range(32):
+            msgs.append({'role': 'assistant', 'content': None})
+            msgs.append({'role': 'tool', 'tool_call_id': f'c{i}', 'content': 'x' * 3450})
+        msgs.append({'role': 'user', 'content': 'go'})
+        os.environ['ZW_FOLD_FLOOR_UNITS'] = '0'
+        try:
+            with self.assertRaises(endpoint.AdapterError) as caught:
+                endpoint.make_prompt({'model': 'web-ai', 'messages': msgs},
+                                     'feedface01234567', {'provider': 'arena'})
+            self.assertEqual(caught.exception.status, 413)
+        finally:
+            os.environ.pop('ZW_FOLD_FLOOR_UNITS')
+
+    async def test_file_externalization_resolves_the_live_413_shape(self):
+        """Live 413 shape: user 30k + two file reads 27k + baseline ~60k >
+        118k. Folding cannot help (the file reads are the two NEWEST results),
+        but file externalization replaces them with MCP references and the
+        request fits - no file content travels through the input box."""
+        self.web.provider = 'arena'  # 118,000 budget
+        tools = [TOOL]
+        for i in range(10):  # ~49k of tool definitions, like real Agent mode
+            tools.append({'type': 'function', 'function': {
+                'name': f'tool_{i}', 'description': 'd' * 4800,
+                'parameters': {'type': 'object', 'properties': {'v': {'type': 'string'}},
+                               'required': ['v'], 'additionalProperties': False}}})
+        msgs = [{'role': 'system', 'content': 's' * 11000},
+                {'role': 'user', 'content': 'check the path issues in these two files' + 'q' * 30000}]
+        for i, p in enumerate(['src/a.py', 'src/b.py']):
+            msgs.append({'role': 'assistant', 'content': None, 'tool_calls': [
+                {'id': f'call_{i}', 'type': 'function',
+                 'function': {'name': 'read_file', 'arguments': {'path': p}}}]} )
+            msgs.append({'role': 'tool', 'tool_call_id': f'call_{i}', 'content': 'z' * 13500})
+        os.environ['ZW_TOOL_DESC_MAX_UNITS'] = '0'  # pin the pre-slimming 49k-tools shape
+        try:
+            r0 = await self.post(messages=msgs, tools=tools)  # externalization OFF
+            self.assertEqual(r0.status_code, 413, r0.text)
+            self.assertNotIn('已折叠旧工具结果', r0.text)  # folding had nothing to take
+            os.environ['ZW_FILE_EXTERN'] = '1'
+            try:
+                r = await self.post(messages=msgs, tools=tools)  # externalization ON
+            finally:
+                os.environ.pop('ZW_FILE_EXTERN')
+        finally:
+            os.environ.pop('ZW_TOOL_DESC_MAX_UNITS')
+        self.assertEqual(r.status_code, 200, r.text)
+        prompt = self.web.sent[0]['prompt']
+        self.assertIn('文件内容已外置', prompt)
+        self.assertIn('src/a.py', prompt)
+        self.assertNotIn('z' * 5000, prompt)  # file contents did NOT go through the input box
+        self.assertIn('文件 MCP', prompt)  # protocol instructs the model to fetch
+
+    async def test_file_mcp_connection_is_auto_carried_in_prompt(self):
+        """While tunnel + in-process MCP are up, the desktop app sets
+        ZW_FILE_MCP_URL and every outgoing prompt carries the connection -
+        the user never pastes the MCP address by hand."""
+        self.web.provider = 'arena'
+        os.environ['ZW_FILE_MCP_URL'] = 'https://abc-def.trycloudflare.com/mcp?token=tok123'
+        try:
+            r = await self.post(messages=[{'role': 'user', 'content': 'hi'}])
+        finally:
+            os.environ.pop('ZW_FILE_MCP_URL')
+        self.assertEqual(r.status_code, 200, r.text)
+        prompt = self.web.sent[0]['prompt']
+        self.assertIn('https://abc-def.trycloudflare.com/mcp?token=tok123', prompt)
+        self.assertIn('list_dir、read_file', prompt)
+        self.assertIn('现在就连接', prompt)
+        # without the env var the note is gone (opt-in, no noise otherwise)
+        r = await self.post(messages=[{'role': 'user', 'content': 'hi again'}])
+        self.assertEqual(r.status_code, 200, r.text)
+        self.assertNotIn('trycloudflare.com/mcp', self.web.sent[-1]['prompt'])
+
+    async def test_guardrail_still_blocks_unfoldable_oversize(self):
+        """Folding only shrinks stale tool results; a huge USER message is
+        never folded, so the budget guardrail must still refuse it."""
+        self.web.provider = 'arena'
+        r = await self.post(messages=[{'role': 'user', 'content': 'u' * 200000}])
+        self.assertEqual(r.status_code, 413)
+        self.assertIn('未发送、未截断', r.json()['error']['message'])
+        self.assertFalse(self.web.sent)
+
+    async def test_oversize_breakdown_lists_big_messages(self):
+        """The 413 breakdown must say WHICH messages are big (sizes only,
+        never contents) - so a user can spot e.g. a Cursor auto-attached
+        file context in their own turn and remove it."""
+        self.web.provider = 'arena'
+        tools = [TOOL]
+        for i in range(10):  # ~49k of tool definitions, like real Agent mode
+            tools.append({'type': 'function', 'function': {
+                'name': f'tool_{i}', 'description': 'd' * 4800,
+                'parameters': {'type': 'object', 'properties': {'v': {'type': 'string'}},
+                               'required': ['v'], 'additionalProperties': False}}})
+        msgs = [
+            {'role': 'user', 'content': 'ctx' * 20000},          # ~60k: attached context
+            {'role': 'assistant', 'content': None, 'tool_calls': [
+                {'id': 'c1', 'type': 'function',
+                 'function': {'name': 'read_file', 'arguments': {'path': 'a.js'}}}]},
+            {'role': 'tool', 'tool_call_id': 'c1', 'content': 'x' * 15000},
+            {'role': 'user', 'content': 'fix the paths'},
+        ]
+        os.environ['ZW_TOOL_DESC_MAX_UNITS'] = '0'  # pin the pre-slimming 49k-tools shape
+        try:
+            r = await self.post(messages=msgs, tools=tools)
+        finally:
+            os.environ.pop('ZW_TOOL_DESC_MAX_UNITS')
+        self.assertEqual(r.status_code, 413, r.text)
+        msg = r.json()['error']['message']
+        self.assertIn('最大消息', msg)
+        self.assertIn('user#1:', msg)          # the bloated user turn is named
+        self.assertIn('tool#3:', msg)          # the big tool result is named
+        self.assertNotIn('ctx' * 100, msg)     # contents never leak into the error
+        self.assertNotIn('x' * 100, msg)
+
+    async def test_invalid_escape_one_shot_repair_and_retry_cache(self):
+        self.web.escape_mode = 'once'
+        r = await self.post(tools=[TOOL])
+        self.assertEqual(r.status_code, 200, r.text)
+        call = r.json()['choices'][0]['message']['tool_calls'][0]
+        self.assertEqual(json.loads(call['function']['arguments'])['path'], r'C:\project\file.js')
+        self.assertEqual(len(self.web.sent), 2)
+        self.assertIn('只做格式修复', self.web.sent[1]['prompt'])
+        self.assertIn('previous_output', self.web.sent[1]['prompt'])
+        again = await self.post(tools=[TOOL])
+        self.assertEqual(again.json(), r.json())
+        self.assertEqual(len(self.web.sent), 2)
+
+    async def test_invalid_escape_repair_stops_after_one_attempt(self):
+        self.web.escape_mode = 'always'
+        r = await self.post(tools=[TOOL], stream=True)
+        self.assertIn('一次性格式修复仍未通过', r.text)
+        self.assertIn('web_output_json', r.text)
+        self.assertNotIn('"finish_reason":"tool_calls"', r.text)
+        self.assertEqual(len(self.web.sent), 2)
+
+    async def test_format_repair_still_requires_valid_tool_arguments(self):
+        self.web.escape_mode = 'once'
+        self.web.bad_repair_schema = True
+        r = await self.post(tools=[TOOL])
+        self.assertEqual(r.status_code, 502)
+        self.assertEqual(r.json()['error']['code'], 'web_arguments_schema')
+        self.assertEqual(len(self.web.sent), 2)
+
+    async def test_oversized_repair_is_not_sent(self):
+        self.web.escape_mode = 'once'
+        self.web.repair_padding = 'x' * 60000
+        r = await self.post(tools=[TOOL])
+        self.assertEqual(r.status_code, 413)
+        self.assertEqual(r.json()['error']['code'], 'web_repair_budget')
+        self.assertEqual(len(self.web.sent), 1)
+
+    async def test_invalid_json_and_duplicate_keys(self):
+        for text in ('{', '{"model":"web-ai","model":"another"}', '{"x":NaN}'):
+            r = await self.client.post('/v1/chat/completions', content=text)
+            self.assertEqual(r.status_code, 400)
+
+    async def test_missing_binding_does_not_pick_another_tab(self):
+        app = endpoint.create_app('local-test-key', 'missing-page', self.web)
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url='http://local', headers=HEADERS) as client:
+            r = await client.post('/v1/chat/completions', json=BODY)
+        self.assertEqual(r.status_code, 409)
+        self.assertFalse(self.web.sent)
+
+
+class AnswerValidationTests(unittest.TestCase):
+    def test_invalid_tool_outputs_fail_closed(self):
+        body = {**BODY, 'tools': [TOOL]}
+        catalog = endpoint.validate_request(body)
+        valid = {'request_id': 'r', 'content': None, 'tool_calls': [{'name': 'read_file', 'arguments': {'path': 'x'}}]}
+        cases = [
+            {**valid, 'request_id': 'old'},
+            {**valid, 'tool_calls': [{'name': 'shell', 'arguments': {'command': 'bad'}}]},
+            {**valid, 'tool_calls': [{'name': 'read_file', 'arguments': {'path': 123}}]},
+            {**valid, 'tool_calls': [{'name': 'read_file', 'arguments': {'path': 'x', 'extra': True}}]},
+            {**valid, 'tool_calls': valid['tool_calls'] * 2},
+            {**valid, 'content': 42},
+        ]
+        for case in cases:
+            with self.subTest(case=case):
+                with self.assertRaises(endpoint.AdapterError):
+                    endpoint.parse_answer(json.dumps(case), 'r', body, catalog)
+        with self.assertRaises(endpoint.AdapterError):
+            endpoint.parse_answer(json.dumps(valid), 'r', {**body, 'tool_choice': 'none'}, catalog)
+        wrapped = endpoint.parse_answer('```json\n' + json.dumps(valid) + '\n```', 'r', body, catalog)
+        self.assertEqual(wrapped['choices'][0]['finish_reason'], 'tool_calls')
+
+
+class InputBudgetTests(unittest.TestCase):
+    def test_utf16_and_line_limits(self):
+        from input_limits import size_error, utf16_units
+        self.assertEqual(utf16_units('a😀'), 3)
+        self.assertIsNone(size_error('😀' * 80000, {'provider': 'deepseek'}))
+        self.assertIsNotNone(size_error('😀' * 80001, {'provider': 'deepseek'}))
+        self.assertIsNone(size_error('x' * 118000, {'provider': 'arena'}))
+        self.assertIsNotNone(size_error('x' * 118001, {'provider': 'arena'}))
+        self.assertIsNone(size_error('x' * 120000, {'provider': 'chatgpt'}))
+        self.assertIsNotNone(size_error('x' * 120001, {'provider': 'chatgpt'}))
+        self.assertIsNotNone(size_error('\n' * 600, {'provider': 'chatgpt'}))
+        self.assertIsNotNone(size_error('x' * 60001, {}))
+        # 0.4.18 multi-provider: conservative starting budgets for the site
+        # adapters validated in the main ZeroScript extension (100000 UTF-16
+        # units), raised once large payloads are confirmed to land intact.
+        for p in ('glm', 'kimi', 'qwen', 'gemini', 'meta'):
+            self.assertIsNone(size_error('x' * 100000, {'provider': p}))
+            self.assertIsNotNone(size_error('x' * 100001, {'provider': p}))
+
+
+class EditOutputDiagnosticsTests(unittest.TestCase):
+    def setUp(self):
+        self.tool = {'type': 'function', 'function': {'name': 'edit_file', 'parameters': {
+            'type': 'object', 'properties': {'path': {'type': 'string'}, 'content': {'type': 'string'}},
+            'required': ['path', 'content'], 'additionalProperties': False}}}
+        self.body = {**BODY, 'tools': [self.tool]}
+        self.catalog = endpoint.validate_request(self.body)
+        self.code = 'const s = "quoted";\nconst p = "C:\\tmp";\n// 中文 😀\n'
+
+    def parse(self, calls, **overrides):
+        value = {'request_id': 'r', 'content': None, 'tool_calls': calls, **overrides}
+        return endpoint.parse_answer(json.dumps(value), 'r', self.body, self.catalog)
+
+    def test_edit_payload_preserved_in_both_function_formats(self):
+        args = {'path': 'demo.js', 'content': self.code}
+        for call in [
+            {'name': 'edit_file', 'arguments': args},
+            {'name': 'edit_file', 'arguments': json.dumps(args)},
+            {'id': 'ignored-web-id', 'type': 'function', 'function': {'name': 'edit_file', 'arguments': json.dumps(args)}}
+        ]:
+            result = self.parse([call])
+            actual = json.loads(result['choices'][0]['message']['tool_calls'][0]['function']['arguments'])
+            self.assertEqual(actual, args)
+
+    def test_schema_error_reports_missing_key_not_code(self):
+        with self.assertRaises(endpoint.AdapterError) as caught:
+            self.parse([{'name': 'edit_file', 'arguments': {'content': 'PRIVATE-CODE'}}])
+        self.assertEqual(caught.exception.code, 'web_arguments_schema')
+        self.assertIn('path', str(caught.exception))
+        self.assertNotIn('PRIVATE-CODE', str(caught.exception))
+        self.assertEqual(endpoint.error_body(caught.exception)['error']['code'], 'web_arguments_schema')
+
+    def test_error_stages_are_distinct_and_fail_closed(self):
+        cases = [
+            ('web_request_identity', [], {'request_id': 'old', 'content': 'answer'}),
+            ('web_unknown_tool', [{'name': 'made_up_edit', 'arguments': {}}], {}),
+            ('web_arguments_json', [{'name': 'edit_file', 'arguments': '{invalid'}], {}),
+            ('web_arguments_schema', [{'name': 'edit_file', 'arguments': {'path': 123, 'content': 'secret'}}], {}),
+            ('web_call_count', [{}, {}], {}),
+        ]
+        for code, calls, kwargs in cases:
+            with self.subTest(code=code):
+                with self.assertRaises(endpoint.AdapterError) as caught:
+                    self.parse(calls, **kwargs)
+                self.assertEqual(caught.exception.code, code)
+
+    def test_json_like_garbage_remain_rejected(self):
+        valid = json.dumps({'request_id':'r','content':'ok','tool_calls':[]})
+        for text in [valid+valid, valid[:-1],
+                     '{"request_id":"r","request_id":"r","content":"ok","tool_calls":[]}']:
+            with self.assertRaises(endpoint.AdapterError) as caught:
+                endpoint.parse_answer(text, 'r', self.body, self.catalog)
+            self.assertEqual(caught.exception.code, 'web_output_json')
+
+    def test_prose_with_embedded_json_is_delivered_as_content_never_executed(self):
+        # Prose (even containing a full JSON object) is delivered as plain
+        # final content - it is NEVER parsed for a tool call.
+        valid = json.dumps({'request_id': 'r', 'content': 'ok', 'tool_calls': []})
+        out = endpoint.parse_answer('Here is the edit: ' + valid, 'r', self.body, self.catalog)
+        self.assertEqual(out['choices'][0]['finish_reason'], 'stop')
+        self.assertEqual(out['choices'][0]['message']['content'], 'Here is the edit: ' + valid)
+        self.assertNotIn('tool_calls', out['choices'][0]['message'])
+
+    def test_unescaped_edit_newline_reports_position_without_payload(self):
+        text = '{"request_id":"r","content":"PRIVATE\nCODE","tool_calls":[]}'
+        with self.assertRaises(endpoint.AdapterError) as caught:
+            endpoint.parse_answer(text, 'r', self.body, self.catalog)
+        self.assertIn('line 1, column', str(caught.exception))
+        self.assertNotIn('PRIVATE', str(caught.exception))
+
+
+class FoldTests(unittest.TestCase):
+    """Pure-function tests for context compression (fold_old_tool_results)."""
+
+    def _history(self):
+        msgs = [{'role': 'system', 'content': 's' * 5000}]
+        for i in range(5):
+            msgs.append({'role': 'assistant', 'content': None})
+            msgs.append({'role': 'tool', 'tool_call_id': f'c{i}', 'content': 'x' * 5000})
+        msgs.append({'role': 'tool', 'tool_call_id': 'small', 'content': 'tiny'})
+        msgs.append({'role': 'user', 'content': 'u' * 5000})
+        return msgs
+
+    def test_folds_only_old_large_tool_results(self):
+        msgs = self._history()
+        original = [dict(m) for m in msgs]
+        out, folded, saved = endpoint.fold_old_tool_results(msgs, 4000)
+        self.assertEqual(folded, 4)  # 6 tool results, two newest kept
+        self.assertGreater(saved, 0)
+        self.assertEqual(msgs, original)  # input never mutated
+        self.assertEqual(out[0]['content'], 's' * 5000)  # system intact
+        self.assertEqual(out[-1]['content'], 'u' * 5000)  # user intact
+        self.assertEqual(out[-2]['content'], 'tiny')  # newest result intact
+        self.assertEqual(out[-3]['content'], 'x' * 5000)  # second-newest intact
+        self.assertTrue(out[-5]['content'].startswith('[工具结果已折叠'))
+        self.assertIn('5000', out[-5]['content'])  # original size reported
+        self.assertEqual(out[-5]['tool_call_id'], 'c3')  # identity preserved
+
+    def test_small_and_recent_results_never_folded(self):
+        msgs = [{'role': 'tool', 'tool_call_id': 'a', 'content': 'small-old'},
+                {'role': 'tool', 'tool_call_id': 'b', 'content': 'x' * 9000}]
+        out, folded, saved = endpoint.fold_old_tool_results(msgs, 4000)
+        self.assertEqual((folded, saved), (0, 0))
+        self.assertEqual(out, msgs)
+
+    def test_disabled_with_zero_budget(self):
+        msgs = self._history()
+        out, folded, saved = endpoint.fold_old_tool_results(msgs, 0)
+        self.assertEqual((folded, saved), (0, 0))
+        self.assertEqual(out, msgs)
+
+    def test_non_string_tool_content_left_alone(self):
+        msgs = [{'role': 'tool', 'tool_call_id': 'a', 'content': 'x' * 9000},
+                {'role': 'tool', 'tool_call_id': 'b',
+                 'content': [{'type': 'text', 'text': 'y' * 9000}]},
+                {'role': 'tool', 'tool_call_id': 'c', 'content': 'x' * 9000}]
+        out, folded, _ = endpoint.fold_old_tool_results(msgs, 4000)
+        self.assertEqual(folded, 1)  # only the old plain-string one
+        self.assertEqual(out[1]['content'], [{'type': 'text', 'text': 'y' * 9000}])
+
+
+class ExternalizeTests(unittest.TestCase):
+    """Pure-function tests for file externalization (MCP file fetching)."""
+
+    def _file_msgs(self, size=5000):
+        return [
+            {'role': 'system', 'content': 'sys'},
+            {'role': 'user', 'content': 'look at these files'},
+            {'role': 'assistant', 'content': None, 'tool_calls': [
+                {'id': 'call_1', 'type': 'function',
+                 'function': {'name': 'read_file', 'arguments': {'path': 'src/a.py'}}}]},
+            {'role': 'tool', 'tool_call_id': 'call_1', 'content': 'x' * size},
+            {'role': 'assistant', 'content': None, 'tool_calls': [
+                {'id': 'call_2', 'type': 'function',
+                 'function': {'name': 'run_terminal_cmd', 'arguments': {'command': 'ls'}}}]},
+            {'role': 'tool', 'tool_call_id': 'call_2', 'content': 'y' * size},
+            {'role': 'user', 'content': 'u'},
+        ]
+
+    def test_externalizes_only_large_file_reads(self):
+        msgs = self._file_msgs()
+        original = [dict(m) for m in msgs]
+        out, count, saved = endpoint.externalize_file_results(msgs, 4000)
+        self.assertEqual(count, 1)
+        self.assertGreater(saved, 0)
+        self.assertEqual(msgs, original)  # input never mutated
+        self.assertIn('文件内容已外置', out[3]['content'])
+        self.assertIn('src/a.py', out[3]['content'])
+        self.assertEqual(out[3]['tool_call_id'], 'call_1')  # identity preserved
+        self.assertEqual(out[5]['content'], 'y' * 5000)     # non-file result untouched
+        self.assertEqual(out[0]['content'], 'sys')
+        self.assertEqual(out[6]['content'], 'u')
+
+    def test_small_results_and_string_args(self):
+        out, count, _ = endpoint.externalize_file_results(self._file_msgs(size=100), 4000)
+        self.assertEqual(count, 0)
+        self.assertEqual(out[3]['content'], 'x' * 100)  # under threshold: kept
+        msgs = self._file_msgs()
+        msgs[2]['tool_calls'][0]['function']['arguments'] = json.dumps({'path': 'src/b.py'})
+        out2, count2, _ = endpoint.externalize_file_results(msgs, 4000)
+        self.assertEqual(count2, 1)  # string-form arguments are parsed
+        self.assertIn('src/b.py', out2[3]['content'])
+
+    def test_unknown_tool_call_id_is_left_alone(self):
+        msgs = self._file_msgs()
+        del msgs[2]['tool_calls'][0]['id']  # no id -> no matching call info
+        out, count, _ = endpoint.externalize_file_results(msgs, 4000)
+        self.assertEqual(count, 0)
+
+
+class SlimToolsTests(unittest.TestCase):
+    """Pure-function tests for tool-description capping (绕行 lever 1)."""
+
+    def _tool(self, name, desc):
+        return {'type': 'function', 'function': {
+            'name': name, 'description': desc,
+            'parameters': {'type': 'object', 'properties': {'v': {'type': 'string'}},
+                           'required': ['v'], 'additionalProperties': False}}}
+
+    def test_long_descriptions_capped_schemas_intact(self):
+        tools = [self._tool('a', 'd' * 4800),
+                 self._tool('b', '规则：\n提交前先跑测试。\n' * 400)]  # CJK, >600 units
+        out = endpoint.slim_tools(tools, 600)
+        self.assertIsNot(out[0], tools[0])
+        for t in out:
+            fn = t['function']
+            self.assertLessEqual(endpoint.utf16_units(fn['description']), 600)
+            self.assertTrue(fn['description'].endswith('…（描述已截断以节省网页输入预算；参数 schema 不变）'))
+            self.assertEqual(fn['parameters'], tools[0]['function']['parameters'])  # schema untouched
+            self.assertEqual(fn['name'], t['function']['name'])
+        # short descriptions pass through unchanged (same object)
+        tools = [self._tool('c', 'tiny')]
+        self.assertIs(endpoint.slim_tools(tools, 600)[0], tools[0])
+
+    def test_zero_disables(self):
+        tools = [self._tool('a', 'd' * 4800)]
+        self.assertIs(endpoint.slim_tools(tools, 0), tools)
+
+    def test_newline_preferred_and_no_input_mutation(self):
+        desc = 'line1\n' + 'x' * 700 + '\nline3'
+        tools = [self._tool('a', desc)]
+        original = json.loads(json.dumps(tools))
+        out = endpoint.slim_tools(tools, 300)
+        self.assertEqual(tools, original)  # input never mutated
+        self.assertNotIn('\n', out[0]['function']['description'].split('…')[0][-40:])
+
+
+class ToolsExternTests(unittest.TestCase):
+    """Pure-function tests for tool-definition externalization (绕行 lever 3)."""
+
+    def _tools(self):
+        return [
+            {'type': 'function', 'function': {
+                'name': 'Read', 'description': 'Reads a file from the local filesystem.\nSecond line detail.\n',
+                'parameters': {'type': 'object', 'properties': {'path': {'type': 'string'}},
+                               'required': ['path'], 'additionalProperties': False}}},
+            {'type': 'function', 'function': {
+                'name': 'Shell', 'description': 'd' * 5000,
+                'parameters': {'type': 'object', 'properties': {'command': {'type': 'string'}},
+                               'required': ['command'], 'additionalProperties': False}}},
+        ]
+
+    def test_writes_full_schemas_and_returns_compact_names(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as root:
+            tools = self._tools()
+            original = json.loads(json.dumps(tools))
+            compact, ok = endpoint.externalize_tools(tools, root)
+            self.assertTrue(ok)
+            self.assertEqual(tools, original)  # input never mutated
+            self.assertEqual([c['name'] for c in compact], ['Read', 'Shell'])
+            self.assertEqual(compact[0]['hint'], 'Reads a file from the local filesystem.')  # first line
+            self.assertLessEqual(endpoint.utf16_units(compact[1]['hint']), 60)  # long desc -> 1 line
+            self.assertNotIn('parameters', compact[0])  # schema left the message
+            doc = (Path(root) / '.zs-adapter' / 'tools.md').read_text(encoding='utf-8')
+            self.assertTrue(doc.startswith('<!-- sha256:'))
+            parsed = json.loads(doc.split('\n', 1)[1])  # the file holds the FULL original definitions
+            self.assertEqual(parsed, original)
+            # hash gate: same content -> no second write; changed content -> rewrite
+            from unittest import mock
+            import pathlib
+            with mock.patch.object(pathlib.Path, 'write_text', autospec=True,
+                                   side_effect=pathlib.Path.write_text) as wt:
+                endpoint.externalize_tools(tools, root)
+                self.assertEqual(len(wt.call_args_list), 0)
+
+    def test_no_root_or_empty_is_noop(self):
+        tools = self._tools()
+        self.assertEqual(endpoint.externalize_tools(tools, None), (tools, False))
+        self.assertEqual(endpoint.externalize_tools([], 'C:\\some-root'), ([], False))
+
+    def test_unwritable_root_falls_back(self):
+        import tempfile
+        # root is itself a FILE, so mkdir(parents=True, exist_ok=True) must fail
+        file_root = Path(tempfile.gettempdir()) / 'zs-adapter-block-file'
+        file_root.write_text('x', encoding='utf-8')
+        try:
+            compact, ok = endpoint.externalize_tools(self._tools(), str(file_root))
+        finally:
+            file_root.unlink(missing_ok=True)
+        self.assertFalse(ok)
+
+
+class ContextExternTests(unittest.TestCase):
+    """Pure-function tests for static-context externalization (绕行 lever 2)."""
+
+    def _body(self, system_units=3000, rules=1500, skills=1200, mcp=1100):
+        user = ('<rules>' + 'r' * rules + '</rules>\n'
+                '<agent_skills>' + 'k' * skills + '</agent_skills>\n'
+                '<mcp_file_system>' + 'm' * mcp + '</mcp_file_system>\n'
+                '请把登录按钮改成红色')
+        return {'model': 'web-ai',
+                'messages': [{'role': 'system', 'content': 's' * system_units},
+                             {'role': 'user', 'content': user}]}
+
+    def test_externalizes_system_and_blocks_writes_docs(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as root:
+            body = self._body()
+            nb, stats = endpoint.externalize_static_context(body, root)
+            self.assertGreater(stats['system'], 0)
+            self.assertEqual(set(stats['blocks']), {'rules', 'agent_skills', 'mcp_file_system'})
+            sysmsg = nb['messages'][0]['content']
+            self.assertIn('.zs-adapter/system.md', sysmsg)
+            self.assertNotIn('s' * 500, sysmsg)
+            user = nb['messages'][1]['content']
+            for doc in ('rules.md', 'skills.md', 'mcp.md'):
+                self.assertIn(f'.zs-adapter/{doc}', user)
+            self.assertNotIn('r' * 500, user)
+            self.assertNotIn('k' * 500, user)
+            self.assertIn('请把登录按钮改成红色', user)  # the REAL task stays inline
+            cdir = Path(root) / '.zs-adapter'
+            sysdoc = (cdir / 'system.md').read_text(encoding='utf-8')
+            self.assertTrue(sysdoc.startswith('<!-- sha256:'))  # hash marker line present
+            self.assertTrue(sysdoc.split('\n', 1)[1] == 's' * 3000)
+            self.assertEqual((cdir / 'rules.md').read_text(encoding='utf-8').split('\n', 1)[1], 'r' * 1500)
+            # input never mutated
+            self.assertIn('s' * 3000, body['messages'][0]['content'])
+
+    def test_small_blocks_and_short_system_kept_inline(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as root:
+            body = self._body(system_units=500, rules=200, skills=100, mcp=900)
+            nb, stats = endpoint.externalize_static_context(body, root, min_units=1000)
+            self.assertEqual(stats, {'system': 0, 'blocks': {}})
+            self.assertIs(nb, body)
+            self.assertFalse((Path(root) / '.zs-adapter').exists())
+
+    def test_no_root_is_a_noop(self):
+        body = self._body()
+        nb, stats = endpoint.externalize_static_context(body, None)
+        self.assertIs(nb, body)
+        self.assertEqual(stats, {'system': 0, 'blocks': {}})
+
+    def test_docs_rewritten_only_when_hash_changes(self):
+        import tempfile
+        from unittest import mock
+        import pathlib
+        with tempfile.TemporaryDirectory() as root:
+            body = self._body()
+            with mock.patch.object(pathlib.Path, 'write_text', autospec=True,
+                                   side_effect=pathlib.Path.write_text) as wt:
+                nb1, _ = endpoint.externalize_static_context(body, root)
+                nb2, _ = endpoint.externalize_static_context(body, root)  # same content
+            names = [str(c.args[0]) for c in wt.call_args_list]
+            self.assertEqual(len([n for n in names if n.endswith('system.md')]), 1)
+            self.assertEqual(nb1['messages'][0]['content'], nb2['messages'][0]['content'])
+            # changed content -> rewritten with a new marker
+            body2 = self._body(system_units=3001)
+            body2['messages'][0]['content'] += 't'
+            nb3, _ = endpoint.externalize_static_context(body2, root)
+            self.assertIn('.zs-adapter/system.md', nb3['messages'][0]['content'])
+
+
+class StaticExternIntegrationTests(unittest.IsolatedAsyncioTestCase):
+    """Live 413 shape (user's actual payload): tools 49k + system 11k +
+    user boilerplate 30k + real task ~500. 绕行 must bring it under the
+    118k arena budget WITHOUT touching the real conversation."""
+
+    async def asyncSetUp(self):
+        self.web = FakeWeb()
+        self.app = endpoint.create_app('local-test-key', 'bound-page', self.web, poll_interval=.001, heartbeat=.002)
+        self.life = self.app.router.lifespan_context(self.app)
+        await self.life.__aenter__()
+        self.client = httpx.AsyncClient(transport=httpx.ASGITransport(app=self.app), base_url='http://local', headers=HEADERS)
+
+    async def asyncTearDown(self):
+        await self.client.aclose()
+        await self.life.__aexit__(None, None, None)
+
+    async def post(self, **changes):
+        return await self.client.post('/v1/chat/completions', json={**BODY, **changes})
+
+    def _live_shape(self):
+        tools = [{'type': 'function', 'function': {
+            'name': f'tool_{i}', 'description': ('工作流指引：' + 'd' * 4700) if i % 2 else 'd' * 4800,
+            'parameters': {'type': 'object', 'properties': {'v': {'type': 'string'}},
+                           'required': ['v'], 'additionalProperties': False}}} for i in range(14)]
+        msgs = [{'role': 'system', 'content': 'sys-' + 's' * 12400},
+                {'role': 'user', 'content':
+                     '<rules>' + 'r' * 21000 + '</rules>\n'
+                     '<agent_skills>' + 'k' * 12000 + '</agent_skills>\n'
+                     '<mcp_file_system>' + 'm' * 6000 + '</mcp_file_system>\n'
+                     '请把登录按钮改成红色'}]
+        return {'model': 'web-ai', 'messages': msgs, 'tools': tools}
+
+    def _set_env(self, **env):
+        saved = {k: os.environ.get(k) for k in env}
+        for k, v in env.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
+        return saved
+
+    async def test_static_context_extern_resolves_the_live_413_shape(self):
+        import tempfile
+        self.web.provider = 'arena'  # 118,000 budget
+        body = self._live_shape()
+        saved = self._set_env(ZW_CONTEXT_EXTERN='0', ZW_TOOL_DESC_MAX_UNITS='0',
+                              ZW_FILE_MCP_URL=None, ZW_FILE_MCP_ROOT=None)
+        try:
+            r0 = await self.post(messages=body['messages'], tools=body['tools'])
+            self.assertEqual(r0.status_code, 413, r0.text)  # baseline: over budget
+            # Lever 1 alone: capping tool descriptions already fits it
+            saved.update(self._set_env(ZW_CONTEXT_EXTERN='0', ZW_TOOL_DESC_MAX_UNITS='600'))
+            r1 = await self.post(messages=body['messages'], tools=body['tools'])
+            self.assertEqual(r1.status_code, 200, r1.text)
+            fwd1 = _envelope(self.web.sent[-1]['prompt'])
+            self.assertLess(endpoint.utf16_units(json.dumps(fwd1['tools'])),
+                            14 * 1100)  # every description capped (was ~70k, now ~13k)
+            self.assertEqual(fwd1['tools'][0]['function']['parameters'],
+                             body['tools'][0]['function']['parameters'])  # schemas intact
+            # Lever 2: externalizing system + boilerplate + tool definitions fits it
+            with tempfile.TemporaryDirectory() as root:
+                saved.update(self._set_env(ZW_CONTEXT_EXTERN='1', ZW_TOOL_DESC_MAX_UNITS='0',
+                                           ZW_FILE_MCP_URL='https://tunnel.example/mcp?token=x',
+                                           ZW_FILE_MCP_ROOT=root))
+                r2 = await self.post(messages=body['messages'], tools=body['tools'])
+                self.assertEqual(r2.status_code, 200, r2.text)
+                prompt = self.web.sent[-1]['prompt']
+                envelope = _envelope(prompt)
+                self.assertIn('.zs-adapter/system.md', prompt)
+                for doc in ('rules.md', 'skills.md', 'mcp.md', 'tools.md'):
+                    self.assertIn(f'.zs-adapter/{doc}', prompt)
+                self.assertNotIn('r' * 500, prompt)   # boilerplate left the input box
+                self.assertNotIn('s' * 500, prompt)   # system prompt left the input box
+                self.assertNotIn('d' * 500, prompt)   # tool descriptions left the input box
+                self.assertIn('请把登录按钮改成红色', prompt)  # real task stayed inline
+                # tools array is now name + one-line hint (schemas live in tools.md)
+                for t in envelope['tools']:
+                    self.assertIn('name', t)
+                    self.assertNotIn('function', t)
+                    self.assertLessEqual(endpoint.utf16_units(t.get('hint') or ''), 60)
+                self.assertEqual(envelope['tools'][0]['name'], body['tools'][0]['function']['name'])
+                cdir = Path(root) / '.zs-adapter'
+                for doc in ('system.md', 'rules.md', 'skills.md', 'mcp.md', 'tools.md'):
+                    self.assertTrue((cdir / doc).is_file(), doc)
+                tools_doc = json.loads((cdir / 'tools.md').read_text(encoding='utf-8').split('\n', 1)[1])
+                self.assertEqual(tools_doc, body['tools'])  # FULL original definitions in the doc
+            # Both levers: the whole per-message payload shrinks to a few k
+            with tempfile.TemporaryDirectory() as root:
+                saved.update(self._set_env(ZW_CONTEXT_EXTERN='1', ZW_TOOL_DESC_MAX_UNITS='600',
+                                           ZW_FILE_MCP_URL='https://tunnel.example/mcp?token=x',
+                                           ZW_FILE_MCP_ROOT=root))
+                r3 = await self.post(messages=body['messages'], tools=body['tools'])
+                self.assertEqual(r3.status_code, 200, r3.text)
+                prompt = self.web.sent[-1]['prompt']
+                envelope = _envelope(prompt)
+                self.assertLess(endpoint.utf16_units(json.dumps(envelope)), 12000)
+                self.assertIn('请把登录按钮改成红色', prompt)
+        finally:
+            for k, v in saved.items():
+                if v is None:
+                    os.environ.pop(k, None)
+                else:
+                    os.environ[k] = v
+
+    async def test_context_extern_is_inert_without_tunnel(self):
+        """Fallback: with the file MCP/tunnel down, everything stays inline
+        (same 413 as baseline) - never a half-migrated prompt."""
+        self.web.provider = 'arena'
+        body = self._live_shape()
+        saved = self._set_env(ZW_CONTEXT_EXTERN='1', ZW_TOOL_DESC_MAX_UNITS='0',
+                              ZW_FILE_MCP_URL=None, ZW_FILE_MCP_ROOT='/nonexistent-root')
+        try:
+            r = await self.post(messages=body['messages'], tools=body['tools'])
+            self.assertEqual(r.status_code, 413, r.text)
+            fwd = _envelope(self.web.sent[-1]['prompt']) \
+                if self.web.sent else None
+            self.assertIsNone(fwd)  # nothing was sent: still over budget inline
+        finally:
+            for k, v in saved.items():
+                if v is None:
+                    os.environ.pop(k, None)
+                else:
+                    os.environ[k] = v
+
+class ExtensionBuildSyncTests(unittest.TestCase):
+    """The endpoint refuses a dedicated page whose extension reports a
+    different build stamp (or never reports one). The two constants must stay
+    in lockstep, or a FRESH dedicated page would be refused."""
+
+    def test_content_script_build_id_matches_endpoint(self):
+        content = (ROOT / 'extension' / 'content.js').read_text(encoding='utf-8')
+        m = re.search(r"const BUILD_ID = '([^']+)'", content)
+        self.assertTrue(m, 'content.js: BUILD_ID constant not found')
+        self.assertEqual(m.group(1), endpoint.EXTENSION_BUILD_ID,
+                         'content.js BUILD_ID != endpoint EXTENSION_BUILD_ID: '
+                         'a fresh dedicated page would be reported as stale')

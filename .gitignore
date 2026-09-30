@@ -18,3 +18,10 @@ devtools/
 Thumbs.db
 desktop.ini
 __pycache__/
+
+# Cursor webpage bridge: local authentication and generated extension bundle
+cursor-web/.bridge-token
+cursor-web/extension/providers/
+.venv/
+cursor-web/.endpoint-token
+cursor-web/tests/node_modules/

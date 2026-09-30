@@ -1,0 +1,211 @@
+"""Local-only authenticated webpage task broker. Never reads/writes project files."""
+import asyncio
+import json
+import os
+import secrets
+import time
+import uuid
+from pathlib import Path
+
+from websockets.asyncio.server import serve
+from input_limits import size_error
+
+TOKEN_FILE = Path(__file__).with_name('.bridge-token')
+PORT = int(os.getenv('CURSOR_WEB_PORT', '17614'))
+clients = {}
+jobs = {}
+
+
+def token():
+    if not TOKEN_FILE.exists():
+        fd = os.open(TOKEN_FILE, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        with os.fdopen(fd, 'w') as f:
+            f.write(secrets.token_urlsafe(32))
+    return TOKEN_FILE.read_text().strip()
+
+
+async def handle(ws):
+    role = None
+    try:
+        hello = json.loads(await asyncio.wait_for(ws.recv(), 5))
+        if not secrets.compare_digest(str(hello.get('token', '')), token()):
+            await ws.close(1008, 'Authentication failed')
+            return
+        role = hello.get('role')
+        if role not in ('extension', 'cursor'):
+            await ws.close(1008, 'Invalid role')
+            return
+        if role == 'extension':
+            if clients:
+                await ws.close(1008, 'Only one browser connection is allowed')
+                return
+            clients[ws] = []
+        await ws.send(json.dumps({'ok': True}))
+        async for raw in ws:
+            msg = json.loads(raw)
+            kind = msg.get('type')
+            for job in jobs.values():
+                # Outer safety net for a lost result (e.g. the extension's
+                # result message was dropped during a bridge restart). Ladder:
+                # extension 480s < endpoint 510s < bridge 540s.
+                if job['status'] == 'running' and time.time() - job['created'] > 540:
+                    job.update(status='error', error='任务超时（540 秒）：网页可能仍在回答，打开专用页查看进度，等它答完再重试')
+            result = {'error': 'Unsupported request'}
+            if role == 'extension':
+                if kind == 'sessions':
+                    clients[ws] = msg.get('sessions', [])
+                    # Re-adopt jobs orphaned by a PREVIOUS connection of THIS
+                    # same page. Chrome hard-kills the MV3 service worker after
+                    # 5 minutes, so any MCP task longer than that crosses a
+                    # kill/restart: the dedicated page keeps working through
+                    # the gap, and its finished answer arrives on THIS new
+                    # socket. Without re-adoption the `owner == ws` check below
+                    # would reject that answer (owner is the dead socket) and
+                    # the user would see an answer on the page that never
+                    # reaches the client. Only jobs whose session this
+                    # connection actually reports are adopted - a different
+                    # browser window (different session id) cannot steal a job.
+                    sids = {s.get('id') for s in msg.get('sessions', []) if isinstance(s, dict)}
+                    for job in jobs.values():
+                        if (job['status'] == 'running' and job['owner'] not in clients
+                                and job['session_id'] in sids):
+                            job['owner'] = ws
+                elif kind == 'ack':
+                    # Content-script build stamp: recorded on the job so the
+                    # endpoint can detect a stale (old-extension) page.
+                    job = jobs.get(msg.get('job_id'))
+                    if job and msg.get('build'):
+                        job['build'] = msg['build']
+                elif kind == 'progress':
+                    # Live task diagnostics from the content script (phase,
+                    # wait age, hidden state, reply length, turn-ended prompt
+                    # state): the control window's task log shows WHERE a
+                    # running task is, so a stall is diagnosable from the
+                    # user's side without DevTools (2026-09-30 reports).
+                    job = jobs.get(msg.get('job_id'))
+                    if (job and job['owner'] == ws and job['status'] == 'running'
+                            and isinstance(msg.get('diagnostics'), dict)):
+                        job['diagnostics'] = msg['diagnostics']
+                elif kind == 'result':
+                    job = jobs.get(msg.get('job_id'))
+                    if job and job['owner'] == ws and job['status'] == 'running':
+                        job.update(status='error' if msg.get('error') else 'completed',
+                                   result=msg.get('text', ''), error=msg.get('error'),
+                                   diagnostics=msg.get('diagnostics', {}))
+                # Extension messages are fire-and-forget: never answered.
+                continue
+            if kind == 'list':
+                result = {'sessions': [s for sessions in clients.values() for s in sessions]}
+            elif kind == 'jobs':
+                # Control-center dashboard: task state per job (no internals).
+                result = {'jobs': [{k: v for k, v in j.items() if k != 'owner'}
+                                   for j in jobs.values()]}
+            elif kind == 'cancel':
+                # Control-center "取消" button: forward the abort to the
+                # extension, which ends the job via its normal result path
+                # (clears the page's busy flag and frees the session).
+                job = jobs.get(msg.get('job_id'))
+                if not job:
+                    result = {'error': '未知任务（bridge 可能已重启）'}
+                elif job['status'] != 'running':
+                    result = {'error': f"任务已结束（{job['status']}），无需取消"}
+                elif job['owner'] not in clients:
+                    job.update(status='error', error='浏览器已断开，任务无法取消；刷新专用页即可清除')
+                    result = {'job_id': job['job_id'], 'status': 'error'}
+                else:
+                    try:
+                        # session_id lets the extension find the tab even when
+                        # its per-job route was lost (service-worker restart).
+                        await job['owner'].send(json.dumps({'type': 'cancel', 'job_id': job['job_id'],
+                                                           'session_id': job['session_id']}))
+                        result = {'job_id': job['job_id'], 'status': 'running', 'cancel_requested': True}
+                    except Exception:
+                        job.update(status='error', error='浏览器已断开，任务无法取消；刷新专用页即可清除')
+                        result = {'job_id': job['job_id'], 'status': 'error'}
+            elif kind == 'reload':
+                # Control-window "刷新页面": reload the dedicated tab so a page
+                # opened before an extension update loads the NEW content
+                # script (typical cause of the "扩展没有报告构建号" refusal).
+                # After the reload the page re-announces under a new session
+                # id; the UI rebinds.
+                sid = msg.get('session_id')
+                owner = next((w for w, sessions in clients.items()
+                              if any(s.get('id') == sid for s in sessions)), None)
+                if owner is None:
+                    result = {'error': '会话不存在（页面可能已关闭）；点站点卡片重新打开'}
+                else:
+                    try:
+                        await owner.send(json.dumps({'type': 'reload', 'session_id': sid}))
+                        result = {'status': 'reloading', 'session_id': sid}
+                    except Exception:
+                        result = {'error': '浏览器已断开；请重新打开专用页'}
+            elif kind == 'send':
+                sid, prompt = msg.get('session_id'), msg.get('prompt')
+                if not isinstance(prompt, str) or not prompt.strip():
+                    result = {'error': 'Prompt must be a nonempty string'}
+                else:
+                    busy = next((j for j in jobs.values()
+                                 if j['session_id'] == sid and j['status'] == 'running'), None)
+                    if busy:
+                        elapsed = int(time.time() - busy['created'])
+                        result = {'error': (
+                            f"网页仍在回答上一个任务（{busy['job_id'][:8]}…，已运行 {elapsed} 秒；最长约 9 分钟）——"
+                            '即你最近发送的那条消息正在网页上处理，MCP 长任务前几分钟没有可见输出属正常现象，不是卡死。'
+                            '若这是相同内容的重发：无需任何操作，程序会自动接管该任务的结果，回答会自动到达。'
+                            '若要发送不同的新内容：请等该任务完成（打开专用页可查看进度），'
+                            '或在程序窗口"任务日志"点"取消"终止它后再发送')}
+                    else:
+                        owner = next((w for w, sessions in clients.items()
+                                      if any(s.get('id') == sid for s in sessions)), None)
+                        session = next((s for s in clients.get(owner, []) if s.get('id') == sid), {})
+                        oversize = size_error(prompt, session)
+                        if owner is None:
+                            result = {'error': 'Session unavailable; list sessions again'}
+                        elif oversize:
+                            result = {'error': oversize}
+                        elif len(jobs) >= 500:
+                            result = {'error': 'Task capacity reached; restart bridge after collecting results'}
+                        else:
+                            jid = str(uuid.uuid4())
+                            jobs[jid] = {'job_id': jid, 'session_id': sid, 'status': 'running',
+                                         'created': time.time(), 'owner': owner}
+                            try:
+                                await owner.send(json.dumps({'type': 'dispatch', 'job_id': jid,
+                                                            'session_id': sid, 'prompt': prompt,
+                                                            'response_format': msg.get('response_format')}))
+                                result = {'job_id': jid, 'status': 'running'}
+                            except Exception:
+                                jobs[jid].update(status='error', error='Browser disconnected; delivery uncertain. Do not automatically resend.')
+                                result = {'job_id': jid, 'error': jobs[jid]['error']}
+            elif kind == 'get':
+                job = jobs.get(msg.get('job_id'))
+                result = {k: v for k, v in job.items() if k != 'owner'} if job else {'error': 'Unknown task (bridge may have restarted)'}
+            await ws.send(json.dumps(result, ensure_ascii=False))
+    except Exception:
+        pass
+    finally:
+        clients.pop(ws, None)
+        # Do NOT error running jobs when the extension's connection drops.
+        # The MV3 service worker is routinely killed (5-minute lifetime cap)
+        # and reconnected mid-task, and the dedicated page keeps working
+        # through the gap; erroring the job here would discard the answer that
+        # arrives seconds later on the reconnected socket. Orphaned jobs are
+        # re-adopted on reconnect (see the 'sessions' handler above). If the
+        # browser is genuinely gone, the 540-second sweep or a manual cancel
+        # frees the job - both still work because the orphaned job stays
+        # 'running' with an owner that is no longer connected.
+
+
+async def main():
+    token()
+    print(f'Cursor Web Bridge: ws://127.0.0.1:{PORT}')
+    print(f'Pairing token file: {TOKEN_FILE} (keep private)')
+    # Browser extensions have their own origin; ordinary websites are rejected.
+    import re
+    async with serve(handle, '127.0.0.1', PORT, max_size=2_000_000,
+                     origins=[None, re.compile(r'chrome-extension://[a-p]{32}')]):
+        await asyncio.Future()
+
+
+if __name__ == '__main__':
+    asyncio.run(main())

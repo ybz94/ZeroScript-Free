@@ -167,7 +167,18 @@ const ZS = (() => {
   // every other provider is untouched by definition.
   function buildSystemPrompt(opts = {}) {
     if (typeof opts === "string") opts = { siteName: opts };
-    const { siteName = "this AI site", customPrompt = "", providerNotes = "" } = opts;
+    const { siteName = "this AI site", customPrompt = "", providerNotes = "", userLang = "" } = opts;
+    // Reply-language rule (ported from the 01a0a947 branch, 83e0f69). The
+    // prompt and the tool results are English, so without an explicit
+    // instruction the model drifts into English even when the user writes
+    // Chinese/Japanese/etc. Chinese browsers get an explicit 简体中文
+    // directive; every other language gets "mirror the user". Commands, JSON,
+    // tool names, code and paths are NEVER translated either way - only the
+    // model's own prose follows the user's language.
+    const langRule = (String(userLang || "").toLowerCase().startsWith("zh")
+      ? "- LANGUAGE: the user's browser is in Chinese - reply in 简体中文 (Simplified Chinese): every explanation, note around a command, and final answer must be in Chinese. If the user writes in another language, follow THEIR language instead. "
+      : "- LANGUAGE: reply to the user in the SAME language they write to you in (they write Chinese → answer in Chinese, Japanese → Japanese, English → English). ")
+      + "NEVER translate the commands themselves: ZeroScript commands, JSON, tool names, parameter keys, code, markers (###LUA### etc.) and file paths stay exactly as the command list specifies - only your own prose follows the user's language.";
 
     const prompt = `CONTEXT: the user has installed a browser extension called ZeroScript in their own browser. Here is how it works, so you can use it on their behalf:
 A browser extension (ZeroScript) is running inside this page. It watches your replies. When it detects a ZeroScript command in your text, it runs it against one or more connected MCP servers and sends the result back as the next message. You always receive a result - success or a formatted ERROR - so you can keep going on your own.
@@ -200,6 +211,7 @@ return "result"
 ${BT}
 
 RULES:
+${langRule}
 - ONE command block per reply, inside a fenced code block. If you need several, do them one at a time and wait for each result. (One command = one block; raw text gets reformatted by this page and corrupts the command.)
 - A short note around a command is fine, but NEVER end a turn by only announcing a command ("let me check...", "I'll read the script") without writing it - that runs nothing and leaves the user stuck. Either write the command now, or give your final answer.
 - Final answers: plain text only, no Markdown or code fences. Do ONLY what was asked - fewest commands, no unrequested double-checks. When the task is done or the user is satisfied ("thanks", "perfect"...), reply ONE short sentence and STOP.

@@ -307,6 +307,11 @@ const ZSProvider = (() => {
       reply: md ? textWithout(md, ".zs-chip").trim() : "",
       thinking: think ? (think.textContent || "").trim() : "",
       item,
+      // Protocol reader (0.4.19): answer root = the message content only; the
+      // model-thoughts element is a SIBLING of it, so code drafted while
+      // reasoning can never count as the protocol's JSON block.
+      replyRoots: md ? [md] : [],
+      thinkingSel: S.thinking,
     };
   }
 
@@ -317,6 +322,21 @@ const ZSProvider = (() => {
       await sleep(120);
     }
     return false;
+  }
+
+  // Visible site error chrome (toast/alert), if any - content.js fails the
+  // task in seconds when this persists with no reply, instead of waiting out
+  // the 240s window on a request the page already rejected (0.4.19).
+  function errorText() {
+    try {
+      for (const el of document.querySelectorAll(S.errorSurfaces)) {
+        if (el.offsetParent === null) continue;
+        if (el.closest(S.anyItem)) continue; // model content, not UI chrome
+        const t = (el.innerText || "").trim();
+        if (t.length >= 8 && t.length < 600) return t;
+      }
+    } catch {}
+    return null;
   }
 
   // ── Sending ───────────────────────────────────────────────────────────────
@@ -410,6 +430,7 @@ const ZSProvider = (() => {
     // test compares against what we actually typed.
     text = truncateForSend(text);
     const relock = _locked;
+    let landed = 0, attempted = false;
     if (relock) ed.setAttribute("contenteditable", "true"); // injection needs it editable
     try {
       // submitAndGetBase RETRIES this whole function (up to 4x) when the send
@@ -451,14 +472,24 @@ const ZSProvider = (() => {
       }
       const btn = sendButton();
       diag("send.click", { found: !!btn, pending: hasPendingAttachment() });
-      if (btn) { btn.click(); return; }
-      // Fallback: Enter sends in Gemini's composer.
-      const o = { key: "Enter", code: "Enter", keyCode: 13, which: 13, bubbles: true, cancelable: true };
-      ed.dispatchEvent(new KeyboardEvent("keydown", o));
-      ed.dispatchEvent(new KeyboardEvent("keyup", o));
+      landed = (editorText() || "").length;
+      if (btn) { btn.click(); attempted = true; }
+      else {
+        // Fallback: Enter sends in Gemini's composer.
+        const o = { key: "Enter", code: "Enter", keyCode: 13, which: 13, bubbles: true, cancelable: true };
+        ed.dispatchEvent(new KeyboardEvent("keydown", o));
+        ed.dispatchEvent(new KeyboardEvent("keyup", o));
+        attempted = true;
+      }
     } finally {
       if (relock) { const e2 = getEditor(); if (e2) e2.setAttribute("contenteditable", "false"); }
     }
+    // Report the outcome so the caller can confirm the send with the provider's
+    // own evidence (composer cleared / generation started) instead of relying
+    // on user-turn counting alone (0.4.15 interface).
+    const sent = attempted && (await waitFor(() => isBusyNow() || (editorText() || "").trim() === "", 3000));
+    diag("sent", { sent, landedLen: landed });
+    return { sent: !!sent, landedLen: landed };
   }
 
   function stopGeneration() {
@@ -656,6 +687,7 @@ const ZSProvider = (() => {
 
   return {
     id: "gemini",
+    version: "0.4.32",
     displayName: "Gemini",
     // Gemini's web model is natively multimodal (image understanding), so
     // screen_capture is safe to expose here. Other providers default this
@@ -703,7 +735,7 @@ const ZSProvider = (() => {
     isGenerating, isBusyNow, isHardGenerating,
     enforceComposer, ensureComposerReady,
     turnHalted, findContinueBtn, clickContinueBtn,
-    scanError, isTooLongMsg, isBusyMsg,
+    scanError, errorText, isTooLongMsg, isBusyMsg,
     // actions
     attachImages, clearAttachments, conversationKey,
     installSendHooks, findToolBlockSpot,

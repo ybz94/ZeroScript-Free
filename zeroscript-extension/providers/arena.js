@@ -229,8 +229,28 @@ const ZSProvider = (() => {
   // textarea (#zs-root) so the send hooks' "not on a chat page" guard holds on
   // login/OAuth pages that have no site composer.
   const getEditor = () => {
+    // The composer in the current DOM (Agent mode and the current chat) is a
+    // VISIBLE TipTap/ProseMirror contenteditable. A HIDDEN legacy `form textarea`
+    // (placeholder "Ask anything…") also sits in the DOM on the same page and is
+    // present BEFORE the TipTap editor mounts after a refresh: it is never seen
+    // and never sends. 0.4.7 returned it as a fallback, so a task dispatched
+    // right after a refresh wrote the whole payload into that invisible box and
+    // the typeAndSend mount-wait never kicked in (the fallback was non-null).
+    // Return VISIBLE editors only: TipTap/ProseMirror contenteditable first (not
+    // our own UI), then a visible form textarea for the old DOM. (No chat-list
+    // exclusion: in Agent mode the composer can sit inside the same container as
+    // the message list, and the tiptap/ProseMirror class is specific enough to
+    // avoid chat code blocks.)
+    for (const e of document.querySelectorAll("[contenteditable]")) {
+      if (!e.isContentEditable) continue;
+      if (e.offsetParent === null) continue;
+      if (e.closest("#zs-root")) continue;
+      if (/tiptap|prosemirror/i.test(String(e.className || ""))) return e;
+    }
     for (const e of document.querySelectorAll("form textarea")) {
-      if (!e.closest("#zs-root")) return e;
+      if (e.closest("#zs-root")) continue;
+      if (e.offsetParent === null) continue; // hidden legacy box: never usable
+      return e;
     }
     return null;
   };
@@ -362,6 +382,63 @@ const ZSProvider = (() => {
   const findContinueBtn = () => null;
   const clickContinueBtn = () => false;
 
+  // The post-reply follow-up prompt ("此任务成功了吗?" with 是 / 否 /
+  // 继续工作). The "是" button inside the "成功了吗" container, or null when
+  // absent or hidden.
+  //
+  // Its PRESENCE is the site's own definitive TURN-ENDED signal: generation
+  // has stopped and no more answer tokens will arrive. The core uses it to
+  // finalize the task (live report 2026-09-30: a completed JSON answer +
+  // this prompt sat on the page while the idle/growth heuristics never
+  // settled and the client saw nothing for 8 minutes).
+  function followupYesButton() {
+    try {
+      const btns = [...document.querySelectorAll('button, [role="button"]')];
+      for (const b of btns) {
+        if ((b.textContent || "").trim() !== "是") continue;
+        let node = b;
+        // Generous ancestor window (6 levels / 1500 chars): the prompt
+        // container's exact depth and caption length are not stable across
+        // site re-skins - a missed probe here used to stall a FINISHED task
+        // to the 480s timeout (live 2026-09-30).
+        for (let i = 0; i < 6 && node; i++) {
+          const t = node.textContent || "";
+          if (t.length < 1500 && /成功了吗/.test(t)) {
+            return b.offsetParent === null ? null : b;
+          }
+          node = node.parentElement;
+        }
+      }
+    } catch {}
+    return null;
+  }
+  const followupPromptPresent = () => followupYesButton() !== null;
+  // Left open, the prompt blocks the next send on the page. Our task's own
+  // reply has already been read and validated by the time this is called, so
+  // answering 是 (the task succeeded) is the correct close-out and keeps the
+  // page ready for the next task without any manual click. Returns true if a
+  // prompt was found and answered, false otherwise.
+  function clearFollowupPrompt() {
+    const b = followupYesButton();
+    if (!b) return false;
+    try { b.click(); return true; } catch { return false; }
+  }
+
+  // Public composer wipe (used by the core's reply-wait sweep): while the
+  // reply streams, the site can re-render a stale draft back into the box
+  // (draft autosave restore). Same select-all + delete / insertText('')
+  // strategy as the verified clear; never throws. Returns whether the box is
+  // empty afterwards.
+  function clearComposer() {
+    try {
+      const el = getEditor();
+      if (!el) return false;
+      if ((el.textContent || (el.value != null ? el.value : "") || "").trim() === "") return true;
+      bestEffortClear(el);
+      return (el.textContent || (el.value != null ? el.value : "") || "").trim() === "";
+    } catch { return false; }
+  }
+
   function snapshot() {
     try {
       const it = lastAssistant();
@@ -377,6 +454,7 @@ const ZSProvider = (() => {
     const md = proseOf(item);
     return {
       present: true,
+      replyRoots: [md],
       reply: md ? textWithout(md, ".zs-chip").trim() : "",
       thinking: "",
       item,
@@ -417,7 +495,125 @@ const ZSProvider = (() => {
   // React-controlled <textarea>: set .value via the native prototype setter so
   // React's onChange fires, dispatch an input event, wait for the submit button
   // to re-enable, then click it (Enter would insert a newline).
-  function setTextareaValue(el, v) {
+  //
+  // TipTap/ProseMirror composer: the value setter does nothing on a
+  // contenteditable DIV. Insert via execCommand (fires the input events
+  // ProseMirror/React listen to, so the composer updates and the send button
+  // enables) - but in CHUNKS. A single insertText of a 50k-118k char payload
+  // fires the site's onChange once with the whole text: one synchronous burst
+  // of React state update / character counting over 100k chars that can freeze
+  // the tab (observed 2026-09-22: composer frozen, page unresponsive). Chunked
+  // writes keep each change event small, the way fast typing looks, and surface
+  // a site-side input cap MID-write instead of after the whole payload.
+  const INSERT_CHUNK = 8000;
+  const INSERT_SETTLE_MS = 60;
+  // Close a visible site dialog that survived the previous task (the
+  // post-answer "此任务成功了吗?" feedback modal). Prefers a close control
+  // (aria-label or text matching close/关闭/cancel/×/esc); otherwise tries an
+  // Escape keydown on the dialog and the document. Never clicks an outcome
+  // option - that is user feedback the program must not fabricate. Never
+  // throws: a dialog we cannot close simply stays, and the next failure will
+  // surface as usual (send button blocked etc.).
+  function dismissBlockingDialog() {
+    try {
+      const dialogs = [...document.querySelectorAll('[role="dialog"],[role="alertdialog"]')]
+        .filter(d => d.offsetParent !== null && !d.closest("#zs-root"));
+      for (const d of dialogs) {
+        const btns = [...d.querySelectorAll("button")].filter(b => b.offsetParent !== null);
+        const closeBtn = btns.find(b => /close|cancel|关闭|取消|esc|×/i.test(
+          (b.getAttribute("aria-label") || "") + (b.textContent || "").trim()));
+        if (closeBtn) { try { closeBtn.click(); console.log('[zs] arena: dismissed blocking dialog (close button)'); return; } catch {} }
+        const o = { key: "Escape", code: "Escape", keyCode: 27, which: 27, bubbles: true, cancelable: true };
+        try { d.dispatchEvent(new KeyboardEvent("keydown", o)); document.dispatchEvent(new KeyboardEvent("keydown", o)); console.log('[zs] arena: Escape sent to blocking dialog'); } catch {}
+        return; // one dialog per preflight is enough; more will surface on retry
+      }
+    } catch {}
+  }
+  // Best-effort wipe of a stranded draft (select-all + delete). Never throws.
+  // Used on failure paths so the next attempt - or the user - starts from an
+  // empty box instead of an append target. (NOT used when a send merely
+  // stays unconfirmed: the core's leftover check must still see the stranded
+  // text to report "N characters are still in the composer", and treating our
+  // own clear as "composer_cleared" evidence would mark a failed send as sent.)
+  function bestEffortClear(el) {
+    try {
+      el.focus();
+      const sel = window.getSelection();
+      const range = document.createRange();
+      range.selectNodeContents(el);
+      sel.removeAllRanges();
+      sel.addRange(range);
+      // ProseMirror can swallow execCommand("delete") (it processes beforeinput
+      // against its OWN selection, which may lag the DOM selection) - fall back
+      // to insertText(""), which replaces the full selection through the same
+      // path the chunked writes use.
+      if (!document.execCommand("delete") || (el.textContent || "").trim() !== "") {
+        document.execCommand("insertText", false, "");
+      }
+    } catch {}
+  }
+  async function insertContentEditable(el, v) {
+    console.log('[zs] arena: writing ' + v.length + ' chars (' + Math.ceil(v.length / INSERT_CHUNK) + ' chunks)');
+    el.focus();
+    const sel = window.getSelection();
+    const selectEnd = (toEnd) => {
+      const range = document.createRange();
+      range.selectNodeContents(el);
+      if (toEnd) range.collapse(false);
+      sel.removeAllRanges();
+      sel.addRange(range);
+    };
+    // VERIFIED CLEAR: the box may hold a stranded draft from a prior failed
+    // attempt. Select-all + delete, re-check, retry - and REFUSE to write if
+    // the box cannot be emptied. (The old "first chunk replaces the draft" was
+    // wrong in practice: the loop below's FIRST selectEnd(true) collapsed the
+    // selection to the end before the first insertText, so a leftover draft
+    // survived and the new prompt APPENDED to it - the stacked-prompts
+    // incident. An empty box makes append-at-end identical to insert.)
+    let clearTries = 0;
+    while ((el.textContent || "").trim() !== "" && clearTries < 12) {
+      clearTries++;
+      selectEnd(false);
+      // Alternate delete / insertText(""): if the page's editor framework
+      // (ProseMirror) swallows one of them against a stale internal selection,
+      // the other goes through the insertText path the chunked writes use.
+      document.execCommand(clearTries % 2 === 1 ? "delete" : "insertText", false, "");
+      await sleep(50);
+    }
+    if ((el.textContent || "").trim() !== "") {
+      throw new Error(`Arena composer still holds ${(el.textContent || "").length} characters of a previous draft and will not clear - nothing was written. The page is likely wedged: refresh the dedicated page and retry.（本次未写入任何内容；页面疑似卡死，请刷新专用页后重试）`);
+    }
+    let written = 0;
+    for (let i = 0; i < v.length; i += INSERT_CHUNK) {
+      selectEnd(true); // deterministic append point even after a site re-render
+      const ok = document.execCommand("insertText", false, v.slice(i, i + INSERT_CHUNK));
+      if (!ok) {
+        // execCommand unavailable (very old engine): legacy one-shot fallback.
+        el.textContent = v;
+        el.dispatchEvent(new Event("input", { bubbles: true }));
+        return;
+      }
+      written = i + Math.min(INSERT_CHUNK, v.length - i);
+      await sleep(INSERT_SETTLE_MS); // let the site's onChange settle
+      // Mid-write clamp check: the DOM should already hold ~everything written.
+      // (80% margin absorbs contenteditable newline/whitespace normalization.)
+      const have = (el.textContent || "").length;
+      if (have < written * 0.8) {
+        throw new Error(`Arena composer clamped the input mid-write: wrote ${written} characters, composer holds ${have}. The page has an input limit below this payload; shrink the request and retry.`);
+      }
+      const nChunks = Math.ceil(v.length / INSERT_CHUNK);
+      const thisChunk = Math.floor(i / INSERT_CHUNK) + 1;
+      if (thisChunk % 5 === 0 || thisChunk === nChunks) {
+        console.log(`[zs] arena: chunk ${thisChunk}/${nChunks} (landed ${have}/${written})`);
+      }
+    }
+    console.log('[zs] arena: write done, composer holds ' + (el.textContent || "").length + ' chars');
+  }
+  async function setTextareaValue(el, v) {
+    if (el && el.isContentEditable) {
+      await insertContentEditable(el, v);
+      return;
+    }
     const proto = window.HTMLTextAreaElement && window.HTMLTextAreaElement.prototype;
     const setter = proto && Object.getOwnPropertyDescriptor(proto, "value");
     if (setter && setter.set) setter.set.call(el, v);
@@ -426,10 +622,62 @@ const ZSProvider = (() => {
   }
 
   async function typeAndSend(text, images) {
-    const editor = getEditor();
-    if (!editor) throw new Error("Arena input box not found");
+    let editor = getEditor();
+    if (!editor) {
+      // The composer may still be mounting after a page load/refresh (getEditor
+      // only returns VISIBLE editors, so a half-loaded page really is null here
+      // and this wait covers the mount window), or the page may be
+      // mid-navigation. Retry before declaring it absent.
+      for (let i = 0; i < 75 && !editor; i++) {
+        await new Promise((r) => setTimeout(r, 200));
+        editor = getEditor();
+      }
+    }
+    if (!editor) throw new Error("Arena input box not found after 15s (no visible TipTap composer or visible form textarea; the page may still be loading, or this may not be the chat page). If the conversation has been very long, the page itself is likely overloaded. Recovery: 1) click the Arena site card in Cursor Web Assistant to open a FRESH dedicated window (new tab = clean page); 2) start a NEW conversation in Cursor; 3) retry. 建议：一个任务用一条新对话——超长单页对话会把网页自身撑崩，这不是本程序的发送失败。");
+    // Never touch the composer while the page is actively generating: the send
+    // button is disabled in that state - including the "thinking" window where
+    // no tokens stream - so a write would be stranded and each retry would
+    // APPEND to it (the live incident that stacked 3 full prompts in the box).
+    // Fail fast, before typing a single character.
+    if (isHardGenerating()) {
+      throw new Error("Arena is still generating/working (Stop button present) - input refused. Wait for it to finish (or stop the generation), then retry; if the button is stuck, refresh the dedicated page. 建议：等网页生成完成（或点 Stop 停止生成）后再重试；若 Stop 按钮一直卡住，请刷新专用页。");
+    }
+    // The site shows a post-answer feedback dialog (e.g. "此任务成功了吗?" with
+    // option buttons) that stays open after the reply and can block the
+    // composer for the NEXT task - the next dispatch then fails and the retry
+    // storm piles up. Dismiss it BEFORE typing: prefer a close control
+    // (aria-label/text matching close/关闭/cancel/×); otherwise try Escape on
+    // the dialog. We never click an outcome option (成功/失败) - that is user
+    // feedback the program must not fabricate (a dedicated dismiss click can
+    // be added once the dialog's exact buttons are known).
+    dismissBlockingDialog();
+    const payload = truncateForSend(text);
     editor.focus();
-    setTextareaValue(editor, truncateForSend(text));
+    await setTextareaValue(editor, payload);
+    // If the text did not land in the composer (wrong/hidden element, page
+    // blocking input, React dropped it), fail NOW instead of waiting the full
+    // 60s for a send button that will never enable on an empty composer.
+    const landed = editorText();
+    if (landed.trim() === "") {
+      throw new Error("Arena composer did not accept the input (the text did not appear). The page may block input right now or the composer element changed. Check the dedicated webpage and retry.");
+    }
+    // A site-side input cap would CLAMP the write: the composer then holds far
+    // fewer characters than we wrote, and the send would go out with a
+    // truncated (broken) payload. Detect the clamp now instead of guessing
+    // later. The 5% margin absorbs contenteditable newline/whitespace
+    // normalization (a newline rendered as a break costs its \n in textContent).
+    if (landed.length < payload.length * 0.95) {
+      throw new Error(`Arena composer clamped the input: wrote ${payload.length} characters, composer holds ${landed.length}. The page has an input limit below this payload; shrink the request and retry.`);
+    }
+    // Append protection: if a draft the verified clear could not see survived,
+    // the write APPENDED and the box now holds far more than we wrote (the
+    // stacked-prompts incident shape). Site normalization only ever SHRINKS
+    // textContent (newlines become block breaks), so >115% of what we wrote is
+    // unambiguous leftover - refuse the send and wipe what we can.
+    if (landed.length > payload.length * 1.15) {
+      bestEffortClear(editor);
+      throw new Error(`Arena composer holds ${landed.length} characters after writing ${payload.length} - the previous content was NOT replaced (the write appended). Best-effort clear done; do NOT retry in this page: refresh the dedicated page and start a new conversation.（本次写入未被替换而是追加，已尽力清空；请勿在此页面重试：刷新专用页并新开对话）`);
+    }
     if (images && images.length) tagImages(images);
     diag("arena.tas.enter", {
       textLen: (text || "").length,
@@ -470,21 +718,49 @@ const ZSProvider = (() => {
     } else {
       diag("arena.tas.skipAttach", { reason: !images || !images.length ? "no-images" : "same-set", imgId: images ? images.__zsId : null });
     }
+    // FINAL pre-click verification: the site may re-render a stale draft OVER
+    // our write between the write and the click (autosave draft restore, a
+    // late React re-render, the 60s sendReady wait above) - the right-after-
+    // write check leaves that window open, and the click would then PUBLISH
+    // the stacked text to the model. Check at the last possible instant; if
+    // the box re-grew well beyond our payload, wipe and refuse the send.
+    // (Floor of 400 chars: image attachment chips add at most a file name.)
+    {
+      const finalLen = (editorText() || "").length;
+      const excess = finalLen - payload.length;
+      if (excess > Math.max(400, payload.length * 0.15)) {
+        bestEffortClear(editor);
+        throw new Error(`Arena composer re-grew to ${finalLen} characters before the send click (the site re-rendered a stale draft over the write - ${excess} characters of extra content). Best-effort clear done; do NOT retry in this page: refresh the dedicated page and start a new conversation.（点击发送前输入框又被网页重新渲染回旧内容，已尽力清空；请勿在此页面重试：刷新专用页并新开对话）`);
+      }
+    }
     // Click and CONFIRM the send took (editor clears the instant Arena accepts
     // it, image AND text paths). Re-click until it clears so a single swallowed
     // click can't strand the message/attachment. No re-attach here.
+    console.log('[zs] arena: clicking send button');
     let sent = false;
     for (let i = 0; i < 6 && !sent; i++) {
       if (sendReady()) {
         try { sendButton().click(); } catch {}
       } else if (!isHardGenerating()) {
-        const o = { key: "Enter", code: "Enter", keyCode: 13, which: 13, bubbles: true, cancelable: true };
-        editor.dispatchEvent(new KeyboardEvent("keydown", o));
-        editor.dispatchEvent(new KeyboardEvent("keyup", o));
+        // Never press Enter on a box that re-grew (stacked text): Enter would
+        // PUBLISH the draft+payload mix; fail as unconfirmed instead.
+        const grown = (editorText() || "").length > payload.length + Math.max(400, payload.length * 0.15);
+        if (!grown) {
+          const o = { key: "Enter", code: "Enter", keyCode: 13, which: 13, bubbles: true, cancelable: true };
+          editor.dispatchEvent(new KeyboardEvent("keydown", o));
+          editor.dispatchEvent(new KeyboardEvent("keyup", o));
+        }
       }
       sent = await waitFor(() => editorText().trim() === "", 700);
     }
+    console.log('[zs] arena: send ' + (sent ? 'confirmed (composer cleared)' : 'NOT confirmed - composer still holds text'));
     diag("arena.tas.sent", { sent, editorLen: editorText().length, pendingAfterSend: pendingCount() });
+    // Report the outcome so the caller can confirm the send with the provider's
+    // own evidence instead of relying on user-turn counting alone (the
+    // Agent-mode fresh-chat DOM does not increment userCount for the new turn -
+    // live 2026-09-22: composer cleared, correct JSON reply received, yet the
+    // task failed with "no new message appeared in the chat").
+    return { sent, landedLen: landed.length };
   }
 
   // Arena shows "Generating…" for a beat BEFORE the native "Stop generation"
@@ -693,14 +969,48 @@ const ZSProvider = (() => {
         if (el.offsetParent === null) continue;
         if (el.closest(S.list)) continue; // inside a chat turn ⇒ model content
         const t = (el.innerText || "").trim();
+        if (looksLikeCode(t)) continue;
         if (t.length > 8 && t.length < 600 && RE.contextLimit.test(t)) return t.slice(0, 240);
       }
     } catch {}
     if (!getEditor()) return "The input box disappeared (session ended?).";
     return null;
   }
+  // Any visible site-side error text (toast/alert chrome, never chat content).
+  // The standalone Cursor Web Assistant uses this to fail a task in seconds
+  // when the page rejects a request instead of waiting for a reply that
+  // will never arrive. Returns null when nothing is visible.
+  function errorText() {
+    try {
+      for (const el of document.querySelectorAll(S.errorSurfaces)) {
+        if (el.offsetParent === null) continue;
+        if (el.closest(S.list)) continue; // inside a chat turn ⇒ model content
+        const t = (el.innerText || "").trim();
+        if (t.length >= 8 && t.length < 600) {
+          if (looksLikeCode(t)) continue; // preview-crash dialog showing app code: task content, not a site rejection
+          return t;
+        }
+      }
+    } catch {}
+    return null;
+  }
   const isTooLongMsg = (text) => RE.tooLong.test(text);
   const isBusyMsg = (text) => RE.busy.test(text);
+  // A preview-pane crash dialog on the page can display the user's APP CODE
+  // (minified source with CJK strings, e.g. a game's upgrade-effect text) as
+  // its "error" - that content matches [class*="error"]/[role="alert"] and
+  // used to fail every task in seconds (live incident 2026-09-29: 3 stacked
+  // failures tripped the circuit breaker). Real SITE errors are prose
+  // ("Login expired", "Something went wrong") - low code punctuation, and CJK
+  // prose has no spaces by nature. So: strip CJK, and if a remaining 12+ char
+  // token carries code punctuation, it is source code, not site chrome.
+  const looksLikeCode = (t) => {
+    const stripped = t.replace(/[\u3000-\u303f\u4e00-\u9fff\uff00-\uffef]+/g, " ");
+    for (const chunk of stripped.split(/\s+/)) {
+      if (chunk.length >= 12 && /[{}();=.`[\]]/.test(chunk)) return true;
+    }
+    return false;
+  };
 
   // ── Image attachment (validated live 2026-07 on /text/direct) ─────────────
   // Arena's composer <form> holds ONE always-mounted hidden `input[type=file]`
@@ -854,6 +1164,7 @@ const ZSProvider = (() => {
 
   return {
     id: "arena",
+    version: "0.4.32",
     displayName: "Arena",
     // Arena's chat composer accepts image uploads (hidden `input[type=file]` in
     // the form → staged preview card → uploaded on send; see attachImages). The
@@ -889,12 +1200,12 @@ const ZSProvider = (() => {
     assistantCount, userCount, lastAssistant, lastAssistantId, readAssistant,
     streamLen, snapshot,
     // composer / state
-    getEditor, editorText, chatIsEmpty, isFreshChat, composerFrame, barAnchor,
+    getEditor, editorText, clearComposer, chatIsEmpty, isFreshChat, composerFrame, barAnchor,
     setInputLock, typeAndSend, stopGeneration,
     isGenerating, isBusyNow, isHardGenerating,
     enforceComposer, ensureComposerReady, modeWarning, captchaPresent, overlayBlocking,
-    turnHalted, findContinueBtn, clickContinueBtn,
-    scanError, isTooLongMsg, isBusyMsg,
+    turnHalted, findContinueBtn, clickContinueBtn, clearFollowupPrompt, followupPromptPresent,
+    scanError, errorText, isTooLongMsg, isBusyMsg,
     // actions
     attachImages, clearAttachments, conversationKey,
     installSendHooks, findToolBlockSpot,

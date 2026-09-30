@@ -1,0 +1,186 @@
+let ws, authenticated = false;
+const sessions = new Map();
+const routes = new Map();
+// MV3 service-worker lifecycle: Chrome can KILL this script (idle ~30s,
+// memory pressure). In-memory state would be lost with it - and a lost
+// in-flight job's RESULT wedges the bridge session for up to 9 minutes
+// (every resend fails with "网页忙", cancel finds no route either). Routes
+// are the only per-job state, so persist them in chrome.storage.session:
+// it survives service-worker restarts and clears when the browser closes.
+function saveRoutes() { try { chrome.storage.session.set({zsRoutes: Object.fromEntries(routes)}); } catch {} }
+chrome.storage.session.get('zsRoutes').then(st => {
+  for (const [k, v] of Object.entries(st.zsRoutes || {})) routes.set(k, v);
+}).catch(() => {});
+// MV3 lifecycle, stated plainly: Chrome HARD-TERMINATES this worker after
+// 5 minutes, so any MCP task longer than that WILL cross a kill/restart.
+// That is now harmless: a finished answer is drop-proof (forwarded
+// unconditionally and outbox-buffered - see the 'result' handler below), and
+// the 30s 'connect' alarm keeps the worker alive between kills. (A bare
+// setInterval would NOT keep an MV3 worker alive - an earlier version relied
+// on one and it did nothing.)
+// Outbox: a result sent while the WS is down (bridge/exe restarting) would
+// otherwise be SILENTLY dropped, leaving the bridge job 'running' until its
+// deadline and making every resend fail with "Session busy". Results are the
+// only messages that must survive a reconnect - queue them and flush on the
+// next authenticated open. (Stale entries for jobs the new bridge doesn't
+// know about are ignored by the bridge, so flushing is always safe.)
+const outbox = [];
+const send = data => {
+  if (authenticated && ws?.readyState === WebSocket.OPEN) {
+    ws.send(JSON.stringify(data));
+  } else if (data.type === 'result' && outbox.length < 50) {
+    outbox.push(data);
+  }
+};
+function publish() {
+  const now = Date.now();
+  for (const [id, s] of sessions) if (now - s.seen > 180000) sessions.delete(id);
+  send({type:'sessions', sessions:[...sessions.values()].map(({tabId, seen, ...s}) => s)});
+}
+async function connect() {
+  if (ws && ws.readyState < 2) return;
+  const {token, port = 17614} = await chrome.storage.local.get(['token', 'port']);
+  if (!token) return;
+  const socket = new WebSocket(`ws://127.0.0.1:${port}`);
+  ws = socket;
+  socket.onopen = () => socket.send(JSON.stringify({role:'extension', token}));
+    socket.onclose = () => {
+      if (ws !== socket) return;
+      authenticated = false;
+      routes.clear(); saveRoutes();
+      chrome.storage.local.set({connectionStatus:'已断开；请检查 Bridge 和令牌'});
+      setTimeout(connect, 3000);
+    };
+  socket.onmessage = async event => {
+    if (ws !== socket) return;
+    let msg;
+    try { msg = JSON.parse(event.data); } catch { return; }
+    if (!authenticated) {
+      if (msg.ok) {
+        authenticated = true;
+        for (const queued of outbox.splice(0)) ws.send(JSON.stringify(queued));  // lost-window results
+        publish(); chrome.storage.local.set({connectionStatus:'已连接本地 Bridge'});
+      }
+      return;
+    }
+    if (msg.type === 'cancel') {
+      // Control-center "取消" button: abort the in-flight task in its tab.
+      // The content script ends the job through its normal result path,
+      // which frees the bridge session. If the cancel CANNOT reach a tab,
+      // the job must be freed NOW (an unreachable job would otherwise wedge
+      // the session for up to 9 minutes); a page still generating will
+      // refuse the next task before typing anything.
+      const sess = msg.session_id ? sessions.get(msg.session_id) : null;
+      const route = routes.get(msg.job_id) || (sess ? {tabId: sess.tabId, sessionId: sess.id} : null);
+      const free = err => send({type:'result', job_id: msg.job_id, error: err});
+      if (!route) { free('任务已终止（网页端不可达；若网页仍在回答，请打开专用页查看）'); return; }
+      chrome.tabs.sendMessage(route.tabId, {type:'cancel', job_id: msg.job_id}).catch(() =>
+        free('任务已终止（网页端未确认取消；若网页仍在回答，请打开专用页查看）'));
+      return;
+    }
+    if (msg.type === 'reload') {
+      // Control-window "刷新页面": reload the bound tab so a page opened
+      // BEFORE an extension update loads the NEW content script (the typical
+      // cause of "扩展没有报告构建号" / stale-page refusal). After the reload
+      // the content script re-announces under a NEW session id; the user
+      // rebinds from the session list / site card.
+      const s = msg.session_id ? sessions.get(msg.session_id) : null;
+      if (!s) { send({type:'reload_failed', session_id:msg.session_id, error:'会话不存在（页面可能已关闭）'}); return; }
+      try {
+        await chrome.tabs.reload(s.tabId);
+      } catch (e) {
+        send({type:'reload_failed', session_id:msg.session_id, error:String((e&&e.message)||e).slice(0,120)});
+      }
+      return;
+    }
+    if (msg.type !== 'dispatch') return;
+    const s = sessions.get(msg.session_id);
+    if (!s) {send({type:'result', job_id:msg.job_id, error:'Session unavailable; list sessions again'}); return;}
+    routes.set(msg.job_id, {tabId:s.tabId, sessionId:s.id}); saveRoutes();
+    try {
+      const ack = await chrome.tabs.sendMessage(s.tabId, {...msg, expectedKey:s.key});
+      if (!ack?.accepted) throw new Error(ack?.error || 'Page rejected task');
+      // Report the content script's build generation so the endpoint can
+      // detect a stale dedicated page (old extension) BEFORE the task runs.
+      if (ack.build) send({type:'ack', job_id:msg.job_id, build:ack.build});
+    } catch (e) {
+      routes.delete(msg.job_id); saveRoutes();
+      const m = String((e && e.message) || e);
+      // "Receiving end does not exist" = no extension content script in that
+      // tab: the URL is not a supported site (e.g. chatglm.cn, which is NOT
+      // chat.z.ai), or the page is mid-load. Say what to do instead of
+      // surfacing the Chrome internals.
+      const err = /Receiving end does not exist/i.test(m)
+        ? '目标标签页里没有扩展内容脚本（该网址不是受支持的站点，或页面还没加载完）。注意：GLM 适配器支持的是国际版 chat.z.ai，不是国内 chatglm.cn。请在专用标签页打开受支持的聊天网站并刷新，然后重新绑定会话'
+        : m;
+      send({type:'result', job_id:msg.job_id, error:err});
+    }
+  };
+}
+chrome.runtime.onMessage.addListener((msg, sender, reply) => {
+  if (msg.type === 'snapshot' && !sender.tab) {
+    // Popup UI: current connection state + all known dedicated-page sessions.
+    reply({connected: authenticated && ws && ws.readyState === WebSocket.OPEN,
+           version: chrome.runtime.getManifest().version,
+           sessions: [...sessions.values()].map(({tabId, seen, ...s}) => s)});
+  } else if (msg.type === 'reconnect' && !sender.tab) {
+    authenticated = false;
+    if (ws) { ws.onclose = null; ws.close(); }
+    ws = null; routes.clear(); saveRoutes(); connect(); reply({ok:true});
+  } else if (msg.type === 'session' && sender.tab && sender.frameId === 0) {
+    // Only the extension's own matched content scripts register a session.
+    for (const [oldId, session] of sessions) {
+      if (session.tabId !== sender.tab.id || oldId === msg.id) continue;
+      sessions.delete(oldId);
+      for (const [jobId, route] of routes) {
+        if (route.sessionId !== oldId) continue;
+        send({type:'result', job_id:jobId, error:'Page refreshed or conversation changed; check webpage before retrying'});
+        routes.delete(jobId); saveRoutes();
+      }
+    }
+    sessions.set(msg.id, {...msg, type:undefined, tabId:sender.tab.id, seen:Date.now()});
+    publish(); reply({ok:true});
+  } else if (msg.type === 'progress' && sender.tab) {
+    // Live task diagnostics (fire-and-forget; the bridge validates ownership
+    // and only stores it while the job is running - never buffered).
+    send(msg);
+    reply({ok:true});
+  } else if (msg.type === 'result' && sender.tab) {
+    const route = routes.get(msg.job_id);
+    const matches = !!(route && route.tabId === sender.tab.id && route.sessionId === msg.session_id);
+    // Forward the result UNLESS there is POSITIVE evidence it comes from a
+    // tab that was NOT bound to this job (the route exists and points at a
+    // different tab/session - a wrong-tab spoof; the bridge cannot see tabs,
+    // so this check stays).
+    //
+    // Crucially, a MISSING route (no evidence either way) means FORWARD. The
+    // old code dropped a result whenever the route was missing or mismatched.
+    // That is exactly the MV3 wake-up race: Chrome hard-kills this service
+    // worker after 5 minutes (long MCP tasks run longer), and when the
+    // content script's finished answer wakes it back up, the persisted routes
+    // are restored ASYNC - the result frequently arrives BEFORE the restore,
+    // so the route is absent, the old code no-ops, and the answer is silently
+    // eaten. The answer then sits on the page while the bridge job stays
+    // 'running' up to 9 minutes and every resend fails 'busy' (live reports
+    // 2026-09-30). Forwarding on a missing route is always safe: the bridge
+    // re-validates ownership (job exists + belongs to this connection + still
+    // running) before applying, and the outbox below buffers the result if
+    // the WS is momentarily down during the restart.
+    if (!route || matches) {
+      if (route) { routes.delete(msg.job_id); saveRoutes(); }
+      send(msg);
+    }
+    reply({ok:true});
+  }
+});
+chrome.tabs.onRemoved.addListener(tabId => {
+  for (const [id,s] of sessions) if (s.tabId === tabId) sessions.delete(id);
+  for (const [id,r] of routes) if (r.tabId === tabId) {
+    send({type:'result', job_id:id, error:'Target tab closed'}); routes.delete(id); saveRoutes();
+  }
+  publish();
+});
+chrome.alarms.create('connect', {periodInMinutes:0.5});
+chrome.alarms.onAlarm.addListener(() => {connect(); publish();});
+setInterval(publish, 15000);
+connect();

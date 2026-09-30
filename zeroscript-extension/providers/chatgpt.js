@@ -459,6 +459,7 @@ const ZSProvider = (() => {
     const mds = [...item.querySelectorAll(S.reply)];
     return {
       present: true,
+      replyRoots: mds,
       reply: mds.map((m) => textWithout(m, ".zs-chip")).join("\n").trim(),
       thinking: "", // reasoning is gated by the stop button, not parsed as text
       item,
@@ -597,9 +598,17 @@ const ZSProvider = (() => {
     if (!ed) throw new Error("ChatGPT input box not found");
     text = truncateForSend(text);
     const relock = _locked;
+    let landed = 0, attempted = false;
     if (relock) ed.setAttribute("contenteditable", "true"); // injection needs it editable
     try {
       await setEditorText(ed, text);
+      // If the text did not land in the composer (wrong/hidden element, page
+      // blocking input), fail NOW instead of falling through to a send that
+      // can never succeed on an empty composer.
+      if (editorText().trim() === "") {
+        throw new Error("ChatGPT composer did not accept the input (the text did not appear). The page may block input right now or the composer element changed. Check the dedicated webpage and retry.");
+      }
+      landed = (editorText() || "").length;
       // Attach images LAST, right before the send click - see gemini.js/deepseek.js
       // typeAndSend for why (attaching first and then retyping the text can sever
       // the site's binding between the pending upload and the message sent).
@@ -611,9 +620,9 @@ const ZSProvider = (() => {
         while (Date.now() - t0 < 25000) {
           const b = sendButton();
           if (b && !b.disabled) { try { b.click(); } catch {} }
-          if (await waitFor(() => editorText().trim() === "" || !!stopButton(), 1200)) return;
+          if (await waitFor(() => editorText().trim() === "" || !!stopButton(), 1200)) return { sent: true, landedLen: landed };
         }
-        return;
+        return { sent: false, landedLen: landed };
       }
       // Wait for the control to be in its SEND role (proof ProseMirror registered
       // the text, and that no generation is in flight).
@@ -626,15 +635,24 @@ const ZSProvider = (() => {
       // Disabled send = a quota wall, not a wedge. Clicking it does nothing and
       // Enter is refused too, so return now and let scanError surface the reason
       // instead of burning the caller's retries in silence.
-      if (btn && btn.disabled) { diag("send.disabled", {}); return; }
-      if (btn) { btn.click(); return; }
-      // Fallback: Enter sends in ChatGPT's composer.
-      const o = { key: "Enter", code: "Enter", keyCode: 13, which: 13, bubbles: true, cancelable: true };
-      ed.dispatchEvent(new KeyboardEvent("keydown", o));
-      ed.dispatchEvent(new KeyboardEvent("keyup", o));
+      if (btn && btn.disabled) { diag("send.disabled", {}); return { sent: false, landedLen: landed }; }
+      if (btn) { btn.click(); attempted = true; }
+      else {
+        // Fallback: Enter sends in ChatGPT's composer.
+        const o = { key: "Enter", code: "Enter", keyCode: 13, which: 13, bubbles: true, cancelable: true };
+        ed.dispatchEvent(new KeyboardEvent("keydown", o));
+        ed.dispatchEvent(new KeyboardEvent("keyup", o));
+        attempted = true;
+      }
     } finally {
       if (relock) { const e2 = getEditor(); if (e2) e2.setAttribute("contenteditable", "false"); }
     }
+    // Report the outcome so the caller can confirm the send with the provider's
+    // own evidence (composer cleared / generation started) instead of relying
+    // on user-turn counting alone (0.4.15 interface).
+    const sent = attempted && (await waitFor(() => (editorText() || "").trim() === "" || !!stopButton(), 3000));
+    diag("sent", { sent, landedLen: landed });
+    return { sent: !!sent, landedLen: landed };
   }
 
   function stopGeneration() {
@@ -701,6 +719,21 @@ const ZSProvider = (() => {
       }
     } catch {}
     if (!getEditor()) return "The input box disappeared (session ended?).";
+    return null;
+  }
+  // Any visible site-side error text (alert/error chrome, never chat content).
+  // The standalone Cursor Web Assistant uses this to fail a task in seconds
+  // when the page rejects a request instead of waiting for a reply that
+  // will never arrive. Returns null when nothing is visible.
+  function errorText() {
+    try {
+      for (const el of document.querySelectorAll(S.errorSurfaces)) {
+        if (el.offsetParent === null) continue;
+        if (el.closest(S.msg)) continue; // model content, not UI chrome
+        const t = (el.innerText || "").trim();
+        if (t.length >= 8 && t.length < 600) return t;
+      }
+    } catch {}
     return null;
   }
   const isTooLongMsg = (text) => RE.tooLong.test(text);
@@ -910,6 +943,7 @@ const ZSProvider = (() => {
 
   return {
     id: "chatgpt",
+    version: "0.4.32",
     displayName: "ChatGPT",
     timings,
     // Exported for test-chatgpt.js (the Node smoke test drives it against a stub
@@ -960,7 +994,7 @@ const ZSProvider = (() => {
     isGenerating, isBusyNow, isHardGenerating,
     enforceComposer, ensureComposerReady,
     turnHalted, findContinueBtn, clickContinueBtn,
-    scanError, isTooLongMsg, isBusyMsg,
+    scanError, errorText, isTooLongMsg, isBusyMsg,
     // actions
     attachImages, clearAttachments, openNewChat, conversationKey,
     installSendHooks, findToolBlockSpot,

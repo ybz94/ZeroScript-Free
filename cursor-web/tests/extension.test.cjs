@@ -1,0 +1,670 @@
+const {test} = require('node:test');
+const assert = require('node:assert/strict');
+const vm = require('node:vm');
+const fs = require('node:fs');
+const path = require('node:path');
+const {randomUUID} = require('node:crypto');
+const root = path.join(__dirname, '..', 'extension');
+// Derived from the real content script so the harness tracks the build
+// automatically (a hardcoded copy here 44-tests-fails on every version bump).
+const CONTENT_VERSION = (fs.readFileSync(path.join(root,'content.js'),'utf8').match(/const VERSION = '([^']+)'/)||[])[1];
+
+function content(options = {}) {
+  const messages = [], intervals = [];
+  let listener, now = 0, sent = 0, old = {}, item = old, text = 'old answer', count = 1, key = '/c/1';
+  let editorContent = options.draft || '', userCountVar = 1, turnAt = Infinity; // fake-time when OUR user turn becomes visible
+  let followupClicked = false, lastPrompt = '', sweeps = 0, draftRestored = false;
+  let dropLeft = options.dropFirstResults || 0; // simulate SW restarts dropping result deliveries
+  const markerText = options.markerText || '';
+  const markerBlock = { // fake fenced code block for the 0.4.16 marker fallback
+    textContent: markerText,
+    contains: () => false,
+    querySelector: s => (s === 'code' ? {textContent: markerText} : null),
+  };
+  const document = {hidden:!!options.hidden, title:'Chat', addEventListener(){},
+    body: {innerText: options.pageText || '', textContent: options.pageText || ''},
+    querySelectorAll: sel => (options.markerBlocks && sel && sel.indexOf('pre') !== -1) ? [markerBlock] : []};
+  const provider = {
+    id:options.provider || 'mock',
+    version:options.providerVersion === undefined ? CONTENT_VERSION : options.providerVersion, // null => pre-0.4.9 (no version field)
+    init(){}, conversationKey:()=>key, isFreshChat:()=>false,
+    isBusyNow:()=>!!options.busy, isGenerating:()=>!!options.generating && sent>0, // generating only AFTER our send (post-reply prompt state)
+    // The Stop button appears mid-task (post-send) unless the page was ALREADY
+    // generating before we dispatched - then it is present from t=0.
+    isHardGenerating:()=>!!options.hardGenerating && (options.hardGenAfterSend ? sent>0 : true),
+    getEditor:()=>({tagName:'TEXTAREA', offsetParent:{}, placeholder:'Message', value:editorContent}),
+    // One-shot "site restores the draft" event: at fake-time draftRestoreAt the
+    // composer re-fills with the previous prompt (draft autosave restore).
+    editorText:()=>{ if(!draftRestored && options.draftRestoreAt!==undefined && now>=options.draftRestoreAt){ draftRestored=true; if(editorContent==='') editorContent=options.draftRestoreText||'restored draft'; } return editorContent; },
+    clearComposer:()=>{ if(editorContent){ editorContent=''; sweeps++; return true; } return false; },
+    assistantCount:()=>options.staleReads?1:count, userCount:()=>options.brokenUserCount?1:userCountVar+(turnAt!==Infinity&&now>=turnAt?1:0),
+    lastAssistant:()=>options.staleReads?old:item, lastAssistantId:()=>options.staleReads?'old':(item===old?'old':'new'),
+    followupPromptPresent:()=>options.followupPromptAt!==undefined && now>=options.followupPromptAt,
+    clearFollowupPrompt:()=>{ if(options.followupPromptAt===undefined || now<options.followupPromptAt) return false; followupClicked=true; return true; },
+    readAssistant:()=>({reply:options.staleReads?'old answer':text,item:options.staleReads?old:item}),
+    errorText:()=>options.siteError || null,
+    findContinueBtn:()=>!!options.truncated, turnHalted:()=>!!options.halted,
+    async typeAndSend(t){sent++; lastPrompt=t; if(options.sendError) throw Error('send failed');
+      if(options.navigate) key='/c/2';
+      if(options.hideAfterSend) document.hidden=true;
+      const accepted = !options.sendNotConfirmed && !options.sendDropped;
+      if(!options.sendDropped) editorContent = t;              // text typed (unless it never landed)
+      if(accepted){ editorContent=''; turnAt = now + (options.turnDelayMs||0); } // accepted -> cleared + new user turn at turnAt
+      userCountVar += options.extraUserTurns || 0;             // simulate manual use of the page
+      if(!options.noReply && accepted && !options.staleReads){ item={}; text=options.answer || 'new answer'; count++; }
+      // Provider's own send report (0.4.15): sent = it watched the composer clear;
+      // landedLen = verified write length. noProviderSent/noLandedReport model
+      // providers that return nothing (older builds / other sites).
+      return {sent:accepted && !options.noProviderSent,
+              landedLen:options.noLandedReport ? undefined : (options.sendDropped ? 0 : t.length)};
+    }
+  };
+  vm.runInNewContext(fs.readFileSync(path.join(root,'content.js'),'utf8'), {
+    ZSProvider:provider, ZSWebProtocol:{read:()=>options.protocol || {text:'',source:'code_block_unavailable',error:'Protocol code block missing'}}, crypto:{randomUUID}, document, location:{href:'https://site/c/1'},
+    navigator:{language:options.language||'en-US', languages:[options.language||'en-US']},
+    chrome:{runtime:{sendMessage:async msg=>{ if(msg.type==='result' && dropLeft>0){dropLeft--; throw new Error('Receiving end does not exist');} messages.push(msg);},onMessage:{addListener:fn=>listener=fn}}},
+    MutationObserver:class {observe(){} disconnect(){}}, clearTimeout(){},
+    Date:{now:()=>now}, setInterval:fn=>intervals.push(fn),
+    setTimeout:(fn, ms)=>{now+=ms;setImmediate(fn);}
+  });
+  const first = messages[0];
+  const dispatch = (extra={}) => {let ack;listener({type:'dispatch', job_id:'j1',session_id:first.id,expectedKey:'/c/1',prompt:'hi',...extra},{},v=>ack=v);return ack;};
+  async function result(){for(let i=0;i<1000;i++){const r=messages.find(m=>m.type==='result');if(r)return r;await new Promise(setImmediate);}throw Error('No result');}
+  const cancel = jid => listener({type:'cancel', job_id: jid}, {}, () => {});
+  return {messages, dispatch, cancel, result, get sent(){return sent;}, get followupClicked(){return followupClicked;}, get lastPrompt(){return lastPrompt;}, get sweeps(){return sweeps;}, intervals};
+}
+test('content returns completed new response, not previous answer',async()=>{
+  const c=content();assert.equal(c.dispatch().accepted,true);assert.equal((await c.result()).text,'new answer');assert.equal(c.sent,1);
+});
+for(const [name,options,pattern] of [
+  ['busy page',{busy:true},/already generating/],
+  ['hard-generating page (Stop button present before send)',{hardGenerating:true},/already generating/],
+  ['send failure',{sendError:true},/send failed/],
+  ['truncated answer',{truncated:true},/truncated/],['stopped answer',{halted:true},/stopped/],
+  ['no new reply',{noReply:true},/等待网页回答超时/],
+]) test(`content rejects ${name}`,async()=>{const c=content(options);c.dispatch();assert.match((await c.result()).error,pattern);});
+test('hard-generating page is refused BEFORE any typing (no stranded draft, no append pile-up)',async()=>{
+  const c=content({hardGenerating:true,draft:'stuck unsent prompt from a failed attempt'});
+  c.dispatch();
+  const r=await c.result();
+  assert.match(r.error,/already generating/);
+  assert.equal(c.sent,0);
+  assert.equal(r.diagnostics.phase,'preflight');
+});
+test('leftover composer draft is recorded and replaced, not a hard failure',async()=>{
+  const c=content({draft:'unsent manual work'});c.dispatch();
+  const r=await c.result();
+  assert.equal(r.error,undefined);
+  assert.equal(r.text,'new answer');
+  assert.equal(r.diagnostics.composerDraftCleared,'unsent manual work');
+  assert.equal(r.diagnostics.composerDraftLen,'unsent manual work'.length);
+  assert.equal(c.sent,1);
+});
+test('unconfirmed send (text stays in composer) fails fast, not after 480s',async()=>{
+  const c=content({sendNotConfirmed:true, hardGenerating:true, hardGenAfterSend:true});c.dispatch();
+  const r=await c.result();
+  assert.match(r.error,/Message was not sent/);
+  assert.match(r.error,/Stop button/);
+  assert.equal(r.diagnostics.phase,'confirming_send');
+  assert.equal(r.diagnostics.sendConfirmed,false);
+  assert.ok(r.diagnostics.leftoverLen>0);
+  assert.equal(c.sent,1);
+});
+test('send that never lands in the composer fails fast with composer state',async()=>{
+  const c=content({sendDropped:true});c.dispatch();
+  const r=await c.result();
+  assert.match(r.error,/Message was not sent/);
+  assert.match(r.error,/did not land in the composer/);
+  assert.equal(r.diagnostics.phase,'confirming_send');
+  assert.equal(r.diagnostics.sendConfirmed,false);
+  assert.equal(r.diagnostics.leftoverLen,0);
+  assert.equal(r.diagnostics.usersBefore,1);
+  assert.equal(r.diagnostics.usersAfter,1);
+  assert.equal(c.sent,1);
+});
+test('confirmed send (composer cleared) proceeds to wait for the reply',async()=>{
+  const c=content();c.dispatch();
+  const r=await c.result();
+  assert.equal(r.error,undefined);
+  assert.equal(r.diagnostics.sendConfirmed,true);
+  assert.equal(r.diagnostics.leftoverLen,0);
+});
+test('content rejects duplicate submission',async()=>{
+  const c=content();c.dispatch();assert.match(c.dispatch().error,/还在回答上一个任务/);await c.result();assert.match(c.dispatch().error,/还在回答上一个任务/);assert.equal(c.sent,1);
+});
+test('content rejects stale binding before sending',()=>{
+  const c=content();assert.match(c.dispatch({expectedKey:'/other'}).error,/changed/);assert.equal(c.sent,0);
+});
+test('stale provider (git pull without prepare) is refused with an actionable fix',()=>{
+  const c=content({providerVersion:'0.4.8'});
+  const ack=c.dispatch();
+  assert.match(ack.error,/out of sync/);
+  assert.match(ack.error,/0\.4\.8/);
+  assert.match(ack.error,/prepare_extension\.py/);
+  assert.equal(c.sent,0);
+});
+test('unversioned provider (pre-0.4.9 build) is also refused, not mixed',()=>{
+  const c=content({providerVersion:null});
+  assert.match(c.dispatch().error,/out of sync/);
+  assert.match(c.dispatch().error,/unversioned \(stale\)/);
+  assert.equal(c.sent,0);
+});
+test('session announcement reports provider version and sync state',()=>{
+  const c=content();
+  const s=c.messages.find(m=>m.type==='session');
+  assert.equal(s.transportVersion,CONTENT_VERSION);
+  assert.equal(s.providerVersion,CONTENT_VERSION);
+  assert.equal(s.inSync,true);
+});
+test('stable parseable JSON reply finalizes even while page reports generating (Arena follow-up prompt)',async()=>{
+  const json='{"content":"ok","tool_calls":[]}';
+  const c=content({generating:true, protocol:{text:json,source:'code_text',detail:'roots=1'}});
+  c.dispatch({response_format:'json_code_block'});
+  const r=await c.result();
+  assert.equal(r.error,undefined);
+  assert.equal(r.text,json);
+  assert.equal(r.diagnostics.finalReason,'complete_json');
+  assert.equal(r.diagnostics.phase,'completed');
+  assert.equal(c.sent,1);
+});
+test('plain prose reply does NOT finalize via the JSON rule while page reports generating',async()=>{
+  const c=content({generating:true, answer:'plain prose'});
+  c.dispatch({response_format:'json_code_block'});
+  const r=await c.result();
+  assert.match(r.error,/等待网页回答超时/);
+  assert.equal(r.diagnostics.phase,'reading_reply');
+  assert.equal(r.diagnostics.finalReason,undefined);
+});
+test('manual use of the dedicated page mid-task fails fast, not after 480s',async()=>{
+  const c=content({extraUserTurns:1});
+  c.dispatch();
+  const r=await c.result();
+  assert.match(r.error,/operated during the task/);
+  assert.match(r.error,/Refresh the page, rebind/);
+  assert.equal(r.diagnostics.phase,'waiting_new_reply');
+  assert.equal(c.sent,1);
+});
+test('prompt length is reported in diagnostics',async()=>{
+  const c=content();c.dispatch({prompt:'hello'});const r=await c.result();
+  assert.equal(r.diagnostics.promptLen,'hello'.length);
+});
+test('send confirmed via provider report even when user-turn count never grows (Agent-mode fresh chat)',async()=>{
+  // The live bug: composer cleared, provider verified the send, but the new
+  // user turn does not increment userCount (DOM mismatch in Agent mode).
+  const c=content({brokenUserCount:true});
+  c.dispatch();
+  const r=await c.result();
+  assert.equal(r.error,undefined);
+  assert.equal(r.diagnostics.sendConfirmed,true);
+  assert.equal(r.diagnostics.sendConfirmedBy,'provider');
+  assert.equal(c.sent,1);
+});
+test('provider that reports nothing: slow user turn (20s) still confirmed within the 30s window',async()=>{
+  const c=content({turnDelayMs:20000, noProviderSent:true, noLandedReport:true});
+  c.dispatch();
+  const r=await c.result();
+  assert.equal(r.error,undefined);
+  assert.equal(r.diagnostics.sendConfirmedBy,'user_turn');
+  assert.equal(c.sent,1);
+});
+test('provider that reports nothing: turn after the 30s window fails with did-not-land wording',async()=>{
+  const c=content({turnDelayMs:31000, noProviderSent:true, noLandedReport:true, draft:'leftover draft'});
+  c.dispatch();
+  const r=await c.result();
+  assert.match(r.error,/Message was not sent/);
+  assert.match(r.error,/no new message appeared in the chat/);
+  assert.equal(c.sent,1);
+});
+test('reply read via request-id marker fallback when the turn filter misses the new reply',async()=>{
+  // The live case: readAssistant() never sees the new reply turn (fresh
+  // Agent-mode chat DOM), but the complete protocol JSON is visible in a
+  // fenced block carrying this send's request id.
+  const json='{"request_id":"abcdef123456","content":"Hi!","tool_calls":[]}';
+  const c=content({staleReads:true, markerBlocks:true, markerText:json});
+  c.dispatch({prompt:'preamble CURRENT_REQUEST:\n{"request_id":"abcdef123456","messages":[]}', response_format:'json_code_block'});
+  const r=await c.result();
+  assert.equal(r.error,undefined);
+  assert.equal(r.text,json);
+  assert.equal(r.diagnostics.extraction,'marker_fallback');
+  assert.equal(r.diagnostics.fallbackRead,true);
+  assert.equal(r.diagnostics.finalReason,'complete_json_fallback');
+  assert.equal(c.sent,1);
+});
+test('marker fallback rejects the request envelope block (also carries the id), not just any block',async()=>{
+  const envelope='{"request_id":"abcdef123456","messages":[{"role":"user","content":"hi"}],"tools":[],"tool_choice":"auto"}';
+  const c=content({staleReads:true, markerBlocks:true, markerText:envelope});
+  c.dispatch({prompt:'x {"request_id":"abcdef123456"} y', response_format:'json_code_block'});
+  const r=await c.result();
+  assert.match(r.error,/等待网页回答超时/);
+  assert.equal(r.diagnostics.fallbackRead,undefined);
+});
+test('post-reply follow-up prompt is auto-answered (是) after a successful task',async()=>{
+  // The site shows "此任务成功了吗?" (是/否/继续工作) after each reply; left open
+  // it blocks the next send. The extension must click 是 once the reply is in.
+  const c=content({followupPromptAt:3000, protocol:{text:'{"a":1}',source:'code_text',detail:'ok'}});
+  c.dispatch({response_format:'json_code_block'});
+  const r=await c.result();
+  assert.equal(r.error,undefined);
+  assert.equal(c.followupClicked,true);
+  assert.equal(r.diagnostics.followupCleared,true);
+});
+test('no follow-up prompt: task completes and reports followupCleared=false',async()=>{
+  const c=content({protocol:{text:'{"a":1}',source:'code_text',detail:'ok'}});
+  c.dispatch({response_format:'json_code_block'});
+  const r=await c.result();
+  assert.equal(r.error,undefined);
+  assert.equal(c.followupClicked,false);
+  assert.equal(r.diagnostics.followupCleared,false);
+});
+test('prompt goes out exactly as built (no appended boilerplate lines)',async()=>{
+  // User review 2026-09-29: the trailing language-rule line was removed; the
+  // dispatched prompt must be byte-identical to the endpoint's prompt.
+  const c=content({language:'zh-CN'});
+  c.dispatch({prompt:'exact prompt text'});
+  await c.result();
+  assert.equal(c.lastPrompt,'exact prompt text');
+});
+test('dispatch ack carries the build stamp (stale dedicated-page detection)',async()=>{
+  const c=content();
+  const ack=c.dispatch();
+  assert.equal(ack.accepted,true);
+  assert.ok(typeof ack.build==='string' && ack.build.length>0,
+    'ack must carry the content-script build stamp for the endpoint');
+});
+test('stale draft reappearing in the composer during the reply wait is wiped',async()=>{
+  // Live report: after the first message is sent, while the reply streams,
+  // the site re-renders the PREVIOUS prompt back into the box (draft
+  // autosave restore). The reply-wait sweep must wipe it without failing
+  // the task.
+  const c=content({draftRestoreAt:300, draftRestoreText:'previous prompt content', turnDelayMs:10});
+  c.dispatch();
+  const r=await c.result();
+  assert.equal(r.error,undefined);
+  assert.equal(r.text,'new answer');
+  assert.equal(c.sweeps,1,'the re-appeared draft must be wiped exactly once');
+  assert.equal(r.diagnostics.draftSweeps,1);
+});
+test('a clean composer during the reply wait is never touched',async()=>{
+  const c=content();
+  c.dispatch();
+  const r=await c.result();
+  assert.equal(r.error,undefined);
+  assert.equal(c.sweeps,0);
+  assert.equal(r.diagnostics.draftSweeps,undefined);
+});
+test('scoped extraction failure is rescued by the request-id marker (0.4.18 multi-provider)',async()=>{
+  // The reply turn IS visible (fresh) but the scoped block search fails (e.g.
+  // reasoning draft added a second code block on another site). The protocol
+  // object is still findable by this send's unique request id.
+  const json='{"request_id":"abcdef123456","content":"ok","tool_calls":[]}';
+  const c=content({markerBlocks:true, markerText:json,
+    protocol:{text:'',source:'code_block_unavailable',detail:'roots=0 scope=answer_turn turn_blocks=2',error:'Protocol response requires exactly one JSON code block; found 2'}});
+  c.dispatch({prompt:'x {"request_id":"abcdef123456"} y', response_format:'json_code_block'});
+  const r=await c.result();
+  assert.equal(r.error,undefined);
+  assert.equal(r.text,json);
+  assert.equal(r.diagnostics.extraction,'marker_fallback');
+  assert.equal(r.diagnostics.fallbackRead,true);
+  assert.match(r.diagnostics.extraction_detail,/scoped search failed/);
+});
+test('navigation while running invalidates original session binding',async()=>{
+  const c=content({navigate:true});c.dispatch();assert.match((await c.result()).error,/changed/);
+  const sessions=c.messages.filter(m=>m.type==='session');assert.notEqual(sessions.at(-1).id,sessions[0].id);
+});
+test('oversized answer is reported rather than silently truncated',async()=>{
+  const c=content({answer:'x'.repeat(250001)});c.dispatch();assert.match((await c.result()).error,/large|limit/);
+});
+
+async function background(){
+  let runtimeListener, removedListener;
+  const sockets=[], stored={}, dispatched=[];
+  class WS {
+    static OPEN=1;
+    constructor(){this.readyState=0;this.out=[];sockets.push(this);}
+    send(raw){this.out.push(JSON.parse(raw));}
+    close(){this.readyState=3;this.onclose?.();}
+    async receive(msg){await this.onmessage({data:JSON.stringify(msg)});}
+  }
+  vm.runInNewContext(fs.readFileSync(path.join(root,'background.js'),'utf8'), {
+    WebSocket:WS, Date, setInterval(){},setTimeout(){},
+    chrome:{storage:{local:{get:async()=>({token:'test',port:17614}),set:async v=>Object.assign(stored,v)},
+      session:{get:async()=>(stored.zsRoutes||{}),set:async v=>Object.assign(stored,v)}},
+      runtime:{onMessage:{addListener:fn=>runtimeListener=fn}},
+      tabs:{sendMessage:async(tab,msg)=>{dispatched.push({tab,msg});return {accepted:true};},onRemoved:{addListener:fn=>removedListener=fn}},
+      alarms:{create(){},onAlarm:{addListener(){}}}}
+  });
+  await new Promise(setImmediate);
+  const socket=sockets[0];socket.readyState=1;socket.onopen();await socket.receive({ok:true});
+  const message=(msg,tab=7)=>runtimeListener(msg,{tab:{id:tab},frameId:0},()=>{});
+  return {socket,message,dispatched,remove:tab=>removedListener(tab)};
+}
+test('background routes request and accepts result only from bound tab/session',async()=>{
+  const b=await background();b.message({type:'session',id:'s',key:'/c/1'});
+  await b.socket.receive({type:'dispatch',job_id:'j',session_id:'s',prompt:'hi'});
+  assert.equal(b.dispatched[0].tab,7);assert.equal(b.dispatched[0].msg.expectedKey,'/c/1');
+  b.message({type:'result',job_id:'j',session_id:'s',text:'fake'},8);
+  assert.equal(b.socket.out.filter(m=>m.type==='result').length,0);
+  b.message({type:'result',job_id:'j',session_id:'s',text:'real'});
+  assert.equal(b.socket.out.at(-1).text,'real');
+});
+test('background closing a tab fails pending task',async()=>{
+  const b=await background();b.message({type:'session',id:'s',key:'/c/1'});
+  await b.socket.receive({type:'dispatch',job_id:'j',session_id:'s'});b.remove(7);
+  assert.match(b.socket.out.find(m=>m.type==='result').error,/closed/);
+});
+test('background removes old session on page refresh',async()=>{
+  const b=await background();b.message({type:'session',id:'old',key:'/c/1'});b.message({type:'session',id:'new',key:'/c/1'});
+  assert.equal(b.socket.out.at(-1).sessions.length,1);assert.equal(b.socket.out.at(-1).sessions[0].id,'new');
+});
+
+for (const options of [{hidden:true}, {hideAfterSend:true}]) {
+  test(`background reply completes without activation: ${JSON.stringify(options)}`, async()=>{
+    const c=content(options);c.dispatch();const r=await c.result();
+    assert.equal(r.error,undefined);assert.equal(r.text,'new answer');
+    assert.equal(r.diagnostics.sawHidden,true);assert.equal(r.diagnostics.phase,'completed');
+    assert.equal(c.sent,1);
+  });
+}
+test('background no reply returns actionable timeout without resend',async()=>{
+  const c=content({hidden:true,noReply:true});c.dispatch();const r=await c.result();
+  assert.match(r.error,/打开专用页/);assert.equal(c.sent,1);
+  assert.equal(r.diagnostics.phase,'waiting_new_reply');
+});
+
+for (const [provider, limit] of [['deepseek',160000],['chatgpt',120000],['arena',118000]]) {
+  test(`${provider} accepts budget boundary and blocks legacy truncation`, async()=>{
+    const c=content({provider});
+    assert.match(c.dispatch({prompt:'x'.repeat(limit+1)}).error,/safety budget/);
+    assert.equal(c.sent,0);
+    assert.equal(c.dispatch({prompt:'x'.repeat(limit)}).accepted,true);
+    assert.equal((await c.result()).error,undefined);
+    assert.equal(c.sent,1);
+  });
+}
+test('ChatGPT line guard and UTF-16 guard prevent silent truncation',()=>{
+  const c=content({provider:'chatgpt'});
+  assert.match(c.dispatch({prompt:'\n'.repeat(600)}).error,/safety budget/);
+  assert.match(c.dispatch({prompt:'😀'.repeat(60001)}).error,/safety budget/);
+  assert.equal(c.sent,0);
+});
+
+test('model protocol returns code block extraction rather than rendered reply',async()=>{
+  const raw=JSON.stringify({path:String.raw`E:\project\file.js`});
+  const c=content({answer:'json Copy corrupted prose',protocol:{text:raw,source:'code_text',detail:'roots=1 scope=answer_roots turn_blocks=1'}});
+  c.dispatch({response_format:'json_code_block'});
+  const r=await c.result();assert.equal(r.error,undefined);assert.equal(r.text,raw);
+  assert.equal(r.diagnostics.extraction,'code_text');
+  assert.equal(r.diagnostics.extraction_detail,'roots=1 scope=answer_roots turn_blocks=1');
+  assert.equal(r.diagnostics.version,CONTENT_VERSION);
+});
+test('site error with no reply fails the task in seconds, not 480s',async()=>{
+  const c=content({noReply:true,siteError:'model channel not available'});
+  c.dispatch();
+  const r=await c.result();
+  assert.match(r.error, /Webpage showed an error and produced no reply: model channel not available$/);
+  assert.equal(r.diagnostics.phase,'waiting_new_reply');
+  assert.equal(c.sent,1);
+});
+test('site error is ignored once a real reply has started',async()=>{
+  const c=content({siteError:'model channel not available',answer:'new answer'});
+  c.dispatch();
+  const r=await c.result();
+  assert.equal(r.error,undefined);
+  assert.equal(r.text,'new answer');
+});
+test('model protocol delivers a settled prose reply as the final answer (not a 480s black hole)',async()=>{
+  // b20: a reply that settles WITHOUT a protocol JSON block (the webpage AI
+  // answered in prose) is delivered after a short grace as the final answer
+  // - the old "never return prose" rule dead-ended the task for 480s while
+  // the visible answer never reached the client (live report 2026-09-30).
+  const c=content({answer:'plain reply'});c.dispatch({response_format:'json_code_block'});
+  const r=await c.result();
+  assert.equal(r.error,undefined);
+  assert.equal(r.text,'plain reply');
+  assert.equal(r.diagnostics.finalReason,'prose_no_protocol_json');
+  assert.equal(r.diagnostics.extraction,'prose_fallback');
+});
+
+// ── arena.js composer writer (fake DOM: the 0.4.11 chunked-insert fix) ──────
+function arenaSend(options = {}) {
+  const calls = [];
+  const cap = options.cap === undefined ? Infinity : options.cap;
+  const editor = {
+    isContentEditable: true, offsetParent: {}, className: 'tiptap ProseMirror',
+    textContent: '', value: undefined, focus(){}, dispatchEvent(){},
+    closest(){ return null; },
+  };
+  let clicked = 0;
+  let wholeSelected = false; // editor-wide selection (selectNodeContents w/o collapse)
+  const sendBtn = {
+    offsetParent: {}, disabled: false,
+    getAttribute: n => (n === 'aria-label' ? 'Send message' : null),
+    click(){ clicked++; editor.textContent = ''; }, // site accepts: composer clears
+  };
+  const errorEl = options.errorText ? { offsetParent: {}, closest: () => null, innerText: options.errorText } : null;
+  const document = {
+    querySelectorAll(sel){
+      if (sel === '[contenteditable]') return [editor];
+      if (sel.indexOf('role="alert"') !== -1) return errorEl ? [errorEl] : []; // errorSurfaces probe
+      if (sel === 'button') {
+        // reinjectAtSend: the site re-renders a stale draft over our write the
+        // first time the send button is polled (i.e. after the write).
+        if (options.reinjectAtSend && editor.textContent &&
+            editor.textContent.indexOf(options.reinjectAtSend) === -1) {
+          editor.textContent = options.reinjectAtSend + editor.textContent;
+        }
+        return [sendBtn];
+      }
+      if (sel === 'form textarea') return [];
+      return [];
+    },
+    createRange(){ return { selectNodeContents(){ wholeSelected = true; }, collapse(){ wholeSelected = false; } }; },
+    execCommand(cmd){
+      if (cmd === 'delete') { // select-all + delete wipes the composer
+        if (wholeSelected && options.deleteWorks !== false) { editor.textContent = ''; wholeSelected = false; }
+        return true;
+      }
+      if (cmd !== 'insertText') return false;
+      const val = arguments[2];
+      if (val === '' && wholeSelected) { editor.textContent = ''; wholeSelected = false; return true; } // replace selection with empty
+      calls.push(val.length);
+      // reinjectDraft: the site re-renders its stale state on top of our write
+      const reinject = options.reinjectDraft && editor.textContent === '' ? options.reinjectDraft : '';
+      const t = editor.textContent + reinject + val; // caret at end: append (verified-clear already emptied the box)
+      editor.textContent = t.length > cap ? t.slice(0, cap) : t; // simulate site cap
+      return true;
+    },
+  };
+  const sandbox = {
+    document,
+    window: { getSelection(){ return { removeAllRanges(){}, addRange(){} }; } },
+    location: { pathname: '/c/1', href: 'https://arena.ai/c/1' },
+    setTimeout, clearTimeout, setInterval, clearInterval, Date, console,
+    KeyboardEvent: class KeyboardEvent {}, Event: class Event {},
+  };
+  const ctx = vm.createContext(sandbox);
+  vm.runInContext(fs.readFileSync(path.join(root, 'providers', 'arena.js'), 'utf8'), ctx);
+  const P = vm.runInContext('ZSProvider', ctx);
+  return { P, calls, editor, get clicked(){ return clicked; } };
+}
+test('arena writes a long payload in chunks, never one giant insertText', async () => {
+  const a = arenaSend();
+  const payload = 'x'.repeat(21000);
+  await a.P.typeAndSend(payload);
+  assert.equal(a.clicked, 1);
+  assert.equal(a.editor.textContent, ''); // accepted by the site
+  assert.ok(a.calls.length >= 3, 'expected chunked inserts, got ' + JSON.stringify(a.calls));
+  assert.ok(a.calls.every(c => c <= 8000), 'no chunk may exceed 8000 chars: ' + JSON.stringify(a.calls));
+  assert.equal(a.calls.reduce((s, c) => s + c, 0), payload.length);
+});
+test('arena detects a site-side input cap MID-write and never sends truncated JSON', async () => {
+  const a = arenaSend({ cap: 12000 });
+  let err;
+  try { await a.P.typeAndSend('x'.repeat(21000)); } catch (e) { err = e; }
+  assert.ok(err, 'expected the mid-write clamp to fail the send');
+  assert.match(err.message, /clamped the input mid-write/);
+  assert.equal(a.clicked, 0, 'must never click send with a clamped payload');
+});
+test('arena still replaces a leftover draft and sends in one chunk when short', async () => {
+  const a = arenaSend();
+  a.editor.textContent = 'leftover draft';
+  await a.P.typeAndSend('hello');
+  assert.equal(a.clicked, 1);
+  assert.equal(a.calls.length, 1);
+  assert.equal(a.calls[0], 'hello'.length);
+});
+test('arena refuses to send when the write appends to un-cleared leftover (no stacked prompts)', async () => {
+  const a = arenaSend({ reinjectDraft: 'leftover draft' });
+  a.editor.textContent = 'leftover draft';
+  let err;
+  try { await a.P.typeAndSend('hello'); } catch (e) { err = e; }
+  assert.ok(err, 'expected the append guard to fail the send');
+  assert.match(err.message, /was NOT replaced \(the write appended\)/);
+  assert.equal(a.clicked, 0, 'must never click send with an appended payload');
+  assert.equal(a.editor.textContent, '', 'best-effort clear wiped the box');
+});
+test('arena clear falls back to insertText("") when the page swallows delete (ProseMirror selection lag)', async () => {
+  const a = arenaSend({ deleteWorks: false });
+  a.editor.textContent = 'leftover draft';
+  await a.P.typeAndSend('hello');
+  assert.equal(a.clicked, 1, 'send must proceed once the box is verified empty');
+  assert.equal(a.calls.length, 1);
+  assert.equal(a.calls[0], 'hello'.length, 'no leftover may survive into the write');
+});
+test('arena refuses the send when the site re-renders a stale draft over the write (pre-click re-check)', async () => {
+  const a = arenaSend({ reinjectAtSend: 'y'.repeat(3000) });
+  a.editor.textContent = 'stale draft';
+  let err;
+  try { await a.P.typeAndSend('x'.repeat(3000)); } catch (e) { err = e; }
+  assert.ok(err, 'expected the pre-click re-check to fail the send');
+  assert.match(err.message, /re-grew/);
+  assert.equal(a.clicked, 0, 'must never click send with stacked text');
+  assert.equal(a.editor.textContent, '', 'best-effort clear wiped the box');
+});
+test('arena errorText ignores a code-like preview-crash popup but keeps prose site errors', () => {
+  // Live incident 2026-09-29: the page showed the user's game code (minified
+  // JS + CJK) in an error dialog; the extension read it as a site error and
+  // failed the task 3x, tripping the circuit breaker.
+  const codey = arenaSend({ errorText: '{A?T.value(this.run):当前效果：获得对应升级后生效}).setColor(A?"#' });
+  assert.equal(codey.P.errorText(), null, 'code-like popup must not fail the task');
+  const prose = arenaSend({ errorText: 'Login expired, please sign in again' });
+  assert.equal(prose.P.errorText(), 'Login expired, please sign in again');
+  const cjkProse = arenaSend({ errorText: '登录已过期，请重新登录后再试' });
+  assert.equal(cjkProse.P.errorText(), '登录已过期，请重新登录后再试');
+});
+
+test('cancel ends the in-flight task fast, without waiting out the 480s deadline', async () => {
+  const c = content({noReply:true});
+  c.dispatch();
+  c.cancel('j1');  // control-center "取消" for the in-flight job
+  const r = await c.result();
+  assert.match(r.error, /任务被取消/);
+  assert.equal(c.sent, 1);  // sent once, then aborted - no pile-up
+});
+test('cancel for a foreign job id is ignored (task runs to the deadline)', async () => {
+  const c = content({noReply:true});
+  c.dispatch();
+  c.cancel('other-job');  // not the in-flight job -> ignored
+  const r = await c.result();
+  assert.match(r.error, /等待网页回答超时/);  // full wait, not cancelled
+  assert.equal(c.sent, 1);
+});
+
+test('cancel during the pre-send confirmation loop ends the task fast too', async () => {
+  const c = content({sendNotConfirmed:true});  // confirm loop spins while the text stays in the composer
+  c.dispatch();
+  c.cancel('j1');  // arrives before the wait loop is even entered
+  const r = await c.result();
+  assert.match(r.error, /任务被取消/);
+  assert.equal(r.diagnostics.phase, 'confirming_send');
+  assert.equal(c.sent, 1);
+});
+
+test('prose reply (no protocol JSON block) is delivered as the final answer, not lost to a 480s wait', async () => {
+  // Live report 2026-09-30: the webpage AI answered in plain text (e.g. an
+  // MCP failure explanation) - the content sits on the page but the strict
+  // protocol wait used to dead-end for 480s. After the grace it must be
+  // delivered as the final answer.
+  const c = content({answer: 'MCP 服务暂时无法连接，先说明现状（纯文本，无 JSON 协议块）'});
+  c.dispatch({response_format: 'json_code_block'});
+  const r = await c.result();
+  assert.equal(r.error, undefined);
+  assert.equal(r.text, 'MCP 服务暂时无法连接，先说明现状（纯文本，无 JSON 协议块）');
+  assert.equal(r.diagnostics.finalReason, 'prose_no_protocol_json');
+  assert.equal(r.diagnostics.extraction, 'prose_fallback');
+  assert.equal(c.sent, 1);
+});
+test('result is retried when the service worker drops the first delivery attempt(s)', async () => {
+  // A hidden dedicated tab throttles the content timers; the MV3 service
+  // worker can be killed mid-task and a one-shot sendMessage is dropped -
+  // the answer would sit on the page while the bridge job stays "running".
+  const c = content({dropFirstResults: 2});
+  c.dispatch();
+  const r = await c.result();  // arrives on the third attempt (backoff)
+  assert.equal(r.error, undefined);
+  assert.equal(r.text, 'new answer');
+  assert.equal(c.sent, 1);
+});
+
+// ── Turn-ended signal: the site's post-reply follow-up prompt ──────────────
+// Live report 2026-09-30: the completed JSON answer + the "此任务成功了吗?"
+// prompt sat on the page, but the idle/growth heuristics never settled (the
+// post-reply UI keeps the page non-idle), so the wait stalled to the 480s
+// timeout and Cursor saw nothing. The prompt itself is the definitive
+// turn-ended signal - the core finalizes on it.
+test('follow-up prompt (turn ended) delivers the answer even when the page never goes idle', async () => {
+  const json = '{"request_id":"r1","content":"ok","tool_calls":[]}';
+  const c = content({answer: json, generating: true, followupPromptAt: 10});  // never idle
+  c.dispatch({response_format: 'json_code_block'});
+  const r = await c.result();
+  assert.equal(r.error, undefined);
+  assert.equal(r.text, json);
+  assert.equal(r.diagnostics.finalReason, 'prose_no_protocol_json');
+  assert.equal(r.diagnostics.turnEndedPrompt, true);
+  assert.equal(c.followupClicked, true);  // page unblocked for the next task
+});
+test('follow-up prompt finalizes even when the provider never sees a fresh turn', async () => {
+  const c = content({staleReads: true, generating: true, followupPromptAt: 8});
+  c.dispatch({response_format: 'json_code_block'});
+  const r = await c.result();
+  assert.equal(r.error, undefined);
+  assert.equal(r.text, 'old answer');  // the stable visible reply text
+  assert.equal(r.diagnostics.finalReason, 'prose_no_protocol_json');
+  assert.equal(r.diagnostics.turnEndedPrompt, true);
+});
+test('follow-up prompt triggers the marker sweep and delivers the protocol JSON', async () => {
+  const rid = 'abcdef1234567890';
+  const json = '{"request_id":"' + rid + '","content":"ok","tool_calls":[]}';
+  const c = content({answer: 'the answer is in the block', markerBlocks: true, markerText: json,
+                     generating: true, followupPromptAt: 5});
+  c.dispatch({prompt: 'x "request_id":"' + rid + '" y', response_format: 'json_code_block'});
+  const r = await c.result();
+  assert.equal(r.error, undefined);
+  assert.equal(r.text, json);
+  assert.equal(r.diagnostics.finalReason, 'turn_ended_prompt_json');
+});
+
+// ── Last-resort whole-page sweep ────────────────────────────────────────────
+test('whole-page sweep recovers a complete protocol JSON the provider and marker both missed', async () => {
+  // The reply block's DOM matches neither the provider's turn filter nor the
+  // pre/code markers, and no turn-ended probe exists: the complete answer
+  // still sits in the rendered page text and must be recovered from there.
+  const rid = 'fedcba9876543210';
+  const json = '{"request_id":"' + rid + '","content":"ok","tool_calls":[]}';
+  const c = content({answer: 'visible prose without the block', generating: true,
+                     pageText: 'chat text ... ' + json + ' ... trailing'});
+  c.dispatch({prompt: 'x "request_id":"' + rid + '" y', response_format: 'json_code_block'});
+  const r = await c.result();
+  assert.equal(r.error, undefined);
+  assert.equal(r.text, json);
+  assert.equal(r.diagnostics.finalReason, 'page_text_sweep');
+});
+test('whole-page sweep never mis-delivers the user prompt envelope (same id, different keys)', async () => {
+  const rid = '1234abcd5678ef90';
+  const env = '{"request_id":"' + rid + '","messages":[{"role":"user","content":"hi"}],"tools":[],"tool_choice":"auto"}';
+  const c = content({answer: 'still working, no answer yet', generating: true, pageText: env});
+  c.dispatch({prompt: 'x "request_id":"' + rid + '" y', response_format: 'json_code_block'});
+  const r = await c.result();
+  assert.match(r.error, /等待网页回答超时/);  // timed out: the envelope was NOT mis-delivered
+  assert.equal(c.sent, 1);
+});

@@ -1,0 +1,505 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>Cursor Web Assistant</title>
+<style>
+:root{
+  --bg:#0f1115; --card:#171a21; --card2:#1d212b; --text:#e6e8ec; --muted:#9aa1ad;
+  --line:#262b35; --accent:#5b9bff; --ok:#4ade80; --bad:#f87171; --warn:#fbbf24;
+}
+@media (prefers-color-scheme: light){
+  :root{--bg:#f5f6f8; --card:#ffffff; --card2:#f0f2f5; --text:#191c20; --muted:#68707c;
+        --line:#e4e7ec; --accent:#2563eb; --ok:#16a34a; --bad:#dc2626; --warn:#d97706;}
+}
+*{box-sizing:border-box;margin:0}
+body{font:13.5px/1.55 system-ui,-apple-system,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif;
+     background:var(--bg);color:var(--text);padding:18px 20px 30px}
+header{display:flex;align-items:center;gap:12px;margin-bottom:16px}
+.logo{width:34px;height:34px;border-radius:9px;background:linear-gradient(135deg,#5b9bff,#8b5cf6);
+      display:flex;align-items:center;justify-content:center;font-weight:800;color:#fff;font-size:15px}
+h1{font-size:17px;font-weight:700}
+.sub{font-size:11.5px;color:var(--muted)}
+.spacer{flex:1}
+.chip{font-size:11px;color:var(--muted);border:1px solid var(--line);border-radius:99px;padding:3px 10px}
+.row{display:grid;grid-template-columns:1fr 1fr;gap:14px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:14px 16px;margin-bottom:14px}
+.card h2{font-size:12px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.05em;margin-bottom:10px}
+.dot{width:9px;height:9px;border-radius:50%;background:var(--muted);display:inline-block;margin-right:6px}
+.dot.on{background:var(--ok);box-shadow:0 0 7px var(--ok)}
+.dot.err{background:var(--bad);box-shadow:0 0 7px var(--bad)}
+.statusline{display:flex;gap:18px;flex-wrap:wrap;font-size:12.5px}
+.statusline b{font-weight:600}
+.steps{counter-reset:s}
+.step{display:flex;gap:12px;padding:10px 0;border-top:1px solid var(--line);align-items:flex-start}
+.step:first-of-type{border-top:0;padding-top:2px}
+.step .num{counter-increment:s;flex:none;width:22px;height:22px;border-radius:50%;background:var(--card2);
+  border:1px solid var(--line);display:flex;align-items:center;justify-content:center;font-size:11.5px;font-weight:700;color:var(--muted);margin-top:1px}
+.step .num::before{content:counter(s)}
+.step.done .num{background:var(--ok);border-color:var(--ok);color:#04150b}
+.step.done .num::before{content:"✓"}
+.step .body{flex:1;min-width:0}
+.step .t{font-weight:650;font-size:13px}
+.step .d{font-size:12px;color:var(--muted);margin-top:2px;word-break:break-all}
+a{color:var(--accent);text-decoration:none}
+a:hover{text-decoration:underline}
+button{border:0;border-radius:8px;background:var(--accent);color:#fff;font-size:12px;font-weight:650;
+  padding:6px 12px;cursor:pointer;margin-top:6px}
+button:hover{filter:brightness(1.1)}
+button.ghost{background:var(--card2);color:var(--text);border:1px solid var(--line);font-weight:500}
+button.danger{background:var(--bad)}
+button:disabled{opacity:.45;cursor:default;filter:none}
+.mini{font-size:11px;padding:3px 9px;margin-left:6px}
+code, .mono{font-family:ui-monospace,Consolas,monospace;font-size:11.5px;background:var(--card2);
+  border:1px solid var(--line);border-radius:6px;padding:1px 6px;word-break:break-all}
+.sites{display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-top:6px}
+.site{display:flex;align-items:center;gap:8px;padding:7px 9px;border-radius:9px;background:var(--card2);
+  border:1px solid var(--line);color:var(--text);font-size:12.5px;cursor:pointer;user-select:none}
+.site:hover{border-color:var(--accent)}
+.site .plain{margin-left:2px;color:var(--muted);font-size:12px;text-decoration:none}
+.site .plain:hover{color:var(--accent)}
+.glyph{width:20px;height:20px;border-radius:6px;display:flex;align-items:center;justify-content:center;
+  font-size:10px;font-weight:800;color:#fff;flex:none}
+a.site .pid{margin-left:auto;font-size:10px;color:var(--muted);font-family:ui-monospace,monospace}
+.session{display:flex;align-items:center;gap:10px;padding:9px 10px;border:1px solid var(--line);
+  border-radius:9px;margin-top:8px;background:var(--card2)}
+.session.bound{border-color:var(--ok)}
+.badge{font-size:10px;font-weight:700;padding:1px 8px;border-radius:99px}
+.badge.ok{color:var(--ok);background:rgba(74,222,128,.12)}
+.badge.bad{color:var(--bad);background:rgba(248,113,113,.12)}
+.badge.busy{color:var(--warn);background:rgba(251,191,36,.12)}
+.s-meta{font-size:11px;color:var(--muted);word-break:break-all}
+.job{display:flex;gap:10px;align-items:baseline;padding:7px 0;border-top:1px solid var(--line);font-size:12px}
+.job:first-child{border-top:0}
+.job .jid{font-family:ui-monospace,monospace;font-size:10.5px;color:var(--muted)}
+.job .err{color:var(--bad);font-size:11.5px;word-break:break-all}
+.kv{display:flex;gap:8px;align-items:center;margin-top:7px;font-size:12.5px}
+.kv .k{color:var(--muted);flex:none;width:74px}
+.kv .v{flex:1;word-break:break-all}
+.hint{font-size:11.5px;color:var(--muted);margin-top:8px;line-height:1.5}
+.toast{position:fixed;right:18px;bottom:18px;background:var(--ok);color:#04150b;font-weight:700;
+  font-size:12.5px;border-radius:9px;padding:9px 16px;opacity:0;transition:opacity .25s;pointer-events:none}
+.toast.show{opacity:1}
+</style>
+</head>
+<body>
+<header>
+  <div class="logo">C</div>
+  <div>
+    <h1>Cursor Web Assistant</h1>
+    <div class="sub">桌面控制中心 · 一个程序 = Bridge + 端点 + 控制界面</div>
+  </div>
+  <div class="spacer"></div>
+  <span class="chip" id="ver">…</span>
+</header>
+
+<div class="card">
+  <h2>状态</h2>
+  <div class="statusline" id="statusline"><span>加载中…</span></div>
+</div>
+
+<div class="row">
+  <div class="card">
+    <h2>设置向导</h2>
+    <div class="steps" id="steps"></div>
+    <div class="hint">①② 只需做一次；之后每次用这个程序都从 ③ 开始。扩展文件夹路径和令牌都可以一键复制。</div>
+  </div>
+  <div class="card">
+    <h2>支持的 AI 网站（专用页）</h2>
+    <div class="sites" id="sites"></div>
+    <div class="hint">点击 = 打开该站的<b>专用浏览器</b>（独立窗口、扩展已内置），登录并<b>开一个全新会话</b>，之后当作专用页（任务期间不要手动操作）。右上 ⧉ = 用普通浏览器打开。GLM 用国际版 chat.z.ai，国内版 chatglm.cn 暂不支持。</div>
+  </div>
+</div>
+
+<div class="card">
+  <h2>专用页会话 <span class="s-meta" id="sessHint"></span></h2>
+  <div id="sessions"></div>
+</div>
+
+<div class="row">
+  <div class="card">
+    <h2>任务日志</h2>
+    <div id="jobs"><div class="s-meta">暂无任务</div></div>
+  </div>
+  <div class="card">
+    <h2>Cursor 连接</h2>
+    <div class="kv"><span class="k">端点地址</span><span class="v mono" id="epUrl"></span><button class="ghost mini" data-copy="epUrl">复制</button></div>
+    <div class="kv"><span class="k">模型名</span><span class="v mono">web-ai</span><button class="ghost mini" data-copy="const:web-ai">复制</button></div>
+    <div class="kv"><span class="k">端点密钥</span><span class="v mono" id="epKey"></span><button class="ghost mini" data-copy="epKey">复制</button></div>
+    <div class="kv"><span class="k">Bridge 令牌</span><span class="v mono" id="token"></span><button class="ghost mini" data-copy="token">复制</button></div>
+    <div class="hint">模型 <b>web-ai</b> 的地址与密钥由本程序<b>自动写入</b> cursor-byok 配置，无需手输（见下方状态）。Bridge 令牌用于扩展弹窗"设置"里配对（只需一次）。</div>
+    <div class="kv" id="logRow" style="display:none"><span class="k">运行日志</span><span class="v mono" id="epLog"></span><button class="ghost mini" data-copy="epLog">复制</button></div>
+    <div class="hint" id="logHint" style="display:none">出问题时把这个日志文件发给我即可定位。</div>
+    <div class="kv" style="margin-top:10px"><span class="k">cursor-byok</span><span class="v" id="byokLine">…</span></div>
+    <div style="display:flex;gap:6px;margin-top:4px">
+      <button class="ghost mini" id="byokWrite">写入连接配置</button>
+      <button class="ghost mini" id="byokLaunch">启动 cursor-byok</button>
+    </div>
+    <div class="hint" id="byokHint"></div>
+    <div style="margin-top:12px;padding-top:10px;border-top:1px dashed #2a2f3a">
+      <div style="font-weight:600">文件外置（文件内容走文件 MCP，不占输入框）</div>
+      <label style="display:flex;align-items:center;gap:6px;margin-top:8px;cursor:pointer">
+        <input type="checkbox" id="mcpEnabled"> 启用文件 MCP（<b>进程内运行</b>，无需命令行）
+      </label>
+      <div class="kv" style="margin-top:6px"><span class="k">项目目录</span>
+        <input id="mcpRoot" class="mono" placeholder="例如 E:\ZeroScript-Free" style="flex:1;min-width:150px;background:var(--card2);border:1px solid var(--line);border-radius:6px;color:var(--text);padding:4px 8px;font-size:12px">
+        <button class="ghost mini" id="mcpPick">浏览…</button>
+        <button class="ghost mini" id="mcpSave">保存并启动</button>
+      </div>
+      <div class="hint" id="mcpStatus"></div>
+      <div style="display:flex;gap:6px;margin-top:8px;flex-wrap:wrap">
+        <button class="ghost mini" id="tunnelStart">启动隧道</button>
+        <button class="ghost mini" id="tunnelStop">停止隧道</button>
+        <button class="ghost mini" id="tunnelDl">下载 cloudflared</button>
+      </div>
+      <div class="hint" id="tunnelStatus"></div>
+      <div class="hint" id="tunnelManual" style="display:none">下载慢/失败？浏览器打开 <a href="#">cloudflared 官方下载页</a>，下载 <b>cloudflared-windows-amd64.exe</b> 放到 <b>exe 同目录</b> 即可（程序自动识别）。</div>
+      <div class="kv" id="mcpConnRow" style="display:none;margin-top:4px"><span class="k">连接地址（含 token）</span><span class="v mono" id="mcpConn"></span><button class="ghost mini" data-copy="mcpConn">复制</button></div>
+      <div class="hint">隧道启动后，本程序会<b>自动把上面这个地址带进每条发给网页的消息</b>，AI 自己会连接，你不用手动粘贴（新对话里也可手动把地址发给它，效果相同）。然后勾选下一项。</div>
+      <label style="display:flex;align-items:center;gap:6px;margin-top:8px;cursor:pointer">
+        <input type="checkbox" id="fileExtern"> 网页端开启文件外置（文件读取结果替换为引用，不占预算）
+      </label>
+      <div class="hint">未连接 MCP 时此项无害（没有可替换的内容）；关闭即恢复原样。详见 BYOK_SETUP「文件外置」节。</div>
+      <label style="display:flex;align-items:center;gap:6px;margin-top:8px;cursor:pointer">
+        <input type="checkbox" id="contextExtern"> <b>静态上下文外置</b>（绕行：每条消息的固定大段改为 MCP 引用）
+      </label>
+      <div class="hint">把<b>系统提示</b>与每条消息重复的 Cursor 样板（<b>项目规则 / 技能列表 / MCP 描述</b>，通常占整条消息 80~90%）写入 <span class="mono">.zs-adapter/*.md</span>，消息里只留一行“请通过文件 MCP 读取”的指针；长工具描述也自动截断（参数不变）。<b>仅当文件 MCP + 隧道已启动时生效</b>，否则自动保持原样，无需手动切换。</div>
+    </div>
+    <div style="margin-top:12px"><button class="danger" id="stopBtn">停止程序</button>
+      <span class="s-meta">停止 Bridge、端点与窗口；关闭窗口效果相同。</span></div>
+  </div>
+</div>
+
+<div class="toast" id="toast">已复制</div>
+<script>
+const $ = id => document.getElementById(id);
+const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const COLOR = {deepseek:'#4d6bfe',glm:'#ff7a1a',kimi:'#2f6bff',qwen:'#7c3aed',gemini:'#4285f4',meta:'#0081fb',chatgpt:'#10a37f',arena:'#f97316'};
+const done = {ext: localStorage.getItem('zsDoneExt')==='1', token: localStorage.getItem('zsDoneToken')==='1'};
+
+function renderSites(s){
+  $('sites').innerHTML = s.sites.map(([pid,name,url]) =>
+    `<div class="site" data-open="${esc(pid)}" title="点击：打开该站的专用浏览器（扩展已内置，无需安装）">
+       <span class="glyph" style="background:${COLOR[pid]||'#666'}">${esc(name[0])}</span><span>${esc(name)}</span>
+       <span class="pid">${esc(pid)}</span>
+       <a class="plain" href="${esc(url)}" target="_blank" title="用普通浏览器打开">⧉</a>
+     </div>`).join('');
+  bindOpen($('sites'));
+}
+function bindOpen(root){ root.querySelectorAll('[data-open]').forEach(el => { if(el._ob) return; el._ob = true;
+  el.onclick = async () => {
+    el.style.opacity = '.5';
+    try {
+      const r = await fetch('/api/launch-browser', {method:'POST', headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({site: el.dataset.open})});
+      const j = await r.json();
+      if (!r.ok || !j.ok) alert(j.error || '打开专用浏览器失败');
+      else toast('专用浏览器已打开');
+    } catch { alert('打开专用浏览器失败'); }
+    el.style.opacity = '';
+  };
+  el.querySelectorAll('a.plain').forEach(a => a.onclick = e => e.stopPropagation());
+}); }
+
+function toast(msg){ const t=$('toast'); t.textContent=msg; t.classList.add('show'); setTimeout(()=>t.classList.remove('show'),1400); }
+function bindCopy(root){ root.querySelectorAll('[data-copy]').forEach(b => { if(b._cb) return; b._cb = true;
+  b.onclick = async () => {
+    const src = b.dataset.copy; let v='';
+    if (src.startsWith('const:')) v = src.slice(6);
+    else v = $(src).textContent;
+    try { await navigator.clipboard.writeText(v); } catch {
+      const ta=document.createElement('textarea'); ta.value=v; document.body.appendChild(ta); ta.select(); document.execCommand('copy'); ta.remove();
+    }
+    toast('已复制');
+  };
+}); }
+bindCopy(document.body);
+
+function mark(id, v){ if(v) done[id]=true; if(!v) delete done[id]; }
+
+function renderByok(s){
+  const b = s.byok || {}, line = $('byokLine');
+  if (!line) return;
+  if (b.error){ line.textContent = '状态读取失败: ' + b.error; return; }
+  const exeShort = b.byok_exe ? String(b.byok_exe).replace(/^.*[/\\]/, '') : '未找到';
+  line.textContent = '配置文件 ' + (b.config_exists ? '✓' : '✗')
+    + ' · 模型 ' + (b.adapter_ok ? '✓' : '✗')
+    + ' · ' + exeShort + (b.byok_exe ? ' ✓' : ' ✗')
+    + ' · 运行中 ' + (b.byok_running ? '✓' : '✗')
+    + ' · 代理 ' + (b.proxy_on ? '✓' : '✗');
+  const hint = $('byokHint');
+  if (!hint) return;
+  if (!b.config_exists || !b.adapter_ok) hint.textContent = '点「写入连接配置」，本程序自动把模型地址和密钥填进 cursor-byok（无需手输）。';
+  else if (!b.byok_exe) hint.textContent = '把 cursor-byok.exe 放到本程序同目录即可识别。';
+  else if (!b.byok_running) hint.textContent = '点「启动 cursor-byok」；首次需在其窗口点“启用/开始”（需管理员，一次性）。';
+  else if (!b.proxy_on) hint.textContent = 'cursor-byok 在运行：请确认其窗口里已点“开始”（需管理员）。';
+  else hint.textContent = '全部就绪：Cursor 里选 web-ai 即可直接使用。';
+}
+
+function renderConfig(s){
+  const fe = $('fileExtern');
+  if (!fe) return;
+  // sync from server only when the server value changed since last apply
+  if (fe._synced !== !!s.file_extern){ fe._synced = !!s.file_extern; if (!fe.disabled) fe.checked = !!s.file_extern; }
+  const ce = $('contextExtern');
+  if (ce && ce._synced !== !!s.context_extern){ ce._synced = !!s.context_extern; if (!ce.disabled) ce.checked = !!s.context_extern; }
+}
+function renderFileMcp(s){
+  const fm = s.file_mcp || {}, tn = s.tunnel || {};
+  const en = $('mcpEnabled'), root = $('mcpRoot');
+  if (en && en._synced !== !!fm.enabled){ en._synced = !!fm.enabled; en.checked = !!fm.enabled; }
+  if (root && root._synced !== (fm.root||'')){ root._synced = fm.root||''; root.value = fm.root||''; }
+  const ms = $('mcpStatus');
+  if (ms) ms.textContent = fm.enabled ? (fm.running ? '✓ 文件 MCP 运行中 · 本机 ' + fm.local_url : '✗ 未运行') : '未启用';
+  const ts = $('tunnelStatus');
+  if (ts){
+    const mb = n => n ? (n/1048576).toFixed(1) + 'MB' : '';
+    let t = '隧道：' + (tn.running ? (tn.url || '运行中（地址生成中…）') : '未运行');
+    if (!tn.cloudflared){
+      if (tn.cloudflared_downloading){
+        t += ' · cloudflared 下载中 ' + mb(tn.cloudflared_downloaded) + (tn.cloudflared_total ? ' / ' + mb(tn.cloudflared_total) : '')
+           + (tn.cloudflared_speed ? '（' + (tn.cloudflared_speed/1048576).toFixed(2) + 'MB/s）' : '（无字节变化＝网络卡住，见下方手动下载）');
+      } else if (tn.cloudflared_error){
+        t += ' · cloudflared 下载失败：' + tn.cloudflared_error;
+      } else {
+        t += ' · cloudflared 未下载';
+      }
+    }
+    ts.textContent = t;
+    const manual = $('tunnelManual');
+    if (manual){
+      manual.style.display = tn.cloudflared ? 'none' : '';
+      if (tn.cloudflared_page) manual.querySelector('a').href = tn.cloudflared_page;
+    }
+  }
+  const conn = $('mcpConn'), row = $('mcpConnRow');
+  if (row && conn){ const v = fm.connect_url || ''; conn.textContent = v || '—'; row.style.display = v ? '' : 'none'; }
+}
+async function postJson(url, body){
+  const r = await fetch(url, {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body)});
+  return {ok: r.ok, j: await r.json().catch(()=>({}))};
+}
+$('mcpSave').onclick = async () => {
+  const btn = $('mcpSave'); btn.disabled = true;
+  try {
+    const {ok, j} = await postJson('/api/file-mcp', {root: $('mcpRoot').value.trim(), enabled: $('mcpEnabled').checked});
+    if (!ok || !j.ok) alert(j.error || '保存失败');
+    else toast(j.file_mcp && j.file_mcp.running ? '文件 MCP 已启动' : '已保存');
+    refresh();
+  } catch(e){ alert('保存失败: ' + e.message); }
+  finally { btn.disabled = false; }
+};
+$('mcpEnabled').onchange = () => $('mcpSave').click();
+$('mcpPick').onclick = async () => {
+  $('mcpPick').disabled = true;
+  try {
+    const {ok, j} = await postJson('/api/pick-dir', {path: $('mcpRoot').value.trim()});
+    if (!ok || !j.ok) { if (j.error && !/取消/.test(j.error)) alert(j.error); }
+    else { $('mcpRoot').value = j.path; $('mcpRoot')._synced = j.path; }
+  } catch(e){ alert('打开选择窗口失败: ' + e.message); }
+  finally { $('mcpPick').disabled = false; }
+};
+$('tunnelStart').onclick = async () => {
+  const {ok, j} = await postJson('/api/tunnel', {action:'start'});
+  if (!ok || !j.ok) alert(j.error || '启动隧道失败'); else { toast('隧道启动中…'); refresh(); }
+};
+$('tunnelStop').onclick = async () => {
+  const {ok, j} = await postJson('/api/tunnel', {action:'stop'});
+  if (!ok || !j.ok) alert(j.error || '停止失败'); else refresh();
+};
+$('tunnelDl').onclick = async () => {
+  const {ok, j} = await postJson('/api/tunnel', {action:'download'});
+  if (!ok || !j.ok) alert(j.error || '下载失败'); else toast('cloudflared 下载中（约 55MB，需联网）…');
+};
+$('fileExtern').onchange = async () => {
+  $('fileExtern').disabled = true;
+  try {
+    const r = await fetch('/api/config', {method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({file_extern: $('fileExtern').checked})});
+    const j = await r.json();
+    if (!r.ok || !j.ok) { alert('保存失败: ' + (j.error || '')); $('fileExtern').checked = !$('fileExtern').checked; return; }
+    $('fileExtern')._synced = $('fileExtern').checked;
+    toast($('fileExtern').checked ? '文件外置已开启' : '文件外置已关闭');
+    refresh();
+  } catch(e){ alert('保存失败: ' + e.message); $('fileExtern').checked = !$('fileExtern').checked; }
+  finally { $('fileExtern').disabled = false; }
+};
+$('contextExtern').onchange = async () => {
+  $('contextExtern').disabled = true;
+  try {
+    const r = await fetch('/api/config', {method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({context_extern: $('contextExtern').checked})});
+    const j = await r.json();
+    if (!r.ok || !j.ok) { alert('保存失败: ' + (j.error || '')); $('contextExtern').checked = !$('contextExtern').checked; return; }
+    $('contextExtern')._synced = $('contextExtern').checked;
+    toast($('contextExtern').checked ? '静态上下文外置已开启' : '静态上下文外置已关闭');
+    refresh();
+  } catch(e){ alert('保存失败: ' + e.message); $('contextExtern').checked = !$('contextExtern').checked; }
+  finally { $('contextExtern').disabled = false; }
+};
+
+function render(s){
+  renderSites(s);
+  renderByok(s);
+  renderConfig(s);
+  renderFileMcp(s);
+  $('ver').textContent = `v${s.app.version} · ${s.app.frozen?'exe':'源码'} · 运行 ${Math.floor(s.app.uptime_s/60)} 分`;
+  const ep = s.endpoint, anySession = s.sessions.length>0;
+  $('statusline').innerHTML =
+    `<span><i class="dot on"></i><b>Bridge</b> :${s.bridge.port}</span>` +
+    `<span><i class="dot on"></i><b>端点</b> :${ep.port} · ${esc(ep.model)}</span>` +
+    `<span><i class="dot ${anySession?'on':'err'}"></i><b>专用页会话</b> ${anySession?s.sessions.length:0}</span>` +
+    `<span><i class="dot ${ep.bound_ok?'on':'err'}"></i><b>绑定</b> ${ep.bound_ok?'正常':'未绑定'}</span>` +
+    `<span><i class="dot"></i>Python ${esc(s.app.python)}</span>`;
+
+  const extLoaded = anySession || done.ext; // 有会话 = 扩展必然在工作
+  const tokenDone = done.token || anySession;
+  const boundDone = ep.bound_ok;
+  const steps = [
+    {done:extLoaded, t:'打开专用浏览器（扩展已内置，一次）',
+     d:'在右侧点任意一个网站 → 弹出专用浏览器（独立配置，扩展已装好，<b>无需手动安装</b>）。首次：登录网站 + 第②步贴令牌；之后每次双击程序、点一下网站即可。',
+     act:`<button class="ghost mini" id="mkExt">我已打开 ✓</button>`},
+    {done:tokenDone, t:'配对令牌（一次）',
+     d:'扩展弹窗 → "设置" → 粘贴令牌 → 保存并连接；顶部状态点变绿即可。',
+     act:`<code>${esc(s.token)}</code> <button class="ghost mini" data-copy="const:${esc(s.token)}">复制令牌</button>
+          <button class="ghost mini" id="mkToken">我已配对 ✓</button>`},
+    {done:anySession, t:'登录并开全新会话',
+     d:'在专用浏览器里登录该网站、开一个全新会话；会话会自动出现在这里。'},
+    {done:boundDone, t:'绑定会话',
+     d: boundDone? '端点已绑定当前会话，Cursor 可以直接用。'
+                 : '在下方"专用页会话"里点"绑定到此会话"（页面刷新后 ID 会变，随时可换绑）。'},
+    {done:boundDone, t:'开始使用 Cursor',
+     d:'本程序已把模型 web-ai（地址 + 密钥）自动写入 cursor-byok；启动它（下方按钮）、首次点一次“启用”后，直接用 Cursor 对话。',
+     act:`<code>${esc(ep.url)}</code> <button class="ghost mini" data-copy="const:${esc(ep.url)}">复制端点</button>`},
+  ];
+  $('steps').innerHTML = steps.map((x,i)=>`<div class="step ${x.done?'done':''}"><div class="num"></div>
+      <div class="body"><div class="t">${x.t}</div><div class="d">${x.d}</div><div>${x.act||''}</div></div></div>`).join('');
+  $('mkExt').onclick = () => { mark('ext', true); localStorage.setItem('zsDoneExt','1'); render(s); };
+  $('mkToken').onclick = () => { mark('token', true); localStorage.setItem('zsDoneToken','1'); render(s); };
+  if (anySession){ mark('ext', true); mark('token', true); }
+
+  $('epUrl').textContent = ep.url; $('epKey').textContent = ep.key; $('token').textContent = s.token;
+  const hasLog = !!s.app.log;
+  $('logRow').style.display = hasLog? 'flex':'none';
+  $('logHint').style.display = hasLog? 'block':'none';
+  if (hasLog) $('epLog').textContent = s.app.log;
+
+  $('sessHint').textContent = anySession? '' : '还没有会话 — 打开专用页并刷新后会自动出现';
+  $('sessions').innerHTML = s.sessions.length? s.sessions.map(x => {
+    const host = (x.url||'').replace(/^https?:\/\//,'').split('/')[0];
+    const bound = x.id === ep.session_id;
+    const badges = [x.inSync?`<span class="badge ok">同步 ${esc(x.transportVersion||'')}</span>`
+                             :`<span class="badge bad">版本不同步</span>`,
+                    x.busy?`<span class="badge busy">任务中</span>`:''].join(' ');
+    return `<div class="session ${bound?'bound':''}">
+      <div style="flex:1;min-width:0"><div style="font-weight:650">${esc(x.provider||'?')}
+        ${bound?'<span class="badge ok">已绑定</span>':''} ${badges}</div>
+        <div class="s-meta">${esc(host)} · id ${esc(x.id)}</div></div>
+      ${bound?'':'<button class="ghost mini" data-bind="'+esc(x.id)+'">绑定到此会话</button>'}
+      <button class="ghost mini" data-reload="${esc(x.id)}" title="重新加载该页面：加载最新扩展代码（扩展更新前打开的页面内存里还是旧代码——"扩展没有报告构建号"的典型原因）。刷新后会出现新会话，点"绑定到此会话"重新绑定">刷新页面</button>
+    </div>`;
+  }).join('') : '<div class="s-meta">等待专用网页…</div>';
+  document.querySelectorAll('[data-bind]').forEach(b => b.onclick = async () => {
+    const r = await fetch('/api/rebind', {method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({session_id: b.dataset.bind})});
+    const j = await r.json();
+    if (!r.ok || !j.ok) { alert(j.error || '绑定失败'); return; }
+    toast('已绑定'); refresh();
+  });
+  document.querySelectorAll('[data-reload]').forEach(b => b.onclick = async () => {
+    if (!confirm('重新加载这个专用页？\n（让页面加载最新的扩展代码；刷新后会出现一个新会话，请再点"绑定到此会话"）')) return;
+    b.disabled = true;
+    try {
+      const r = await fetch('/api/reload_page', {method:'POST', headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({session_id: b.dataset.reload})});
+      const j = await r.json();
+      if (!r.ok || !j.ok) { alert(j.error || '刷新失败'); b.disabled = false; return; }
+      toast('正在刷新页面…几秒后重新绑定新会话');
+      setTimeout(refresh, 4000); setTimeout(refresh, 10000);
+    } catch { b.disabled = false; }
+  });
+
+  // Live diagnostics line for a RUNNING job (the content script reports its
+  // state every ~20s): makes a stall readable from the control window
+  // instead of requiring DevTools (2026-09-30).
+  const diagLine = (d) => {
+    if (!d || typeof d !== 'object') return '';
+    const p = [];
+    if (d.phase) p.push('阶段 ' + esc(String(d.phase)));
+    if (d.waitingS != null) p.push('已等 ' + d.waitingS + 's');
+    if (d.hidden) p.push('专用页在后台');
+    if (d.replyLen != null) p.push('回复 ' + d.replyLen + ' 字');
+    if (d.promptVisible !== null && d.promptVisible !== undefined) p.push(d.promptVisible ? '结束弹窗:有' : '结束弹窗:无');
+    if (d.extraction) p.push('提取 ' + esc(String(d.extraction)));
+    return p.slice(0, 5).join(' · ');
+  };
+  $('jobs').innerHTML = s.jobs.length? [...s.jobs].reverse().slice(0,12).map(j => {
+    const st = j.status==='completed'?'<span class="badge ok">完成</span>'
+             : j.status==='error'?'<span class="badge bad">失败</span>'
+             : '<span class="badge busy">进行中</span>';
+    const age = Math.max(0, Math.floor((Date.now()/1000) - (j.created||0)));
+    const cancelBtn = j.status==='running'
+      ? `<button class="danger mini" data-cancel="${esc(j.job_id)}" title="终止该任务（网页上的任务会被取消）">取消</button>`
+      : '';
+    const diag = j.status==='running' ? `<span class="s-meta">${diagLine(j.diagnostics) || '等待首次状态上报…'}</span>` : '';
+    return `<div class="job"><span class="jid">${esc(j.job_id).slice(0,8)}</span>${st}
+      <span class="s-meta">${age}s 前</span>${cancelBtn}${diag}${j.error?`<span class="err">${esc(String(j.error).slice(0,160))}</span>`:''}</div>`;
+  }).join('') : '<div class="s-meta">暂无任务</div>';
+  document.querySelectorAll('[data-cancel]').forEach(b => b.onclick = async () => {
+    if (!confirm('终止这个进行中的任务？\n（网页上的任务会被取消；已写入的内容不受影响）')) return;
+    b.disabled = true;
+    try {
+      const r = await fetch('/api/cancel', {method:'POST', headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({job_id: b.dataset.cancel})});
+      const j = await r.json();
+      if (!r.ok || !j.ok) { alert(j.error || '取消失败'); b.disabled = false; return; }
+      toast('已发送取消，任务即将结束'); refresh();
+    } catch { b.disabled = false; }
+  });
+
+  bindCopy(document.body); // step/copy buttons are re-rendered each pass
+}
+
+let state = null;
+async function refresh(){
+  try {
+    const r = await fetch('/api/status');
+    state = await r.json();
+    window.__state = state;
+    render(state);
+  } catch {}
+}
+$('stopBtn').onclick = async () => {
+  if (!confirm('停止 Bridge、端点与窗口？（当前进行中的任务会中断）')) return;
+  await fetch('/api/stop', {method:'POST'});
+  $('stopBtn').disabled = true;
+};
+$('byokWrite').onclick = async () => {
+  $('byokWrite').disabled = true;
+  try {
+    const r = await fetch('/api/byok', {method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({action:'write'})});
+    const j = await r.json();
+    if (!r.ok || !j.ok) { alert('写入失败: ' + (j.error || '')); return; }
+    toast(j.changed ? j.detail : '配置已是最新');
+    refresh();
+  } catch(e){ alert('写入失败: ' + e.message); }
+  finally { $('byokWrite').disabled = false; }
+};
+$('byokLaunch').onclick = async () => {
+  $('byokLaunch').disabled = true;
+  try {
+    const r = await fetch('/api/byok', {method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({action:'launch'})});
+    const j = await r.json();
+    if (!r.ok || !j.ok) { alert('启动失败: ' + (j.error || '')); return; }
+    toast('正在启动 cursor-byok…');
+    setTimeout(refresh, 2000);
+  } catch(e){ alert('启动失败: ' + e.message); }
+  finally { $('byokLaunch').disabled = false; }
+};
+refresh();
+setInterval(refresh, 2500);
+</script>
+</body>
+</html>
