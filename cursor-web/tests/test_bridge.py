@@ -119,6 +119,35 @@ class BridgeTests(unittest.IsolatedAsyncioTestCase):
         err = (await self.request(cursor, type='send', session_id='session-1', prompt='again'))['error']
         self.assertIn('仍在回答上一个任务', err)  # actionable: wait, don't resend
         self.assertIn('已运行', err)
+        self.assertIn('取消', err)  # and how to get out of it
+
+    async def test_cancel_running_job_frees_the_session(self):
+        # Control-center "取消": the bridge forwards the abort to the
+        # extension, which ends the job through its normal result path -
+        # freeing the session for a new task.
+        browser, cursor, job = await self.submit()
+        res = await self.request(cursor, type='cancel', job_id=job['job_id'])
+        self.assertTrue(res.get('cancel_requested'), res)
+        forwarded = json.loads(await browser.recv())
+        self.assertEqual(forwarded['type'], 'cancel')
+        self.assertEqual(forwarded['job_id'], job['job_id'])
+        await browser.send(json.dumps({'type': 'result', 'job_id': job['job_id'], 'error': '任务被取消'}))
+        async with asyncio.timeout(3):
+            while bridge.jobs[job['job_id']]['status'] == 'running':
+                await asyncio.sleep(.001)
+        new = await self.request(cursor, type='send', session_id='session-1', prompt='next')
+        self.assertIn('job_id', new)  # no busy error: the session is free again
+        self.assertNotIn('error', new)
+
+    async def test_cancel_unknown_or_finished_job(self):
+        browser, cursor, job = await self.submit()
+        self.assertIn('未知任务', (await self.request(cursor, type='cancel', job_id='nope'))['error'])
+        await browser.send(json.dumps({'type': 'result', 'job_id': job['job_id'], 'text': 'done'}))
+        async with asyncio.timeout(3):
+            while bridge.jobs[job['job_id']]['status'] == 'running':
+                await asyncio.sleep(.001)
+        again = await self.request(cursor, type='cancel', job_id=job['job_id'])
+        self.assertIn('任务已结束', again['error'])
 
     async def test_invalid_prompts(self):
         cursor = await self.client()

@@ -67,7 +67,8 @@ function content(options = {}) {
   const first = messages[0];
   const dispatch = (extra={}) => {let ack;listener({type:'dispatch', job_id:'j1',session_id:first.id,expectedKey:'/c/1',prompt:'hi',...extra},{},v=>ack=v);return ack;};
   async function result(){for(let i=0;i<1000;i++){const r=messages.find(m=>m.type==='result');if(r)return r;await new Promise(setImmediate);}throw Error('No result');}
-  return {messages, dispatch, result, get sent(){return sent;}, get followupClicked(){return followupClicked;}, get lastPrompt(){return lastPrompt;}, get sweeps(){return sweeps;}, intervals};
+  const cancel = jid => listener({type:'cancel', job_id: jid}, {}, () => {});
+  return {messages, dispatch, cancel, result, get sent(){return sent;}, get followupClicked(){return followupClicked;}, get lastPrompt(){return lastPrompt;}, get sweeps(){return sweeps;}, intervals};
 }
 test('content returns completed new response, not previous answer',async()=>{
   const c=content();assert.equal(c.dispatch().accepted,true);assert.equal((await c.result()).text,'new answer');assert.equal(c.sent,1);
@@ -540,4 +541,21 @@ test('arena errorText ignores a code-like preview-crash popup but keeps prose si
   assert.equal(prose.P.errorText(), 'Login expired, please sign in again');
   const cjkProse = arenaSend({ errorText: '登录已过期，请重新登录后再试' });
   assert.equal(cjkProse.P.errorText(), '登录已过期，请重新登录后再试');
+});
+
+test('cancel ends the in-flight task fast, without waiting out the 480s deadline', async () => {
+  const c = content({noReply:true});
+  c.dispatch();
+  c.cancel('j1');  // control-center "取消" for the in-flight job
+  const r = await c.result();
+  assert.match(r.error, /任务被取消/);
+  assert.equal(c.sent, 1);  // sent once, then aborted - no pile-up
+});
+test('cancel for a foreign job id is ignored (task runs to the deadline)', async () => {
+  const c = content({noReply:true});
+  c.dispatch();
+  c.cancel('other-job');  // not the in-flight job -> ignored
+  const r = await c.result();
+  assert.match(r.error, /等待网页回答超时/);  // full wait, not cancelled
+  assert.equal(c.sent, 1);
 });

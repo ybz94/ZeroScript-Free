@@ -8,13 +8,17 @@
   const inputMaxLines = P.id === 'chatgpt' ? 600 : null;
   P.init({diag: () => {}});
   let id = crypto.randomUUID(), key = P.conversationKey(), busy = false;
-  const VERSION = '0.4.25';
+  // Cancel support (control-center "取消" button): the background relays
+  // {type:'cancel', job_id} for the IN-FLIGHT job; the wait loop notices on
+  // its next tick (~1s) and ends the task through the normal result path.
+  let activeJob = null, cancelRequested = false;
+  const VERSION = '0.4.26';
   // Per-build stamp: a stale dedicated page running an OLDER extension is
   // otherwise invisible (the version gate only compares content script vs
   // providers, which travel in the same build). The endpoint expects its own
   // stamp; a mismatch (or no report at all) means the page still runs an old
   // extension and must be closed/reopened.
-  const BUILD_ID = '20260929.4';
+  const BUILD_ID = '20260929.5';
   const seen = new Set();
   // DOM events can wake the watcher even when background timers are throttled.
   // Keep a timer fallback for generation-state changes without DOM mutations.
@@ -85,6 +89,8 @@
   }
   async function run(msg) {
     busy = true;
+    activeJob = msg.job_id;
+    cancelRequested = false;
     const sessionId = id;
     let text = '', failure;
     const diagnostics = {version:VERSION, startedHidden:document.hidden, sawHidden:document.hidden, phase:'preflight', promptLen:msg.prompt.length};
@@ -193,6 +199,10 @@
       let errorSince = null, lastReadAt = 0, fbLogged = false;
       while (Date.now() < deadline) {
         await waitForChange();
+        if (cancelRequested) {
+          cancelRequested = false;
+          throw new Error('任务被取消（控制窗口点了"取消"）。可以立即发送新任务');
+        }
         // Throttle full reads: while a reply streams, DOM mutations arrive per
         // token, and each wake would re-read a conversation that now includes
         // our 50k+ char user turn. Cap it at one full read per 250ms so the
@@ -346,12 +356,18 @@
       // Capture a fresh-chat URL before dropping busy, preserving this binding.
       key = P.conversationKey();
       busy = false;
+      activeJob = null;
       notify({type:'result', job_id:msg.job_id, session_id:sessionId,
               text:text.slice(0, 250000), error:failure, diagnostics:{...diagnostics, endedHidden:document.hidden}});
       announce();
     }
   }
   chrome.runtime.onMessage.addListener((msg, sender, reply) => {
+    if (msg.type === 'cancel') {
+      // Only the in-flight job is cancellable; stale/other ids are ignored.
+      if (msg.job_id && msg.job_id === activeJob) cancelRequested = true;
+      reply({ok:true}); return;
+    }
     if (msg.type !== 'dispatch') return;
     // providers/ is git-ignored: a bare "git pull" updates content.js but NOT
     // the provider files. A mixed load (new content script + stale provider)

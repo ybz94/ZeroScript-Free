@@ -30,8 +30,8 @@ BRIDGE_PORT = int(os.getenv('CURSOR_WEB_PORT', '17614'))
 ENDPOINT_PORT = int(os.getenv('CURSOR_WEB_ENDPOINT_PORT', '17615'))
 UI_PORT = int(os.getenv('CURSOR_WEB_UI_PORT', '17616'))
 MODEL = 'web-ai'
-VERSION = '0.4.26'
-BUILD_ID = 'b15'  # printed in the banner: proves which build is actually running
+VERSION = '0.4.27'
+BUILD_ID = 'b16'  # printed in the banner: proves which build is actually running
 
 SITES = [
     ('deepseek', 'DeepSeek', 'https://chat.deepseek.com'),
@@ -68,7 +68,7 @@ def download_file(url, dst, progress_cb=None):
     import urllib.request
     dst = Path(dst)
     tmp = dst.with_suffix(dst.suffix + '.part')
-    req = urllib.request.Request(url, headers={'User-Agent': 'CursorWebAssistant/0.4.26'})
+    req = urllib.request.Request(url, headers={'User-Agent': 'CursorWebAssistant/0.4.27'})
     with urllib.request.urlopen(req, timeout=30) as resp:
         total = int(resp.headers.get('Content-Length') or 0)
         if progress_cb:
@@ -309,6 +309,25 @@ class Center:
             print(f'[center] rebound endpoint to session {sid}', flush=True)
             return JSONResponse({'ok': True, 'session_id': sid})
 
+        async def cancel(request):
+            """Cancel the in-flight task on the dedicated page (UI "取消")."""
+            try:
+                data = await request.json()
+            except Exception:
+                data = {}
+            jid = str(data.get('job_id') or '').strip()
+            if not jid:
+                return JSONResponse({'ok': False, 'error': '缺少 job_id'}, status_code=400)
+            import model_endpoint as ep
+            try:
+                res = await ep.bridge_rpc({'type': 'cancel', 'job_id': jid})
+            except Exception as exc:
+                return JSONResponse({'ok': False, 'error': f'bridge 不可用：{str(exc)[:150]}'}, status_code=502)
+            if res.get('error'):
+                return JSONResponse({'ok': False, 'error': res['error']}, status_code=409)
+            print(f'[center] cancel requested for job {jid[:8]}', flush=True)
+            return JSONResponse({'ok': True, 'job_id': jid})
+
         async def stop(request):
             self.stop_event.set()
             if self.external_stop is not None:
@@ -441,6 +460,7 @@ class Center:
 
         app = Starlette(routes=[Route('/', index), Route('/api/status', status),
                                 Route('/api/rebind', rebind, methods=['POST']),
+                                Route('/api/cancel', cancel, methods=['POST']),
                                 Route('/api/stop', stop, methods=['POST']),
                                 Route('/api/launch-browser', launch_browser, methods=['POST']),
                                 Route('/api/byok', byok, methods=['POST']),

@@ -74,6 +74,25 @@ async def handle(ws):
                 # Control-center dashboard: task state per job (no internals).
                 result = {'jobs': [{k: v for k, v in j.items() if k != 'owner'}
                                    for j in jobs.values()]}
+            elif kind == 'cancel':
+                # Control-center "取消" button: forward the abort to the
+                # extension, which ends the job via its normal result path
+                # (clears the page's busy flag and frees the session).
+                job = jobs.get(msg.get('job_id'))
+                if not job:
+                    result = {'error': '未知任务（bridge 可能已重启）'}
+                elif job['status'] != 'running':
+                    result = {'error': f"任务已结束（{job['status']}），无需取消"}
+                elif job['owner'] not in clients:
+                    job.update(status='error', error='浏览器已断开，任务无法取消；刷新专用页即可清除')
+                    result = {'job_id': job['job_id'], 'status': 'error'}
+                else:
+                    try:
+                        await job['owner'].send(json.dumps({'type': 'cancel', 'job_id': job['job_id']}))
+                        result = {'job_id': job['job_id'], 'status': 'running', 'cancel_requested': True}
+                    except Exception:
+                        job.update(status='error', error='浏览器已断开，任务无法取消；刷新专用页即可清除')
+                        result = {'job_id': job['job_id'], 'status': 'error'}
             elif kind == 'send':
                 sid, prompt = msg.get('session_id'), msg.get('prompt')
                 if not isinstance(prompt, str) or not prompt.strip():
@@ -85,7 +104,9 @@ async def handle(ws):
                         elapsed = int(time.time() - busy['created'])
                         result = {'error': (
                             f"网页仍在回答上一个任务（{busy['job_id'][:8]}…，已运行 {elapsed} 秒；最长约 9 分钟）。"
-                            '请等网页回答完成后再发送——打开专用页可直接查看进度；重发会持续失败直到该任务结束')}
+                            '网页 AI 连接 MCP、读文件的前几分钟通常没有可见输出——这是正常现象，不是卡死。'
+                            '请等它完成后再发送（打开专用页可直接查看进度）；若不想等，'
+                            '在程序窗口"任务日志"点"取消"终止它，然后立即重新发送')}
                     else:
                         owner = next((w for w, sessions in clients.items()
                                       if any(s.get('id') == sid for s in sessions)), None)

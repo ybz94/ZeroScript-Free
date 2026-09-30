@@ -33,8 +33,8 @@ async def fake_extension():
         while True:
             sess = [{"id": SESSION_ID, "key": "/c/1", "provider": "deepseek",
                      "title": "Test", "url": "https://chat.deepseek.com/c/1",
-                     "visible": True, "busy": False, "transportVersion": "0.4.25",
-                     "providerVersion": "0.4.25", "inSync": True, "inputMaxChars": 160000}]
+                     "visible": True, "busy": False, "transportVersion": "0.4.26",
+                     "providerVersion": "0.4.26", "inSync": True, "inputMaxChars": 160000}]
             await ws.send(json.dumps({"type": "sessions", "sessions": sess}))
             try:
                 msg = json.loads(await asyncio.wait_for(ws.recv(), 1.0))
@@ -309,6 +309,69 @@ class DesktopAppTests(unittest.TestCase):
                                capture_output=True, text=True, timeout=90,
                                cwd=str(CURSOR_WEB))
             self.assertIn("LAUNCH-BROWSER-OK", r.stdout,
+                          f"stdout:\n{r.stdout[-2000:]}\nstderr:\n{r.stderr[-2000:]}")
+
+    def test_cancel_task_endpoint(self):
+        """/api/cancel aborts the in-flight task on the dedicated page:
+        center -> bridge -> extension (cancel) -> normal result path frees
+        the session. The fake page 'thinks' until it is cancelled."""
+        with tempfile.TemporaryDirectory() as tmp:
+            script = (
+                "import asyncio, json, os, sys\n"
+                f"sys.path.insert(0, r'{CURSOR_WEB}')\n"
+                f"os.environ['CURSOR_WEB_TOKEN_FILE'] = r'{tmp}/t1'\n"
+                f"os.environ['CURSOR_WEB_ENDPOINT_TOKEN_FILE'] = r'{tmp}/t2'\n"
+                "os.environ['CURSOR_WEB_PORT'] = '17764'\n"
+                "import app as appmod, httpx, websockets\n"
+                "async def fake_extension():\n"
+                "    token = open(os.environ['CURSOR_WEB_TOKEN_FILE']).read().strip()\n"
+                "    await asyncio.sleep(0.3)\n"
+                "    async with websockets.connect('ws://127.0.0.1:17764') as ws:\n"
+                "        await ws.send(json.dumps({'role': 'extension', 'token': token}))\n"
+                "        await ws.recv()\n"
+                "        while True:\n"
+                "            await ws.send(json.dumps({'type': 'sessions', 'sessions': [{'id': 's1', 'key': '/c/1', 'provider': 'deepseek', 'title': 'T', 'url': 'https://x/c/1', 'visible': True, 'busy': False, 'inputMaxChars': 100000}]}))\n"
+                "            msg = json.loads(await asyncio.wait_for(ws.recv(), 1.0))\n"
+                "            if msg.get('type') == 'dispatch':\n"
+                "                continue  # the page is 'thinking' - task stays running\n"
+                "            if msg.get('type') == 'cancel':\n"
+                "                await ws.send(json.dumps({'type': 'result', 'job_id': msg['job_id'], 'error': '任务被取消'}))\n"
+                "async def main():\n"
+                "    center = appmod.Center('ext-dir', bridge_port=17764, endpoint_port=17765, ui_port=17766)\n"
+                "    await center.start()\n"
+                "    try:\n"
+                "        ext = asyncio.create_task(fake_extension())\n"
+                "        await asyncio.sleep(0.6)\n"
+                "        async with websockets.connect('ws://127.0.0.1:17764') as cur:\n"
+                "            await cur.send(json.dumps({'role': 'cursor', 'token': open(os.environ['CURSOR_WEB_TOKEN_FILE']).read().strip()}))\n"
+                "            await cur.recv()\n"
+                "            await cur.send(json.dumps({'type': 'send', 'session_id': 's1', 'prompt': 'hello'}))\n"
+                "            job = json.loads(await cur.recv())\n"
+                "            assert job.get('job_id'), job\n"
+                "            async with httpx.AsyncClient(base_url='http://127.0.0.1:17766') as ui:\n"
+                "                r = await ui.post('/api/cancel', json={'job_id': job['job_id']})\n"
+                "                assert r.status_code == 200 and r.json()['ok'], r.text\n"
+                "                js = []\n"
+                "                for _ in range(30):\n"
+                "                    st = (await ui.get('/api/status')).json()\n"
+                "                    js = [j for j in st['jobs'] if j['job_id'] == job['job_id']]\n"
+                "                    if js and js[0]['status'] == 'error':\n"
+                "                        break\n"
+                "                    await asyncio.sleep(0.3)\n"
+                "                assert js and js[0]['status'] == 'error', st['jobs']\n"
+                "                assert '取消' in str(js[0].get('error', '')), js\n"
+                "                r2 = await ui.post('/api/cancel', json={})\n"
+                "                assert r2.status_code == 400, r2.text\n"
+                "        ext.cancel()\n"
+                "        print('CANCEL-OK', flush=True)\n"
+                "    finally:\n"
+                "        await center.shutdown()\n"
+                "asyncio.run(main())\n"
+            )
+            r = subprocess.run([sys.executable, "-c", script],
+                               capture_output=True, text=True, timeout=90,
+                               cwd=str(CURSOR_WEB))
+            self.assertIn("CANCEL-OK", r.stdout,
                           f"stdout:\n{r.stdout[-2000:]}\nstderr:\n{r.stderr[-2000:]}")
 
 

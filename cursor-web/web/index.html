@@ -411,9 +411,23 @@ function render(s){
              : j.status==='error'?'<span class="badge bad">失败</span>'
              : '<span class="badge busy">进行中</span>';
     const age = Math.max(0, Math.floor((Date.now()/1000) - (j.created||0)));
+    const cancelBtn = j.status==='running'
+      ? `<button class="danger mini" data-cancel="${esc(j.job_id)}" title="终止该任务（网页上的任务会被取消）">取消</button>`
+      : '';
     return `<div class="job"><span class="jid">${esc(j.job_id).slice(0,8)}</span>${st}
-      <span class="s-meta">${age}s 前</span>${j.error?`<span class="err">${esc(String(j.error).slice(0,160))}</span>`:''}</div>`;
+      <span class="s-meta">${age}s 前</span>${cancelBtn}${j.error?`<span class="err">${esc(String(j.error).slice(0,160))}</span>`:''}</div>`;
   }).join('') : '<div class="s-meta">暂无任务</div>';
+  document.querySelectorAll('[data-cancel]').forEach(b => b.onclick = async () => {
+    if (!confirm('终止这个进行中的任务？\n（网页上的任务会被取消；已写入的内容不受影响）')) return;
+    b.disabled = true;
+    try {
+      const r = await fetch('/api/cancel', {method:'POST', headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({job_id: b.dataset.cancel})});
+      const j = await r.json();
+      if (!r.ok || !j.ok) { alert(j.error || '取消失败'); b.disabled = false; return; }
+      toast('已发送取消，任务即将结束'); refresh();
+    } catch { b.disabled = false; }
+  });
 
   bindCopy(document.body); // step/copy buttons are re-rendered each pass
 }

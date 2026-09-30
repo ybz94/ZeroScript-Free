@@ -32,7 +32,7 @@ MAX_CACHE = 128
 # page still running an OLDER extension (stale browser window from a previous
 # build) silently misbehaves - stale prompts, stranded composer, popup
 # failures - so the endpoint refuses it with an actionable 409.
-EXTENSION_BUILD_ID = '20260929.4'
+EXTENSION_BUILD_ID = '20260929.5'
 
 
 class AdapterError(Exception):
@@ -909,7 +909,8 @@ def create_app(api_key, session, rpc=bridge_rpc, poll_interval=1, heartbeat=10, 
                 wait_s = int(time.monotonic() - oldest)
                 raise AdapterError(
                     f'网页仍在回答上一个请求（已运行 {wait_s} 秒；一个任务最长约 8.5 分钟）。'
-                    '请等它回答完成后再发送——期间重发只会失败；打开专用页可直接查看回答进度，无需重启程序', 409)
+                    '请等它回答完成后再发送——期间重发只会失败；打开专用页可直接查看回答进度。'
+                    '若不想等：在程序窗口"任务日志"点"取消"（或刷新专用页）可立即终止该任务', 409)
             if len(cache) >= MAX_CACHE:
                 raise AdapterError('Request cache full; finish the session before restarting the endpoint', 503)
             start = time.monotonic()

@@ -46,6 +46,14 @@ async function connect() {
       }
       return;
     }
+    if (msg.type === 'cancel') {
+      // Control-center "取消" button: abort the in-flight task in its tab.
+      // The content script ends the job through its normal result path,
+      // which frees the bridge session. No reply needed (fire-and-forget).
+      const route = routes.get(msg.job_id);
+      if (route) chrome.tabs.sendMessage(route.tabId, {type:'cancel', job_id:msg.job_id}).catch(() => {});
+      return;
+    }
     if (msg.type !== 'dispatch') return;
     const s = sessions.get(msg.session_id);
     if (!s) {send({type:'result', job_id:msg.job_id, error:'Session unavailable; list sessions again'}); return;}

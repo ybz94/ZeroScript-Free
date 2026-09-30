@@ -687,7 +687,7 @@ const ZSProvider = (() => {
 
   return {
     id: "gemini",
-    version: "0.4.25",
+    version: "0.4.26",
     displayName: "Gemini",
     // Gemini's web model is natively multimodal (image understanding), so
     // screen_capture is safe to expose here. Other providers default this
