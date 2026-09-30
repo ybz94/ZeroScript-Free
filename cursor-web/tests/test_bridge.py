@@ -168,6 +168,22 @@ class BridgeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(bridge.jobs[job['job_id']]['status'], 'error')
         self.assertIn('浏览器已断开', bridge.jobs[job['job_id']]['error'])
 
+    async def test_reload_page_forwards_to_extension(self):
+        # Control-window "刷新页面": one-click recovery for a stale page
+        # (extension updated but the page still runs the old content script).
+        browser, cursor, job = await self.submit()
+        res = await self.request(cursor, type='reload', session_id='session-1')
+        self.assertEqual(res['status'], 'reloading', res)
+        cmd = json.loads(await browser.recv())
+        self.assertEqual(cmd['type'], 'reload')
+        self.assertEqual(cmd['session_id'], 'session-1')
+
+    async def test_reload_unknown_session_errors_cleanly(self):
+        await self.browser()
+        cursor = await self.client()
+        res = await self.request(cursor, type='reload', session_id='nope')
+        self.assertIn('error', res)
+
     async def test_invalid_prompts(self):
         cursor = await self.client()
         for prompt in ('', ' ', None, 123, 'x' * 60001):

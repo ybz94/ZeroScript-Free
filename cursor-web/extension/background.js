@@ -78,6 +78,21 @@ async function connect() {
         free('任务已终止（网页端未确认取消；若网页仍在回答，请打开专用页查看）'));
       return;
     }
+    if (msg.type === 'reload') {
+      // Control-window "刷新页面": reload the bound tab so a page opened
+      // BEFORE an extension update loads the NEW content script (the typical
+      // cause of "扩展没有报告构建号" / stale-page refusal). After the reload
+      // the content script re-announces under a NEW session id; the user
+      // rebinds from the session list / site card.
+      const s = msg.session_id ? sessions.get(msg.session_id) : null;
+      if (!s) { send({type:'reload_failed', session_id:msg.session_id, error:'会话不存在（页面可能已关闭）'}); return; }
+      try {
+        await chrome.tabs.reload(s.tabId);
+      } catch (e) {
+        send({type:'reload_failed', session_id:msg.session_id, error:String((e&&e.message)||e).slice(0,120)});
+      }
+      return;
+    }
     if (msg.type !== 'dispatch') return;
     const s = sessions.get(msg.session_id);
     if (!s) {send({type:'result', job_id:msg.job_id, error:'Session unavailable; list sessions again'}); return;}

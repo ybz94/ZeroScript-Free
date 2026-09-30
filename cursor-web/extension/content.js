@@ -12,13 +12,13 @@
   // {type:'cancel', job_id} for the IN-FLIGHT job; the wait loop notices on
   // its next tick (~1s) and ends the task through the normal result path.
   let activeJob = null, cancelRequested = false;
-  const VERSION = '0.4.31';
+  const VERSION = '0.4.32';
   // Per-build stamp: a stale dedicated page running an OLDER extension is
   // otherwise invisible (the version gate only compares content script vs
   // providers, which travel in the same build). The endpoint expects its own
   // stamp; a mismatch (or no report at all) means the page still runs an old
   // extension and must be closed/reopened.
-  const BUILD_ID = '20260929.10';
+  const BUILD_ID = '20260929.11';
   const seen = new Set();
   // DOM events can wake the watcher even when background timers are throttled.
   // Keep a timer fallback for generation-state changes without DOM mutations.

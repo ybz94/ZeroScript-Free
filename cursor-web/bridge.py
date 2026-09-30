@@ -122,6 +122,23 @@ async def handle(ws):
                     except Exception:
                         job.update(status='error', error='浏览器已断开，任务无法取消；刷新专用页即可清除')
                         result = {'job_id': job['job_id'], 'status': 'error'}
+            elif kind == 'reload':
+                # Control-window "刷新页面": reload the dedicated tab so a page
+                # opened before an extension update loads the NEW content
+                # script (typical cause of the "扩展没有报告构建号" refusal).
+                # After the reload the page re-announces under a new session
+                # id; the UI rebinds.
+                sid = msg.get('session_id')
+                owner = next((w for w, sessions in clients.items()
+                              if any(s.get('id') == sid for s in sessions)), None)
+                if owner is None:
+                    result = {'error': '会话不存在（页面可能已关闭）；点站点卡片重新打开'}
+                else:
+                    try:
+                        await owner.send(json.dumps({'type': 'reload', 'session_id': sid}))
+                        result = {'status': 'reloading', 'session_id': sid}
+                    except Exception:
+                        result = {'error': '浏览器已断开；请重新打开专用页'}
             elif kind == 'send':
                 sid, prompt = msg.get('session_id'), msg.get('prompt')
                 if not isinstance(prompt, str) or not prompt.strip():

@@ -30,8 +30,8 @@ BRIDGE_PORT = int(os.getenv('CURSOR_WEB_PORT', '17614'))
 ENDPOINT_PORT = int(os.getenv('CURSOR_WEB_ENDPOINT_PORT', '17615'))
 UI_PORT = int(os.getenv('CURSOR_WEB_UI_PORT', '17616'))
 MODEL = 'web-ai'
-VERSION = '0.4.35'
-BUILD_ID = 'b24'  # printed in the banner: proves which build is actually running
+VERSION = '0.4.36'
+BUILD_ID = 'b25'  # printed in the banner: proves which build is actually running
 
 SITES = [
     ('deepseek', 'DeepSeek', 'https://chat.deepseek.com'),
@@ -68,7 +68,7 @@ def download_file(url, dst, progress_cb=None):
     import urllib.request
     dst = Path(dst)
     tmp = dst.with_suffix(dst.suffix + '.part')
-    req = urllib.request.Request(url, headers={'User-Agent': 'CursorWebAssistant/0.4.35'})
+    req = urllib.request.Request(url, headers={'User-Agent': 'CursorWebAssistant/0.4.36'})
     with urllib.request.urlopen(req, timeout=30) as resp:
         total = int(resp.headers.get('Content-Length') or 0)
         if progress_cb:
@@ -328,6 +328,30 @@ class Center:
             print(f'[center] cancel requested for job {jid[:8]}', flush=True)
             return JSONResponse({'ok': True, 'job_id': jid})
 
+        async def reload_page(request):
+            """UI "刷新页面": reload the dedicated tab. A page opened BEFORE an
+            extension update still runs the OLD content script in memory -
+            the typical cause of the '扩展没有报告构建号' stale-page refusal.
+            Only a reload (or a fresh browser window) loads the new code.
+            After the reload the page re-announces under a NEW session id;
+            the user rebinds via the session list / site card."""
+            try:
+                data = await request.json()
+            except Exception:
+                data = {}
+            sid = str(data.get('session_id') or '').strip() or self.session.current
+            if not sid:
+                return JSONResponse({'ok': False, 'error': '没有绑定会话'}, status_code=400)
+            import model_endpoint as ep
+            try:
+                res = await ep.bridge_rpc({'type': 'reload', 'session_id': sid})
+            except Exception as exc:
+                return JSONResponse({'ok': False, 'error': f'bridge 不可用：{str(exc)[:150]}'}, status_code=502)
+            if res.get('error'):
+                return JSONResponse({'ok': False, 'error': res['error']}, status_code=409)
+            print(f'[center] reload requested for session {sid[:8]}', flush=True)
+            return JSONResponse({'ok': True, 'session_id': sid})
+
         async def stop(request):
             self.stop_event.set()
             if self.external_stop is not None:
@@ -461,6 +485,7 @@ class Center:
         app = Starlette(routes=[Route('/', index), Route('/api/status', status),
                                 Route('/api/rebind', rebind, methods=['POST']),
                                 Route('/api/cancel', cancel, methods=['POST']),
+                                Route('/api/reload_page', reload_page, methods=['POST']),
                                 Route('/api/stop', stop, methods=['POST']),
                                 Route('/api/launch-browser', launch_browser, methods=['POST']),
                                 Route('/api/byok', byok, methods=['POST']),

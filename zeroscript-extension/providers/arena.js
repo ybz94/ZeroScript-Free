@@ -1164,7 +1164,7 @@ const ZSProvider = (() => {
 
   return {
     id: "arena",
-    version: "0.4.31",
+    version: "0.4.32",
     displayName: "Arena",
     // Arena's chat composer accepts image uploads (hidden `input[type=file]` in
     // the form → staged preview card → uploaded on send; see attachImages). The

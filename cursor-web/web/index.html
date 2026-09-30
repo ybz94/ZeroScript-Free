@@ -396,6 +396,7 @@ function render(s){
         ${bound?'<span class="badge ok">已绑定</span>':''} ${badges}</div>
         <div class="s-meta">${esc(host)} · id ${esc(x.id)}</div></div>
       ${bound?'':'<button class="ghost mini" data-bind="'+esc(x.id)+'">绑定到此会话</button>'}
+      <button class="ghost mini" data-reload="${esc(x.id)}" title="重新加载该页面：加载最新扩展代码（扩展更新前打开的页面内存里还是旧代码——"扩展没有报告构建号"的典型原因）。刷新后会出现新会话，点"绑定到此会话"重新绑定">刷新页面</button>
     </div>`;
   }).join('') : '<div class="s-meta">等待专用网页…</div>';
   document.querySelectorAll('[data-bind]').forEach(b => b.onclick = async () => {
@@ -404,6 +405,18 @@ function render(s){
     const j = await r.json();
     if (!r.ok || !j.ok) { alert(j.error || '绑定失败'); return; }
     toast('已绑定'); refresh();
+  });
+  document.querySelectorAll('[data-reload]').forEach(b => b.onclick = async () => {
+    if (!confirm('重新加载这个专用页？\n（让页面加载最新的扩展代码；刷新后会出现一个新会话，请再点"绑定到此会话"）')) return;
+    b.disabled = true;
+    try {
+      const r = await fetch('/api/reload_page', {method:'POST', headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({session_id: b.dataset.reload})});
+      const j = await r.json();
+      if (!r.ok || !j.ok) { alert(j.error || '刷新失败'); b.disabled = false; return; }
+      toast('正在刷新页面…几秒后重新绑定新会话');
+      setTimeout(refresh, 4000); setTimeout(refresh, 10000);
+    } catch { b.disabled = false; }
   });
 
   // Live diagnostics line for a RUNNING job (the content script reports its

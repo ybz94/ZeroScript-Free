@@ -19,7 +19,7 @@ const SESSION = {type:'session', id:'s1', key:'/c/1', provider:'mock', title:'T'
 function makeEnv(shared) {
   shared.frames = shared.frames || [];
   shared.sessionStore = shared.sessionStore || {};
-  const tabsSent = [];
+  const tabsSent = [], reloaded = [];
   let runtimeListener = null;
   class FakeWS {
     static OPEN = 1;  // background.js checks WebSocket.OPEN, like the browser
@@ -48,11 +48,13 @@ function makeEnv(shared) {
         return Promise.resolve({ok: true});
       },
       onRemoved: { addListener: () => {} },
+      reload: (tabId) => { reloaded.push(tabId); return Promise.resolve(); },
     },
     alarms: { create: () => {}, onAlarm: { addListener: () => {} } },
   };
   return {
     tabsSent,
+    reloaded,
     boot() {
       vm.runInNewContext(fs.readFileSync(BG, 'utf8'),
         {WebSocket: FakeWS, chrome, console, setTimeout: () => 0, setInterval: () => 0, setImmediate, Date});
@@ -168,4 +170,20 @@ test('result that races the SW wake-up (routes not restored yet) is outboxed and
   await env.settle();
   assert.ok(shared.frames.find(f => f.type === 'result' && f.job_id === 'j1'),
             'the wake-up race must not eat the answer');
+});
+test('reload command reloads the bound tab (stale page recovery)', async () => {
+  const shared = {};
+  const env = await bootAuthed(shared);
+  env.trigger(SESSION); await env.settle();  // session s1 -> tab 7
+  env.bridge({type: 'reload', session_id: 's1'});
+  await env.settle();
+  assert.deepEqual(env.reloaded, [7]);
+});
+test('reload for an unknown session reports failure without crashing', async () => {
+  const shared = {};
+  const env = await bootAuthed(shared);
+  env.bridge({type: 'reload', session_id: 'nope'});
+  await env.settle();
+  assert.deepEqual(env.reloaded, []);
+  assert.ok(shared.frames.find(f => f.type === 'reload_failed'));
 });
