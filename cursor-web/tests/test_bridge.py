@@ -131,6 +131,9 @@ class BridgeTests(unittest.IsolatedAsyncioTestCase):
         forwarded = json.loads(await browser.recv())
         self.assertEqual(forwarded['type'], 'cancel')
         self.assertEqual(forwarded['job_id'], job['job_id'])
+        # session_id lets the extension find the tab even if its per-job
+        # route was lost (MV3 service-worker restart).
+        self.assertEqual(forwarded['session_id'], 'session-1')
         await browser.send(json.dumps({'type': 'result', 'job_id': job['job_id'], 'error': '任务被取消'}))
         async with asyncio.timeout(3):
             while bridge.jobs[job['job_id']]['status'] == 'running':
@@ -148,6 +151,19 @@ class BridgeTests(unittest.IsolatedAsyncioTestCase):
                 await asyncio.sleep(.001)
         again = await self.request(cursor, type='cancel', job_id=job['job_id'])
         self.assertIn('任务已结束', again['error'])
+
+    async def test_cancel_after_browser_disconnect_frees_the_job(self):
+        # The dedicated browser dies mid-task: the bridge already marks the
+        # job error on disconnect, and a cancel for it must answer definitively
+        # (not hang, not claim success) so the session is free.
+        browser, cursor, job = await self.submit()
+        await browser.close()
+        async with asyncio.timeout(3):
+            while job['job_id'] in bridge.jobs and bridge.jobs[job['job_id']]['status'] == 'running':
+                await asyncio.sleep(.001)
+        res = await self.request(cursor, type='cancel', job_id=job['job_id'])
+        self.assertIn('任务已结束', res['error'])
+        self.assertNotEqual(bridge.jobs[job['job_id']]['status'], 'running')
 
     async def test_invalid_prompts(self):
         cursor = await self.client()

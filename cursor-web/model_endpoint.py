@@ -32,7 +32,7 @@ MAX_CACHE = 128
 # page still running an OLDER extension (stale browser window from a previous
 # build) silently misbehaves - stale prompts, stranded composer, popup
 # failures - so the endpoint refuses it with an actionable 409.
-EXTENSION_BUILD_ID = '20260929.5'
+EXTENSION_BUILD_ID = '20260929.6'
 
 
 class AdapterError(Exception):
@@ -51,6 +51,29 @@ class StaleExtensionError(AdapterError):
     replace that message with the generic breaker one (live incident
     2026-09-29: 3 stale-409s -> the 4th request showed only "已连续 3 次
     发送失败", hiding the real cause)."""
+
+
+# A failed task stays in the dedup cache (an identical resend REPLAYS the
+# failure, never re-executing the prompt on the page) ONLY when the dedicated
+# page CONSUMED the prompt: a complete reply was read but rejected, the page
+# may still be generating, or the task was interrupted mid-flight. There, an
+# automatic resend could run an editing task TWICE. Every other failure
+# (bridge busy, transport blip, preflight refusal, site error, CANCEL, stale
+# page) is evicted so an identical retry is a fresh attempt - the page's own
+# busy/generating guards still prevent a double send before anything is typed.
+_CONSUMED_PAGE_MARKERS = (
+    'Reply is truncated', 'Webpage generation was stopped', 'Answer exceeds size limit',
+    'Dedicated page was operated during the task', '等待网页回答超时（480 秒）',
+    '任务超时（540 秒）', 'Invalid task status', '网页回答超时（510 秒',
+    '与 Bridge 的连接反复中断', '一次性格式修复仍未通过', '未发送修复')
+
+
+def _failure_consumed_page(exc):
+    if any(marker in str(exc) for marker in _CONSUMED_PAGE_MARKERS):
+        return True
+    # A reply WAS read from the page and only failed validation afterwards:
+    code = getattr(exc, 'code', '') or ''
+    return code.startswith('web_') and code != 'web_adapter_error'
 
 
 def dumps(value):
@@ -755,8 +778,22 @@ def create_app(api_key, session, rpc=bridge_rpc, poll_interval=1, heartbeat=10, 
         deadline = time.monotonic() + 510  # agent turns using the file MCP take minutes; ladder: extension 480s < endpoint 510s < bridge 540s
         started = time.monotonic()
         build_ok = False
+        rpc_fails = 0
         while time.monotonic() < deadline:
-            result = await rpc({'type': 'get', 'job_id': jid})
+            try:
+                result = await rpc({'type': 'get', 'job_id': jid})
+                rpc_fails = 0
+            except AdapterError as exc:
+                rpc_fails += 1
+                # One bridge hiccup must NOT orphan a RUNNING job: the page is
+                # still working and the next resend would fail with "网页忙"
+                # for up to 9 minutes. Tolerate ~10s of blips before giving up.
+                if rpc_fails < 10:
+                    await asyncio.sleep(poll_interval)
+                    continue
+                raise AdapterError(
+                    f'与 Bridge 的连接反复中断（任务 {jid[:8]} 可能仍在网页上运行）。'
+                    '打开程序"任务日志"查看该任务：点"取消"可立即释放，或等它结束后重试。', 502) from exc
             if result.get('error') or result.get('status') == 'error':
                 raise AdapterError(f"Webpage task {jid} failed: {result.get('error', 'unknown failure')}")
             # Stale-extension detection: the content script reports its build
@@ -783,7 +820,8 @@ def create_app(api_key, session, rpc=bridge_rpc, poll_interval=1, heartbeat=10, 
             await asyncio.sleep(poll_interval)
         raise AdapterError(
             f'网页回答超时（510 秒，任务 {jid[:8]}）。打开专用页查看网页是否仍在回答——'
-            '等它答完再重新发送；不要立即重发（任务可能仍在网页上运行，重发会报"网页忙"）', 504)
+            '等它答完再重新发送；不要立即重发（任务可能仍在网页上运行，重发会报"网页忙"；'
+            '若任务一直占着会话，约 30 秒后系统会自动释放它）', 504)
 
     def parse_with_diagnostics(raw, request_id, body, catalog, diagnostics):
         try:
@@ -917,13 +955,19 @@ def create_app(api_key, session, rpc=bridge_rpc, poll_interval=1, heartbeat=10, 
             print(f'[{rid[:8]}] task started on dedicated webpage (prompt {len(prompt)} chars, {prompt.count(chr(10)) + 1} lines)', flush=True)
             task = asyncio.create_task(complete(body, catalog, prompt, rid))
 
-            def _task_done(t, _tag=rid[:8], _start=start):
+            def _task_done(t, _tag=rid[:8], _start=start, _key=fingerprint):
                 # Suppression via .exception() also feeds the console log.
                 if t.cancelled():
+                    cache.pop(_key, None)
                     print(f'[{_tag}] task cancelled after {int(time.monotonic() - _start)}s', flush=True)
                     return
                 exc = t.exception()
                 if exc is not None:
+                    # Failed task: drop it from the dedup cache UNLESS the page
+                    # consumed the prompt (replay keeps a double-execution
+                    # impossible, see _failure_consumed_page).
+                    if not _failure_consumed_page(exc):
+                        cache.pop(_key, None)
                     stale = isinstance(exc, StaleExtensionError)
                     if not stale:
                         recent_failures.append(time.monotonic())

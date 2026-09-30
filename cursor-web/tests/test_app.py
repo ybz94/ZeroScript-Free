@@ -33,8 +33,8 @@ async def fake_extension():
         while True:
             sess = [{"id": SESSION_ID, "key": "/c/1", "provider": "deepseek",
                      "title": "Test", "url": "https://chat.deepseek.com/c/1",
-                     "visible": True, "busy": False, "transportVersion": "0.4.26",
-                     "providerVersion": "0.4.26", "inSync": True, "inputMaxChars": 160000}]
+                     "visible": True, "busy": False, "transportVersion": "0.4.27",
+                     "providerVersion": "0.4.27", "inSync": True, "inputMaxChars": 160000}]
             await ws.send(json.dumps({"type": "sessions", "sessions": sess}))
             try:
                 msg = json.loads(await asyncio.wait_for(ws.recv(), 1.0))
@@ -373,6 +373,59 @@ class DesktopAppTests(unittest.TestCase):
                                cwd=str(CURSOR_WEB))
             self.assertIn("CANCEL-OK", r.stdout,
                           f"stdout:\n{r.stdout[-2000:]}\nstderr:\n{r.stderr[-2000:]}")
+
+    def test_failed_task_is_not_replayed_on_identical_resend(self):
+        """A task that FAILED must not be replayed from the dedup cache:
+        the identical resend has to start a FRESH task (the page's own
+        busy/generating guards still prevent double-sending). Before the
+        fix, the cache answered every identical retry with the same error
+        forever, and - combined with a still-running bridge job - the user
+        could neither succeed nor get a clear failure."""
+        script = (
+            "import asyncio, json, re, sys\n"
+            f"sys.path.insert(0, r'{CURSOR_WEB}')\n"
+            "import httpx\n"
+            "from model_endpoint import create_app\n"
+            "jobs = {}\n"
+            "order = 0\n"
+            "async def fake_rpc(payload):\n"
+            "    global order\n"
+            "    t = payload['type']\n"
+            "    if t == 'list':\n"
+            "        return {'sessions': [{'id': 's1', 'key': '/c/1', 'provider': 'deepseek', 'title': 'T', 'url': 'https://x/c/1', 'visible': True, 'busy': False, 'inputMaxChars': 160000}]}\n"
+            "    if t == 'send':\n"
+            "        order += 1\n"
+            "        jobs['job%d' % order] = {'order': order, 'prompt': payload['prompt']}\n"
+            "        return {'job_id': 'job%d' % order, 'status': 'running'}\n"
+            "    if t == 'get':\n"
+            "        j = jobs[payload['job_id']]\n"
+            "        if j['order'] == 1:\n"
+            "            return {'job_id': payload['job_id'], 'status': 'error', 'error': 'boom (first attempt failed)'}\n"
+            "        rid = re.search(r'\"request_id\":\"([0-9a-f]{6,})\"', j['prompt']).group(1)\n"
+            "        text = '```json\\n{\"request_id\":\"%s\",\"content\":\"second-attempt-ok\",\"tool_calls\":[]}\\n```' % rid\n"
+            "        return {'job_id': payload['job_id'], 'status': 'completed', 'result': text, 'diagnostics': {}}\n"
+            "    if t == 'cancel':\n"
+            "        return {'job_id': payload['job_id'], 'status': 'running', 'cancel_requested': True}\n"
+            "    raise ValueError(t)\n"
+            "app = create_app('k', 's1', rpc=fake_rpc, poll_interval=0.01)\n"
+            "async def main():\n"
+            "    body = {'model': 'web-ai', 'stream': False, 'messages': [{'role': 'user', 'content': 'hello dedup'}], 'response_format': {'type': 'text'}}\n"
+            "    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url='http://t') as cli:\n"
+            "        h = {'Authorization': 'Bearer k'}\n"
+            "        r1 = await cli.post('/v1/chat/completions', headers=h, json=body)\n"
+            "        assert r1.status_code == 502, r1.text\n"
+            "        assert 'boom' in r1.text, r1.text\n"
+            "        r2 = await cli.post('/v1/chat/completions', headers=h, json=body)  # identical resend\n"
+            "        assert r2.status_code == 200, r2.text  # fresh task, NOT a replay of the failure\n"
+            "        assert r2.json()['choices'][0]['message']['content'] == 'second-attempt-ok', r2.text\n"
+            "    print('DEDUP-OK', flush=True)\n"
+            "asyncio.run(main())\n"
+        )
+        r = subprocess.run([sys.executable, "-c", script],
+                           capture_output=True, text=True, timeout=90,
+                           cwd=str(CURSOR_WEB))
+        self.assertIn("DEDUP-OK", r.stdout,
+                      f"stdout:\n{r.stdout[-2000:]}\nstderr:\n{r.stderr[-2000:]}")
 
 
 class ByokSetupTests(unittest.TestCase):

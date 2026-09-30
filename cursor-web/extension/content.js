@@ -12,13 +12,13 @@
   // {type:'cancel', job_id} for the IN-FLIGHT job; the wait loop notices on
   // its next tick (~1s) and ends the task through the normal result path.
   let activeJob = null, cancelRequested = false;
-  const VERSION = '0.4.26';
+  const VERSION = '0.4.27';
   // Per-build stamp: a stale dedicated page running an OLDER extension is
   // otherwise invisible (the version gate only compares content script vs
   // providers, which travel in the same build). The endpoint expects its own
   // stamp; a mismatch (or no report at all) means the page still runs an old
   // extension and must be closed/reopened.
-  const BUILD_ID = '20260929.5';
+  const BUILD_ID = '20260929.6';
   const seen = new Set();
   // DOM events can wake the watcher even when background timers are throttled.
   // Keep a timer fallback for generation-state changes without DOM mutations.
@@ -154,6 +154,12 @@
       // immediately when the provider verified the write and it is NOT there.
       let leftover = '', usersAfter = diagnostics.usersBefore, gen = false, hard = false;
       for (let i = 0; i < 150; i++) {
+        // Cancel can arrive while we are still confirming the send (up to ~30s):
+        // honor it on this tick instead of only in the reply-wait loop.
+        if (cancelRequested) {
+          cancelRequested = false;
+          throw new Error('任务被取消（控制窗口点了"取消"）。可以立即发送新任务');
+        }
         try { leftover = (P.editorText ? P.editorText() : '') || ''; } catch { break; }
         try { usersAfter = P.userCount ? P.userCount() : usersAfter; } catch {}
         try { gen = !!(P.isGenerating && P.isGenerating()); hard = !!(P.isHardGenerating && P.isHardGenerating()); } catch {}
@@ -383,7 +389,13 @@
         (inputMaxLines !== null && msg.prompt.split('\n').length > inputMaxLines)) {
       reply({error:`Input exceeds ${P.id} adapter safety budget (${inputMaxChars} UTF-16 units, ${inputMaxLines ?? 'unlimited'} lines); nothing sent or truncated`}); return;
     }
-    if (busy || seen.has(msg.job_id)) {reply({error:'Busy or duplicate task'}); return;}
+    if (busy || seen.has(msg.job_id)) {
+      // The page is still working (or still GENERATING) on the previous task -
+      // e.g. a cancel arrived after the extension had already given up reading
+      // (480s) but the site keeps generating. Never touch the composer here:
+      // tell the user exactly what to do instead.
+      reply({error:'这个页面还在回答上一个任务（刚才的取消可能没来得及停住它）。请打开专用页查看：若网页仍在生成，等它答完（或点网页上的 Stop）再试；若已空闲，刷新专用页后再试。不要连续重发'}); return;
+    }
     seen.add(msg.job_id);
     reply({accepted:true, build:BUILD_ID});
     run(msg);

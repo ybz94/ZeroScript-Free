@@ -127,7 +127,7 @@ test('confirmed send (composer cleared) proceeds to wait for the reply',async()=
   assert.equal(r.diagnostics.leftoverLen,0);
 });
 test('content rejects duplicate submission',async()=>{
-  const c=content();c.dispatch();assert.match(c.dispatch().error,/Busy|duplicate/);await c.result();assert.match(c.dispatch().error,/duplicate/);assert.equal(c.sent,1);
+  const c=content();c.dispatch();assert.match(c.dispatch().error,/还在回答上一个任务/);await c.result();assert.match(c.dispatch().error,/还在回答上一个任务/);assert.equal(c.sent,1);
 });
 test('content rejects stale binding before sending',()=>{
   const c=content();assert.match(c.dispatch({expectedKey:'/other'}).error,/changed/);assert.equal(c.sent,0);
@@ -324,7 +324,8 @@ async function background(){
   }
   vm.runInNewContext(fs.readFileSync(path.join(root,'background.js'),'utf8'), {
     WebSocket:WS, Date, setInterval(){},setTimeout(){},
-    chrome:{storage:{local:{get:async()=>({token:'test',port:17614}),set:async v=>Object.assign(stored,v)}},
+    chrome:{storage:{local:{get:async()=>({token:'test',port:17614}),set:async v=>Object.assign(stored,v)},
+      session:{get:async()=>(stored.zsRoutes||{}),set:async v=>Object.assign(stored,v)}},
       runtime:{onMessage:{addListener:fn=>runtimeListener=fn}},
       tabs:{sendMessage:async(tab,msg)=>{dispatched.push({tab,msg});return {accepted:true};},onRemoved:{addListener:fn=>removedListener=fn}},
       alarms:{create(){},onAlarm:{addListener(){}}}}
@@ -557,5 +558,15 @@ test('cancel for a foreign job id is ignored (task runs to the deadline)', async
   c.cancel('other-job');  // not the in-flight job -> ignored
   const r = await c.result();
   assert.match(r.error, /等待网页回答超时/);  // full wait, not cancelled
+  assert.equal(c.sent, 1);
+});
+
+test('cancel during the pre-send confirmation loop ends the task fast too', async () => {
+  const c = content({sendNotConfirmed:true});  // confirm loop spins while the text stays in the composer
+  c.dispatch();
+  c.cancel('j1');  // arrives before the wait loop is even entered
+  const r = await c.result();
+  assert.match(r.error, /任务被取消/);
+  assert.equal(r.diagnostics.phase, 'confirming_send');
   assert.equal(c.sent, 1);
 });

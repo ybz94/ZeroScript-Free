@@ -88,7 +88,10 @@ async def handle(ws):
                     result = {'job_id': job['job_id'], 'status': 'error'}
                 else:
                     try:
-                        await job['owner'].send(json.dumps({'type': 'cancel', 'job_id': job['job_id']}))
+                        # session_id lets the extension find the tab even when
+                        # its per-job route was lost (service-worker restart).
+                        await job['owner'].send(json.dumps({'type': 'cancel', 'job_id': job['job_id'],
+                                                           'session_id': job['session_id']}))
                         result = {'job_id': job['job_id'], 'status': 'running', 'cancel_requested': True}
                     except Exception:
                         job.update(status='error', error='浏览器已断开，任务无法取消；刷新专用页即可清除')
