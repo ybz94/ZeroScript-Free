@@ -153,17 +153,20 @@ class BridgeTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn('任务已结束', again['error'])
 
     async def test_cancel_after_browser_disconnect_frees_the_job(self):
-        # The dedicated browser dies mid-task: the bridge already marks the
-        # job error on disconnect, and a cancel for it must answer definitively
-        # (not hang, not claim success) so the session is free.
+        # The extension's connection drops mid-task (MV3 service-worker kill
+        # or a real close). The job survives the drop (its page may still be
+        # working), but a cancel must free it definitively - not hang, not
+        # claim success - so the session is usable again.
         browser, cursor, job = await self.submit()
         await browser.close()
         async with asyncio.timeout(3):
-            while job['job_id'] in bridge.jobs and bridge.jobs[job['job_id']]['status'] == 'running':
+            while bridge.clients:  # old socket fully closed & popped
                 await asyncio.sleep(.001)
+        self.assertEqual(bridge.jobs[job['job_id']]['status'], 'running')  # NOT errored on the drop
         res = await self.request(cursor, type='cancel', job_id=job['job_id'])
-        self.assertIn('任务已结束', res['error'])
-        self.assertNotEqual(bridge.jobs[job['job_id']]['status'], 'running')
+        self.assertEqual(res['status'], 'error')  # cannot relay to a dead connection
+        self.assertEqual(bridge.jobs[job['job_id']]['status'], 'error')
+        self.assertIn('浏览器已断开', bridge.jobs[job['job_id']]['error'])
 
     async def test_invalid_prompts(self):
         cursor = await self.client()
@@ -180,13 +183,52 @@ class BridgeTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn('error', await self.request(cursor, type='result', job_id=job['job_id'], text='fake'))
         self.assertEqual(bridge.jobs[job['job_id']]['status'], 'running')
 
-    async def test_disconnect_marks_pending_error(self):
+    async def test_disconnect_keeps_job_running_and_reconnect_delivers_answer(self):
+        # The exact long-task failure: Chrome hard-kills the MV3 service
+        # worker (5-minute cap) mid-task, the extension's socket drops, the
+        # page keeps working, the extension RECONNECTS and delivers the
+        # finished answer. The answer must reach the client - the old code
+        # errored the job on the drop, so the late answer was discarded.
         browser, cursor, job = await self.submit()
         await browser.close()
         async with asyncio.timeout(3):
+            while bridge.clients:  # old socket fully closed & popped
+                await asyncio.sleep(.001)
+        self.assertEqual(bridge.jobs[job['job_id']]['status'], 'running')  # survives the drop
+        # The extension reconnects: new socket, SAME page (same session id).
+        browser2 = await self.client('extension')
+        await browser2.send(json.dumps(
+            {'type': 'sessions', 'sessions': [{'id': 'session-1', 'key': '/c/1'}]}))
+        await asyncio.sleep(0.05)
+        # Re-adoption happened: the job's owner is now a LIVE connection (in
+        # clients), not the dead socket. Functional proof is the answer below.
+        self.assertIn(bridge.jobs[job['job_id']]['owner'], bridge.clients)
+        # The finished answer arrives on the new connection.
+        await browser2.send(json.dumps(
+            {'type': 'result', 'job_id': job['job_id'], 'text': 'survived the restart'}))
+        async with asyncio.timeout(3):
             while bridge.jobs[job['job_id']]['status'] == 'running':
                 await asyncio.sleep(.001)
-        self.assertEqual((await self.request(cursor, type='get', job_id=job['job_id']))['status'], 'error')
+        answer = await self.request(cursor, type='get', job_id=job['job_id'])
+        self.assertEqual(answer['status'], 'completed')
+        self.assertEqual(answer['result'], 'survived the restart')
+
+    async def test_reconnect_does_not_adopt_a_foreign_pages_job(self):
+        # A DIFFERENT browser window (different session id) reconnecting must
+        # not steal the orphaned job - only the same page re-adopts it.
+        browser, cursor, job = await self.submit()
+        await browser.close()
+        async with asyncio.timeout(3):
+            while bridge.clients:
+                await asyncio.sleep(.001)
+        other = await self.client('extension')
+        await other.send(json.dumps(
+            {'type': 'sessions', 'sessions': [{'id': 'session-OTHER', 'key': '/c/9'}]}))
+        await asyncio.sleep(0.05)
+        # Still orphaned: the owner is the DEAD socket (not in clients), not
+        # the foreign connection - a different page cannot steal the job.
+        self.assertNotIn(bridge.jobs[job['job_id']]['owner'], bridge.clients)
+        self.assertEqual(bridge.jobs[job['job_id']]['status'], 'running')
 
     async def test_expiry_and_late_result(self):
         browser, cursor, job = await self.submit()

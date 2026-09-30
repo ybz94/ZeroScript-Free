@@ -54,6 +54,22 @@ async def handle(ws):
             if role == 'extension':
                 if kind == 'sessions':
                     clients[ws] = msg.get('sessions', [])
+                    # Re-adopt jobs orphaned by a PREVIOUS connection of THIS
+                    # same page. Chrome hard-kills the MV3 service worker after
+                    # 5 minutes, so any MCP task longer than that crosses a
+                    # kill/restart: the dedicated page keeps working through
+                    # the gap, and its finished answer arrives on THIS new
+                    # socket. Without re-adoption the `owner == ws` check below
+                    # would reject that answer (owner is the dead socket) and
+                    # the user would see an answer on the page that never
+                    # reaches the client. Only jobs whose session this
+                    # connection actually reports are adopted - a different
+                    # browser window (different session id) cannot steal a job.
+                    sids = {s.get('id') for s in msg.get('sessions', []) if isinstance(s, dict)}
+                    for job in jobs.values():
+                        if (job['status'] == 'running' and job['owner'] not in clients
+                                and job['session_id'] in sids):
+                            job['owner'] = ws
                 elif kind == 'ack':
                     # Content-script build stamp: recorded on the job so the
                     # endpoint can detect a stale (old-extension) page.
@@ -142,10 +158,15 @@ async def handle(ws):
         pass
     finally:
         clients.pop(ws, None)
-        if role == 'extension':
-            for job in jobs.values():
-                if job['owner'] == ws and job['status'] == 'running':
-                    job.update(status='error', error='Browser disconnected; webpage may still be running. Check it before retrying.')
+        # Do NOT error running jobs when the extension's connection drops.
+        # The MV3 service worker is routinely killed (5-minute lifetime cap)
+        # and reconnected mid-task, and the dedicated page keeps working
+        # through the gap; erroring the job here would discard the answer that
+        # arrives seconds later on the reconnected socket. Orphaned jobs are
+        # re-adopted on reconnect (see the 'sessions' handler above). If the
+        # browser is genuinely gone, the 540-second sweep or a manual cancel
+        # frees the job - both still work because the orphaned job stays
+        # 'running' with an owner that is no longer connected.
 
 
 async def main():

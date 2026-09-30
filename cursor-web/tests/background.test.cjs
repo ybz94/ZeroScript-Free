@@ -141,3 +141,31 @@ test('cancel whose tab has no content script frees the job instead of hanging', 
   assert.ok(res, 'a rejected cancel must end the job, not hang it');
   assert.match(res.error, /未确认取消/);
 });
+
+test('result is forwarded to the bridge even with no route and no live session (never dropped)', async () => {
+  // The bridge re-validates ownership (job exists + same connection + running)
+  // before applying a result, so forwarding is always safe. The old code
+  // dropped results here, which is exactly how a finished answer got eaten.
+  const shared = {};
+  const env = await bootAuthed(shared);  // ws open + authed; no session, no routes
+  env.trigger({type: 'result', job_id: 'jR', session_id: 's-unknown'});
+  await env.settle();
+  assert.ok(shared.frames.find(f => f.type === 'result' && f.job_id === 'jR'),
+            'a result must ALWAYS be forwarded - the bridge decides if it applies');
+});
+
+test('result that races the SW wake-up (routes not restored yet) is outboxed and flushed on reconnect', async () => {
+  // The exact live failure: Chrome hard-kills the worker (5-minute cap) during
+  // a long MCP task; the finished answer wakes it back up and arrives BEFORE
+  // the async route restore and before the WS reconnected.
+  const shared = {};
+  shared.sessionStore = {zsRoutes: {j1: {tabId: 7, sessionId: 's1'}}};  // persisted by the pre-kill boot
+  const env = makeEnv(shared);
+  env.boot();
+  env.trigger({type: 'result', job_id: 'j1', session_id: 's1'});  // synchronous: restore has NOT run
+  await env.settle();          // WS connects, hello sent
+  env.bridge({ok: true});      // re-auth -> outbox flush
+  await env.settle();
+  assert.ok(shared.frames.find(f => f.type === 'result' && f.job_id === 'j1'),
+            'the wake-up race must not eat the answer');
+});

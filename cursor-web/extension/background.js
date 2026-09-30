@@ -10,21 +10,14 @@ const routes = new Map();
 function saveRoutes() { try { chrome.storage.session.set({zsRoutes: Object.fromEntries(routes)}); } catch {} }
 chrome.storage.session.get('zsRoutes').then(st => {
   for (const [k, v] of Object.entries(st.zsRoutes || {})) routes.set(k, v);
-  keepalive();
 }).catch(() => {});
-// While a job is in flight, keep the service worker alive with an extra
-// timer. A hidden dedicated tab (the user works in the foreground app) has
-// its CONTENT-script timers throttled, so the 30s alarm alone can let
-// Chrome kill this worker mid-task; the result message then races the
-// worker's wake-up and can be dropped (live report 2026-09-30).
-let keepaliveTimer = null;
-function keepalive() {
-  if (!keepaliveTimer && routes.size) {
-    keepaliveTimer = setInterval(() => {
-      if (!routes.size) { clearInterval(keepaliveTimer); keepaliveTimer = null; }
-    }, 20000);
-  }
-}
+// MV3 lifecycle, stated plainly: Chrome HARD-TERMINATES this worker after
+// 5 minutes, so any MCP task longer than that WILL cross a kill/restart.
+// That is now harmless: a finished answer is drop-proof (forwarded
+// unconditionally and outbox-buffered - see the 'result' handler below), and
+// the 30s 'connect' alarm keeps the worker alive between kills. (A bare
+// setInterval would NOT keep an MV3 worker alive - an earlier version relied
+// on one and it did nothing.)
 // Outbox: a result sent while the WS is down (bridge/exe restarting) would
 // otherwise be SILENTLY dropped, leaving the bridge job 'running' until its
 // deadline and making every resend fail with "Session busy". Results are the
@@ -88,7 +81,7 @@ async function connect() {
     if (msg.type !== 'dispatch') return;
     const s = sessions.get(msg.session_id);
     if (!s) {send({type:'result', job_id:msg.job_id, error:'Session unavailable; list sessions again'}); return;}
-    routes.set(msg.job_id, {tabId:s.tabId, sessionId:s.id}); saveRoutes(); keepalive();
+    routes.set(msg.job_id, {tabId:s.tabId, sessionId:s.id}); saveRoutes();
     try {
       const ack = await chrome.tabs.sendMessage(s.tabId, {...msg, expectedKey:s.key});
       if (!ack?.accepted) throw new Error(ack?.error || 'Page rejected task');
@@ -134,16 +127,28 @@ chrome.runtime.onMessage.addListener((msg, sender, reply) => {
     publish(); reply({ok:true});
   } else if (msg.type === 'result' && sender.tab) {
     const route = routes.get(msg.job_id);
-    // A lost route (service worker restarted before the persisted routes
-    // were restored, or any route anomaly) must NOT drop the result - a
-    // dropped result wedges the bridge job for up to 9 minutes. The bridge
-    // re-validates job ownership on receipt, so forwarding the matching
-    // session's result is always safe.
-    if (route && route.tabId === sender.tab.id && route.sessionId === msg.session_id) {
-      routes.delete(msg.job_id); saveRoutes(); send(msg);
-    } else if (!route && msg.session_id) {
-      const s = sessions.get(msg.session_id);
-      if (s && s.tabId === sender.tab.id) send(msg);
+    const matches = !!(route && route.tabId === sender.tab.id && route.sessionId === msg.session_id);
+    // Forward the result UNLESS there is POSITIVE evidence it comes from a
+    // tab that was NOT bound to this job (the route exists and points at a
+    // different tab/session - a wrong-tab spoof; the bridge cannot see tabs,
+    // so this check stays).
+    //
+    // Crucially, a MISSING route (no evidence either way) means FORWARD. The
+    // old code dropped a result whenever the route was missing or mismatched.
+    // That is exactly the MV3 wake-up race: Chrome hard-kills this service
+    // worker after 5 minutes (long MCP tasks run longer), and when the
+    // content script's finished answer wakes it back up, the persisted routes
+    // are restored ASYNC - the result frequently arrives BEFORE the restore,
+    // so the route is absent, the old code no-ops, and the answer is silently
+    // eaten. The answer then sits on the page while the bridge job stays
+    // 'running' up to 9 minutes and every resend fails 'busy' (live reports
+    // 2026-09-30). Forwarding on a missing route is always safe: the bridge
+    // re-validates ownership (job exists + belongs to this connection + still
+    // running) before applying, and the outbox below buffers the result if
+    // the WS is momentarily down during the restart.
+    if (!route || matches) {
+      if (route) { routes.delete(msg.job_id); saveRoutes(); }
+      send(msg);
     }
     reply({ok:true});
   }

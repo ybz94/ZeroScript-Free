@@ -450,3 +450,16 @@ git diff --check
   3. 旧测试"散文绝不作为成功回答"改写为新契约；"bad answer"夹具改为截断 JSON（保持严格路径测试）。
 - **测试**：+3（纯文本回答按最终回答交付；结果投递前 2 次被丢弃后第 3 次成功；纯散文端点 200 交付），2 处旧断言按新契约改写。
 - **版本号**：扩展 0.4.27→**0.4.28**（content.js + background.js 有改动；BUILD_ID 20260929.6→20260929.7），程序 0.4.30→**0.4.31**（构建 b20）。全量 **192** 项：111 Python + 81 JavaScript，0 失败。
+
+## 0.4.32 结果链路根治：两层"丢回答"断点全部修复（构建 b21，2026-09-30）
+
+- **背景**：用户反馈"b18（解决重复发送的版本）还能收到网页回复，之后再也没有成功收到过"。全链路审计（content.js → background.js → bridge.py → model_endpoint.py）发现回答送达链上有**两层真实的丢弃点**，都会造成"页面有回答、客户端收不到、任务假死占会话、重发全报 busy"：
+  1. **扩展端（background.js）结果转发竞态**：MV3 后台脚本有 5 分钟硬性存活上限（30s alarm 保活救不了长任务）；任务跑满 5 分钟被杀 → 内容脚本把结果 sendMessage 过去唤醒它 → 但它的持久化路由是**异步恢复**的，消息往往比恢复先到 → 旧逻辑"路由缺失/不匹配就丢弃" → **回答被静默吃掉**。
+  2. **bridge 端断连即判死**：后台脚本被杀时它到 bridge 的 WebSocket 断开 → 旧逻辑**立即把任务标记为 error**（Browser disconnected）→ 几秒后重连送达的回答被拒（任务已不是 running）→ 长任务跨过 5 分钟必丢回答。
+- **修复**：
+  1. background.js：结果**只要路由缺失或匹配就一律转发**（bridge 端二次校验所有权：任务存在 + 属于本连接 + 仍 running，匹配不上直接忽略、绝无害）；仅当路由**明确指向另一个标签页**（真正的错误 tab 伪造）才丢弃——保留原有防伪造能力。删除 b20 的无效保活（裸 setInterval 在 MV3 里保不住脚本）。
+  2. bridge.py：扩展连接断开时**不再判死任务**（页面还在跑）；扩展重连并上报**同一 session** 时**认领**该任务（按 session id 匹配，别的浏览器窗口偷不走）。真关死的兜底不变：540 秒清扫 + 手动取消（取消对孤儿任务立即生效）。
+- **测试**（全部经"回退旧代码必失败"验证）：
+  - background.test.cjs +2：无路由无会话的结果必转发；唤醒竞态（路由未恢复）下结果经 outbox 重连冲刷送达。
+  - test_bridge.py：`test_disconnect_marks_pending_error` 替换为 `test_disconnect_keeps_job_running_and_reconnect_delivers_answer`（断连不判死 → 重连认领 → 回答送达 → 200）+ `test_reconnect_does_not_adopt_a_foreign_pages_job`（别的页面偷不走任务）；`test_cancel_after_browser_disconnect_frees_the_job` 按新契约改写（断连后任务存活，取消立即释放）。
+- **版本号**：扩展 0.4.28→**0.4.29**（background.js 有改动；BUILD_ID 20260929.7→20260929.8），程序 0.4.31→**0.4.32**（构建 b21）。全量 **195** 项：112 Python + 83 JavaScript，0 失败。
