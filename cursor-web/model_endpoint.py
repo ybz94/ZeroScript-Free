@@ -32,7 +32,7 @@ MAX_CACHE = 128
 # page still running an OLDER extension (stale browser window from a previous
 # build) silently misbehaves - stale prompts, stranded composer, popup
 # failures - so the endpoint refuses it with an actionable 409.
-EXTENSION_BUILD_ID = '20260929.8'
+EXTENSION_BUILD_ID = '20260929.9'
 
 
 class AdapterError(Exception):

@@ -12,13 +12,13 @@
   // {type:'cancel', job_id} for the IN-FLIGHT job; the wait loop notices on
   // its next tick (~1s) and ends the task through the normal result path.
   let activeJob = null, cancelRequested = false;
-  const VERSION = '0.4.29';
+  const VERSION = '0.4.30';
   // Per-build stamp: a stale dedicated page running an OLDER extension is
   // otherwise invisible (the version gate only compares content script vs
   // providers, which travel in the same build). The endpoint expects its own
   // stamp; a mismatch (or no report at all) means the page still runs an old
   // extension and must be closed/reopened.
-  const BUILD_ID = '20260929.8';
+  const BUILD_ID = '20260929.9';
   const seen = new Set();
   // DOM events can wake the watcher even when background timers are throttled.
   // Keep a timer fallback for generation-state changes without DOM mutations.
@@ -265,6 +265,51 @@
         const result = P.readAssistant();
         fresh ||= P.assistantCount() > count || (beforeId != null && P.lastAssistantId?.() !== beforeId) ||
           (result.item !== before && result.reply !== beforeText);
+        // The site's post-reply follow-up prompt (Arena: "此任务成功了吗?"
+        // with 是/否/继续工作) is the site's own DEFINITIVE turn-ended
+        // signal: generation has stopped and no more answer tokens will
+        // arrive. When it is present, stop relying on the idle/growth
+        // heuristics - a non-idle post-reply UI or a re-rendering reply can
+        // keep those from ever settling and stall this wait to the 480s
+        // timeout (live report 2026-09-30: completed JSON answer + prompt
+        // visible on the page, the client saw nothing). Final sweep now:
+        // protocol JSON first, then the stable visible text as the final
+        // answer. The post-completion phase answers the prompt (是) and
+        // unblocks the page for the next task.
+        if (typeof P.followupPromptPresent === 'function' && P.followupPromptPresent()) {
+          let finalText = null;
+          if (msg.response_format === 'json_code_block' && rid) {
+            const b = findMarkerBlock(rid);
+            if (b) {
+              const t = markerBlockText(b).trim();
+              if (t.startsWith('{') && isProtocolObject(rid, t)) finalText = t;
+            }
+          }
+          if (finalText === null && fresh && msg.response_format === 'json_code_block') {
+            const x = ZSWebProtocol.read(result);
+            if (!x.error && isCompleteJson(x.text)) finalText = x.text;
+          }
+          if (finalText !== null) {
+            if (finalText !== last) { last = finalText; changed = Date.now(); }
+            text = finalText;
+            diagnostics.finalReason = 'turn_ended_prompt_json';
+            complete = true;
+            break;
+          }
+          const replyText = (result && result.reply) || '';
+          if (replyText.trim() && Date.now() - changed >= 4000) {
+            if (P.findContinueBtn?.()) throw new Error('Reply is truncated; continue on webpage before requesting another task');
+            if (P.turnHalted?.(result.item)) throw new Error('Webpage generation was stopped');
+            text = replyText;
+            diagnostics.finalReason = 'prose_no_protocol_json';
+            diagnostics.extraction = 'prose_fallback';
+            diagnostics.turnEndedPrompt = true;
+            complete = true;
+            break;
+          }
+          // Text not stable for 4s yet: the prompt proves the turn is over,
+          // so this covers a re-render settle - seconds, not minutes.
+        }
         if (!fresh) {
           // A visible site error (toast/alert) with no reply means the page
           // rejected the request; fail in seconds instead of blocking the

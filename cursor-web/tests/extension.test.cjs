@@ -38,6 +38,7 @@ function content(options = {}) {
     clearComposer:()=>{ if(editorContent){ editorContent=''; sweeps++; return true; } return false; },
     assistantCount:()=>options.staleReads?1:count, userCount:()=>options.brokenUserCount?1:userCountVar+(turnAt!==Infinity&&now>=turnAt?1:0),
     lastAssistant:()=>options.staleReads?old:item, lastAssistantId:()=>options.staleReads?'old':(item===old?'old':'new'),
+    followupPromptPresent:()=>options.followupPromptAt!==undefined && now>=options.followupPromptAt,
     clearFollowupPrompt:()=>{ if(options.followupPromptAt===undefined || now<options.followupPromptAt) return false; followupClicked=true; return true; },
     readAssistant:()=>({reply:options.staleReads?'old answer':text,item:options.staleReads?old:item}),
     errorText:()=>options.siteError || null,
@@ -602,4 +603,42 @@ test('result is retried when the service worker drops the first delivery attempt
   assert.equal(r.error, undefined);
   assert.equal(r.text, 'new answer');
   assert.equal(c.sent, 1);
+});
+
+// ── Turn-ended signal: the site's post-reply follow-up prompt ──────────────
+// Live report 2026-09-30: the completed JSON answer + the "此任务成功了吗?"
+// prompt sat on the page, but the idle/growth heuristics never settled (the
+// post-reply UI keeps the page non-idle), so the wait stalled to the 480s
+// timeout and Cursor saw nothing. The prompt itself is the definitive
+// turn-ended signal - the core finalizes on it.
+test('follow-up prompt (turn ended) delivers the answer even when the page never goes idle', async () => {
+  const json = '{"request_id":"r1","content":"ok","tool_calls":[]}';
+  const c = content({answer: json, generating: true, followupPromptAt: 10});  // never idle
+  c.dispatch({response_format: 'json_code_block'});
+  const r = await c.result();
+  assert.equal(r.error, undefined);
+  assert.equal(r.text, json);
+  assert.equal(r.diagnostics.finalReason, 'prose_no_protocol_json');
+  assert.equal(r.diagnostics.turnEndedPrompt, true);
+  assert.equal(c.followupClicked, true);  // page unblocked for the next task
+});
+test('follow-up prompt finalizes even when the provider never sees a fresh turn', async () => {
+  const c = content({staleReads: true, generating: true, followupPromptAt: 8});
+  c.dispatch({response_format: 'json_code_block'});
+  const r = await c.result();
+  assert.equal(r.error, undefined);
+  assert.equal(r.text, 'old answer');  // the stable visible reply text
+  assert.equal(r.diagnostics.finalReason, 'prose_no_protocol_json');
+  assert.equal(r.diagnostics.turnEndedPrompt, true);
+});
+test('follow-up prompt triggers the marker sweep and delivers the protocol JSON', async () => {
+  const rid = 'abcdef1234567890';
+  const json = '{"request_id":"' + rid + '","content":"ok","tool_calls":[]}';
+  const c = content({answer: 'the answer is in the block', markerBlocks: true, markerText: json,
+                     generating: true, followupPromptAt: 5});
+  c.dispatch({prompt: 'x "request_id":"' + rid + '" y', response_format: 'json_code_block'});
+  const r = await c.result();
+  assert.equal(r.error, undefined);
+  assert.equal(r.text, json);
+  assert.equal(r.diagnostics.finalReason, 'turn_ended_prompt_json');
 });

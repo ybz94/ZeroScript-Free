@@ -382,13 +382,16 @@ const ZSProvider = (() => {
   const findContinueBtn = () => null;
   const clickContinueBtn = () => false;
 
-  // Arena's post-reply follow-up prompt ("此任务成功了吗?" with 是 / 否 /
-  // 继续工作). Left open, it blocks the next send on the page. Our task's own
-  // reply has already been read and validated by the time this is called, so
-  // answering 是 (the task succeeded) is the correct close-out and keeps the
-  // page ready for the next task without any manual click. Returns true if a
-  // prompt was found and answered, false otherwise.
-  function clearFollowupPrompt() {
+  // The post-reply follow-up prompt ("此任务成功了吗?" with 是 / 否 /
+  // 继续工作). The "是" button inside the "成功了吗" container, or null when
+  // absent or hidden.
+  //
+  // Its PRESENCE is the site's own definitive TURN-ENDED signal: generation
+  // has stopped and no more answer tokens will arrive. The core uses it to
+  // finalize the task (live report 2026-09-30: a completed JSON answer +
+  // this prompt sat on the page while the idle/growth heuristics never
+  // settled and the client saw nothing for 8 minutes).
+  function followupYesButton() {
     try {
       const btns = [...document.querySelectorAll('button, [role="button"]')];
       for (const b of btns) {
@@ -397,15 +400,24 @@ const ZSProvider = (() => {
         for (let i = 0; i < 4 && node; i++) {
           const t = node.textContent || "";
           if (t.length < 800 && /成功了吗/.test(t)) {
-            if (b.offsetParent === null) return false; // hidden prompt: not actionable
-            b.click();
-            return true;
+            return b.offsetParent === null ? null : b;
           }
           node = node.parentElement;
         }
       }
     } catch {}
-    return false;
+    return null;
+  }
+  const followupPromptPresent = () => followupYesButton() !== null;
+  // Left open, the prompt blocks the next send on the page. Our task's own
+  // reply has already been read and validated by the time this is called, so
+  // answering 是 (the task succeeded) is the correct close-out and keeps the
+  // page ready for the next task without any manual click. Returns true if a
+  // prompt was found and answered, false otherwise.
+  function clearFollowupPrompt() {
+    const b = followupYesButton();
+    if (!b) return false;
+    try { b.click(); return true; } catch { return false; }
   }
 
   // Public composer wipe (used by the core's reply-wait sweep): while the
@@ -1148,7 +1160,7 @@ const ZSProvider = (() => {
 
   return {
     id: "arena",
-    version: "0.4.29",
+    version: "0.4.30",
     displayName: "Arena",
     // Arena's chat composer accepts image uploads (hidden `input[type=file]` in
     // the form → staged preview card → uploaded on send; see attachImages). The
@@ -1188,7 +1200,7 @@ const ZSProvider = (() => {
     setInputLock, typeAndSend, stopGeneration,
     isGenerating, isBusyNow, isHardGenerating,
     enforceComposer, ensureComposerReady, modeWarning, captchaPresent, overlayBlocking,
-    turnHalted, findContinueBtn, clickContinueBtn, clearFollowupPrompt,
+    turnHalted, findContinueBtn, clickContinueBtn, clearFollowupPrompt, followupPromptPresent,
     scanError, errorText, isTooLongMsg, isBusyMsg,
     // actions
     attachImages, clearAttachments, conversationKey,
