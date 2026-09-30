@@ -106,10 +106,11 @@ async def handle(ws):
                     if busy:
                         elapsed = int(time.time() - busy['created'])
                         result = {'error': (
-                            f"网页仍在回答上一个任务（{busy['job_id'][:8]}…，已运行 {elapsed} 秒；最长约 9 分钟）。"
-                            '网页 AI 连接 MCP、读文件的前几分钟通常没有可见输出——这是正常现象，不是卡死。'
-                            '请等它完成后再发送（打开专用页可直接查看进度）；若不想等，'
-                            '在程序窗口"任务日志"点"取消"终止它，然后立即重新发送')}
+                            f"网页仍在回答上一个任务（{busy['job_id'][:8]}…，已运行 {elapsed} 秒；最长约 9 分钟）——"
+                            '即你最近发送的那条消息正在网页上处理，MCP 长任务前几分钟没有可见输出属正常现象，不是卡死。'
+                            '若这是相同内容的重发：无需任何操作，程序会自动接管该任务的结果，回答会自动到达。'
+                            '若要发送不同的新内容：请等该任务完成（打开专用页可查看进度），'
+                            '或在程序窗口"任务日志"点"取消"终止它后再发送')}
                     else:
                         owner = next((w for w, sessions in clients.items()
                                       if any(s.get('id') == sid for s in sessions)), None)

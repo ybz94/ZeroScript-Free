@@ -745,7 +745,7 @@ def sse_completion(result):
 
 
 def create_app(api_key, session, rpc=bridge_rpc, poll_interval=1, heartbeat=10, fail_cooldown_s=90.0,
-               ack_timeout_s=10.0):
+               ack_timeout_s=10.0, visible_heartbeat_after_s=15.0):
     # `session` is either a plain session-id string (CLI: --session ID) or a
     # zero-argument callable returning the CURRENT id (desktop app: live rebind
     # from the control window without restarting the endpoint).
@@ -753,6 +753,11 @@ def create_app(api_key, session, rpc=bridge_rpc, poll_interval=1, heartbeat=10, 
         return session() if callable(session) else session
 
     cache = {}  # fingerprint -> (task, started_monotonic); exact payload retries share a task, including its failures
+    # job_id -> {'fingerprint', 'rid'}: lets an IDENTICAL retry adopt the
+    # original bridge job after the first task died in transit (harvest a
+    # completed answer, or wait for a still-running one) instead of
+    # re-executing a prompt the page already consumed.
+    job_meta = {}
 
     # Circuit breaker for the dedicated webpage. Live incident 2026-09-29: the
     # composer wedged with an unsent draft, the webpage kept (re)generating, and
@@ -770,11 +775,15 @@ def create_app(api_key, session, rpc=bridge_rpc, poll_interval=1, heartbeat=10, 
     FAIL_COOLDOWN_S = float(fail_cooldown_s)
     recent_failures = []  # monotonic timestamps of consecutive failed tasks
 
-    async def exchange(prompt):
+    async def exchange(prompt, fingerprint, rid):
         submitted = await rpc({'type': 'send', 'session_id': sid(), 'prompt': prompt, 'response_format': 'json_code_block'})
         if submitted.get('error') or not submitted.get('job_id'):
             raise AdapterError(submitted.get('error', 'Missing job_id'))
         jid = submitted['job_id']
+        job_meta[jid] = {'fingerprint': fingerprint, 'rid': rid}
+        if len(job_meta) > 200:  # bound it
+            for old in list(job_meta)[:-200]:
+                job_meta.pop(old, None)
         deadline = time.monotonic() + 510  # agent turns using the file MCP take minutes; ladder: extension 480s < endpoint 510s < bridge 540s
         started = time.monotonic()
         build_ok = False
@@ -837,13 +846,47 @@ def create_app(api_key, session, rpc=bridge_rpc, poll_interval=1, heartbeat=10, 
             exc.args = (str(exc) + suffix,)
             raise
 
-    async def complete(body, catalog, prompt, request_id):
+    async def recover_from_job(fingerprint, body, catalog, stored_exc):
+        """An IDENTICAL retry arriving after the original task died in
+        transit (transport blip, endpoint timeout while the page kept
+        working, ...): adopt the original bridge job. If the page already
+        produced the answer, harvest it; if it is still running, wait for
+        it. The prompt is NEVER re-executed a second time."""
+        entry = next(((jid, m) for jid, m in job_meta.items()
+                      if m['fingerprint'] == fingerprint), None)
+        if not entry:
+            raise stored_exc  # no known job: replay the stored failure
+        jid, meta = entry
+        deadline = time.monotonic() + 510
+        while time.monotonic() < deadline:
+            try:
+                job = await rpc({'type': 'get', 'job_id': jid})
+            except AdapterError:
+                await asyncio.sleep(max(poll_interval, 1.0))  # bridge blip: the job is safe, keep adopting
+                continue
+            if job.get('status') == 'completed':
+                try:
+                    return parse_with_diagnostics(job.get('result', ''), meta['rid'],
+                                                  body, catalog, job.get('diagnostics', {}))
+                except AdapterError:
+                    raise stored_exc  # the answer is still invalid: the original failure explains it
+            if job.get('status') == 'error' or job.get('error'):
+                raise AdapterError(f"Webpage task {jid} failed: {job.get('error', 'unknown failure')}")
+            if job.get('status') != 'running':
+                raise stored_exc
+            await asyncio.sleep(poll_interval)
+        raise AdapterError(
+            f'网页回答超时（510 秒，任务 {jid[:8]}）。打开专用页查看网页是否仍在回答——'
+            '等它答完再重新发送；不要立即重发（任务可能仍在网页上运行，重发会报"网页忙"；'
+            '若任务一直占着会话，约 30 秒后系统会自动释放它）', 504)
+
+    async def complete(body, catalog, prompt, request_id, fingerprint):
         try:
             listing = await rpc({'type': 'list'})
             bound = next((s for s in listing.get('sessions', []) if s.get('id') == sid()), None)
             if bound is None:
                 raise AdapterError('Bound webpage session unavailable. Re-list sessions and restart endpoint with an explicit session ID.', 409)
-            raw, diagnostics = await exchange(prompt)
+            raw, diagnostics = await exchange(prompt, fingerprint, request_id)
             try:
                 return parse_with_diagnostics(raw, request_id, body, catalog, diagnostics)
             except AdapterError as exc:
@@ -864,7 +907,7 @@ def create_app(api_key, session, rpc=bridge_rpc, poll_interval=1, heartbeat=10, 
                 if oversize:
                     raise AdapterError('检测到非法转义，但一次性修复会超出网页输入预算。未发送修复。' + oversize,
                                        413, 'web_repair_budget') from exc
-                corrected, corrected_diagnostics = await exchange(correction)
+                corrected, corrected_diagnostics = await exchange(correction, fingerprint, request_id)
                 try:
                     return parse_with_diagnostics(corrected, request_id, body, catalog, corrected_diagnostics)
                 except AdapterError as final:
@@ -937,23 +980,38 @@ def create_app(api_key, session, rpc=bridge_rpc, poll_interval=1, heartbeat=10, 
             'ZW_TOOL_DESC_MAX_UNITS', 'ZW_FILE_MCP_URL', 'ZW_FILE_MCP_ROOT')})
         fingerprint = hashlib.sha256((dumps(semantic) + env_sig).encode()).hexdigest()
         entry = cache.get(fingerprint)
+        task_started = time.monotonic()
         if entry is not None:
             task = entry[0]
+            task_started = entry[1]
             print(f'[{rid[:8]}] reusing existing task for identical request', flush=True)
+            if task.done() and task.exception() is not None:
+                # The original task died in transit. An IDENTICAL retry adopts
+                # its bridge job (harvest a finished answer / wait for a
+                # running one) instead of re-executing the prompt or replaying
+                # a stale error - this is what makes an impatient (or
+                # auto-)resend land the answer instead of failing.
+                stored = task.exception()
+                print(f'[{rid[:8]}] adopting the original job for an identical retry '
+                      f'(stored failure: {str(stored)[:120]})', flush=True)
+                task = asyncio.create_task(recover_from_job(fingerprint, body, catalog, stored))
+                task_started = time.monotonic()
+                cache[fingerprint] = (task, task_started)
         else:
             running = [(t, started) for t, started in cache.values() if not t.done()]
             if running:
                 oldest = min(running, key=lambda e: e[1])[1]
                 wait_s = int(time.monotonic() - oldest)
                 raise AdapterError(
-                    f'网页仍在回答上一个请求（已运行 {wait_s} 秒；一个任务最长约 8.5 分钟）。'
-                    '请等它回答完成后再发送——期间重发只会失败；打开专用页可直接查看回答进度。'
-                    '若不想等：在程序窗口"任务日志"点"取消"（或刷新专用页）可立即终止该任务', 409)
+                    f'网页仍在回答上一个请求（已运行 {wait_s} 秒；一个任务最长约 8.5 分钟）——同一页同时只能跑一个任务。'
+                    '若你发的是与上一个相同的内容：无需任何操作，回答会自动到达。'
+                    '若这是不同的新内容：请等上一个任务完成（打开专用页可查看进度），'
+                    '或在程序窗口"任务日志"点"取消"终止它后再发送', 409)
             if len(cache) >= MAX_CACHE:
                 raise AdapterError('Request cache full; finish the session before restarting the endpoint', 503)
             start = time.monotonic()
             print(f'[{rid[:8]}] task started on dedicated webpage (prompt {len(prompt)} chars, {prompt.count(chr(10)) + 1} lines)', flush=True)
-            task = asyncio.create_task(complete(body, catalog, prompt, rid))
+            task = asyncio.create_task(complete(body, catalog, prompt, rid, fingerprint))
 
             def _task_done(t, _tag=rid[:8], _start=start, _key=fingerprint):
                 # Suppression via .exception() also feeds the console log.
@@ -984,9 +1042,25 @@ def create_app(api_key, session, rpc=bridge_rpc, poll_interval=1, heartbeat=10, 
             async def stream():
                 yield ': waiting for webpage; no generated tokens yet\n\n'
                 try:
+                    status_sent = False
                     while not task.done():
                         done, _ = await asyncio.wait({task}, timeout=heartbeat)
                         if not done:
+                            if (not status_sent and visible_heartbeat_after_s
+                                    and time.monotonic() - task_started >= visible_heartbeat_after_s):
+                                # The only channel a streaming client has to see a long
+                                # (MCP) task is ALIVE: a visible progress line. Without
+                                # it the user sees nothing for 1-5 minutes, resends,
+                                # and dead-ends on "webpage busy".
+                                base = {'id': 'chatcmpl-progress', 'created': int(time.time()),
+                                        'model': MODEL, 'object': 'chat.completion.chunk'}
+                                yield 'data: ' + dumps({**base, 'choices': [{'index': 0,
+                                    'delta': {'content':
+                                        '⏳ 任务正在专用网页上执行（MCP 长任务的前几分钟没有可见输出——属正常现象，不是卡死）。'
+                                        '若不想等：在程序窗口"任务日志"点"取消"可立即终止。'
+                                        '若你重发了相同内容：无需任何操作，本次回复会自动接管该任务的结果。\n\n'},
+                                    'finish_reason': None}]}) + '\n\n'
+                                status_sent = True
                             yield ': waiting for webpage\n\n'
                     result = task.result()
                     for event in sse_completion(result):

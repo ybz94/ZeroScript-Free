@@ -46,10 +46,16 @@ class FakeWeb:
         # the current build (healthy page); set to a value to simulate a
         # stale build, or None to simulate an extension older than the ack.
         self.build = endpoint.EXTENSION_BUILD_ID
+        # Next N 'get' RPCs raise (simulates transient bridge blips that used
+        # to orphan a running job).
+        self.blip_gets = 0
 
     async def __call__(self, payload):
         if payload['type'] == 'list':
             return {'sessions': [{'id': 'bound-page', 'provider': self.provider}]}
+        if payload['type'] == 'get' and self.blip_gets:
+            self.blip_gets -= 1
+            raise endpoint.AdapterError('Bridge unavailable (TimeoutError). Delivery may be uncertain; do not resubmit automatically.')
         if payload['type'] == 'send':
             if self.send_error:
                 return {'error': self.send_error}
@@ -366,6 +372,70 @@ class EndpointTests(unittest.IsolatedAsyncioTestCase):
         finally:
             self.web.waiting = False
             await first
+
+    async def test_stream_shows_visible_progress_line_while_waiting(self):
+        # MCP long tasks produce no visible output for 1-5 minutes; without a
+        # signal the user resends within ~30s and dead-ends on "webpage
+        # busy". The stream must show a visible progress line.
+        self.app = endpoint.create_app('local-test-key', 'bound-page', self.web,
+                                       poll_interval=.001, heartbeat=.005,
+                                       visible_heartbeat_after_s=0.03)
+        self.life = self.app.router.lifespan_context(self.app)
+        await self.life.__aenter__()
+        self.client = httpx.AsyncClient(transport=httpx.ASGITransport(app=self.app),
+                                        base_url='http://local', headers=HEADERS)
+        try:
+            self.web.waiting = True
+            first = asyncio.create_task(self.post(stream=True))
+            await asyncio.sleep(0.08)  # let the visible heartbeat fire
+            self.web.waiting = False
+            r = await asyncio.wait_for(first, 5)
+            self.assertEqual(r.status_code, 200, r.text)
+            data = [line[6:] for line in r.text.splitlines() if line.startswith('data: ')]
+            self.assertGreaterEqual(len(data), 3)
+            self.assertIn('专用网页', json.loads(data[0])['choices'][0]['delta']['content'])
+            self.assertEqual(json.loads(data[1])['choices'][0]['delta']['content'], '网页回答')
+            self.assertEqual(data[-1], '[DONE]')
+            self.assertEqual(len(self.web.sent), 1)
+        finally:
+            self.web.waiting = False
+            await self.client.aclose()
+            await self.life.__aexit__(None, None, None)
+
+    async def test_identical_retry_after_bridge_blip_adopts_running_job(self):
+        # The first task dies on a bridge blip while the page job KEEPS
+        # running; the IDENTICAL retry must adopt the running job (the answer
+        # arrives, the prompt is sent once) - not replay the blip error and
+        # not re-execute the prompt on the page.
+        self.web.waiting = True
+        self.web.blip_gets = 10
+        first = asyncio.create_task(self.post())
+        r1 = await asyncio.wait_for(first, 5)
+        self.assertEqual(r1.status_code, 502, r1.text)
+        self.assertIn('与 Bridge 的连接反复中断', r1.text)
+        self.assertEqual(len(self.web.sent), 1)
+        second = asyncio.create_task(self.post())  # identical retry
+        await asyncio.sleep(0.05)  # adoption is polling the still-running job
+        self.web.waiting = False   # the job now completes
+        r2 = await asyncio.wait_for(second, 5)
+        self.assertEqual(r2.status_code, 200, r2.text)
+        self.assertEqual(r2.json()['choices'][0]['message']['content'], '网页回答')
+        self.assertEqual(len(self.web.sent), 1)  # prompt NOT re-sent
+
+    async def test_identical_retry_harvests_already_completed_job(self):
+        # The first task died in transit, but the page job COMPLETED while the
+        # endpoint was blind: the identical retry harvests the finished
+        # answer instead of re-executing the prompt.
+        self.web.waiting = True
+        self.web.blip_gets = 10
+        first = asyncio.create_task(self.post())
+        r1 = await asyncio.wait_for(first, 5)
+        self.assertEqual(r1.status_code, 502, r1.text)
+        self.web.waiting = False  # the job completed in the blind window
+        r2 = await self.post()
+        self.assertEqual(r2.status_code, 200, r2.text)
+        self.assertEqual(r2.json()['choices'][0]['message']['content'], '网页回答')
+        self.assertEqual(len(self.web.sent), 1)
 
     async def test_invalid_inputs_never_reach_webpage(self):
         cases = [
