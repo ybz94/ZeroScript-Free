@@ -397,9 +397,13 @@ const ZSProvider = (() => {
       for (const b of btns) {
         if ((b.textContent || "").trim() !== "是") continue;
         let node = b;
-        for (let i = 0; i < 4 && node; i++) {
+        // Generous ancestor window (6 levels / 1500 chars): the prompt
+        // container's exact depth and caption length are not stable across
+        // site re-skins - a missed probe here used to stall a FINISHED task
+        // to the 480s timeout (live 2026-09-30).
+        for (let i = 0; i < 6 && node; i++) {
           const t = node.textContent || "";
-          if (t.length < 800 && /成功了吗/.test(t)) {
+          if (t.length < 1500 && /成功了吗/.test(t)) {
             return b.offsetParent === null ? null : b;
           }
           node = node.parentElement;
@@ -1160,7 +1164,7 @@ const ZSProvider = (() => {
 
   return {
     id: "arena",
-    version: "0.4.30",
+    version: "0.4.31",
     displayName: "Arena",
     // Arena's chat composer accepts image uploads (hidden `input[type=file]` in
     // the form → staged preview card → uploaded on send; see attachImages). The

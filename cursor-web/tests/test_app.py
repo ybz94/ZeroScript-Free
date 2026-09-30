@@ -33,8 +33,8 @@ async def fake_extension():
         while True:
             sess = [{"id": SESSION_ID, "key": "/c/1", "provider": "deepseek",
                      "title": "Test", "url": "https://chat.deepseek.com/c/1",
-                     "visible": True, "busy": False, "transportVersion": "0.4.30",
-                     "providerVersion": "0.4.30", "inSync": True, "inputMaxChars": 160000}]
+                     "visible": True, "busy": False, "transportVersion": "0.4.31",
+                     "providerVersion": "0.4.31", "inSync": True, "inputMaxChars": 160000}]
             await ws.send(json.dumps({"type": "sessions", "sessions": sess}))
             try:
                 msg = json.loads(await asyncio.wait_for(ws.recv(), 1.0))

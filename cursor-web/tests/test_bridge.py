@@ -335,3 +335,15 @@ class BridgeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(job['status'], 'running')
         dispatched = json.loads(await browser.recv())
         self.assertEqual(dispatched['prompt'], prompt)
+
+    async def test_progress_updates_live_diagnostics(self):
+        # The content script reports its state every ~20s; the task log in
+        # the control window shows it for RUNNING jobs (stalls become
+        # diagnosable from the user's side, 2026-09-30).
+        browser, cursor, job = await self.submit()
+        await browser.send(json.dumps({'type': 'progress', 'job_id': job['job_id'],
+                                       'diagnostics': {'phase': 'waiting_new_reply', 'waitingS': 21, 'hidden': True}}))
+        await asyncio.sleep(0.02)
+        got = await self.request(cursor, type='get', job_id=job['job_id'])
+        self.assertEqual(got['status'], 'running')
+        self.assertEqual(got['diagnostics'], {'phase': 'waiting_new_reply', 'waitingS': 21, 'hidden': True})

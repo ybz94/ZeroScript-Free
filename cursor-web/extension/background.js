@@ -125,6 +125,11 @@ chrome.runtime.onMessage.addListener((msg, sender, reply) => {
     }
     sessions.set(msg.id, {...msg, type:undefined, tabId:sender.tab.id, seen:Date.now()});
     publish(); reply({ok:true});
+  } else if (msg.type === 'progress' && sender.tab) {
+    // Live task diagnostics (fire-and-forget; the bridge validates ownership
+    // and only stores it while the job is running - never buffered).
+    send(msg);
+    reply({ok:true});
   } else if (msg.type === 'result' && sender.tab) {
     const route = routes.get(msg.job_id);
     const matches = !!(route && route.tabId === sender.tab.id && route.sessionId === msg.session_id);

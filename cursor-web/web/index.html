@@ -406,6 +406,20 @@ function render(s){
     toast('已绑定'); refresh();
   });
 
+  // Live diagnostics line for a RUNNING job (the content script reports its
+  // state every ~20s): makes a stall readable from the control window
+  // instead of requiring DevTools (2026-09-30).
+  const diagLine = (d) => {
+    if (!d || typeof d !== 'object') return '';
+    const p = [];
+    if (d.phase) p.push('阶段 ' + esc(String(d.phase)));
+    if (d.waitingS != null) p.push('已等 ' + d.waitingS + 's');
+    if (d.hidden) p.push('专用页在后台');
+    if (d.replyLen != null) p.push('回复 ' + d.replyLen + ' 字');
+    if (d.promptVisible !== null && d.promptVisible !== undefined) p.push(d.promptVisible ? '结束弹窗:有' : '结束弹窗:无');
+    if (d.extraction) p.push('提取 ' + esc(String(d.extraction)));
+    return p.slice(0, 5).join(' · ');
+  };
   $('jobs').innerHTML = s.jobs.length? [...s.jobs].reverse().slice(0,12).map(j => {
     const st = j.status==='completed'?'<span class="badge ok">完成</span>'
              : j.status==='error'?'<span class="badge bad">失败</span>'
@@ -414,8 +428,9 @@ function render(s){
     const cancelBtn = j.status==='running'
       ? `<button class="danger mini" data-cancel="${esc(j.job_id)}" title="终止该任务（网页上的任务会被取消）">取消</button>`
       : '';
+    const diag = j.status==='running' ? `<span class="s-meta">${diagLine(j.diagnostics) || '等待首次状态上报…'}</span>` : '';
     return `<div class="job"><span class="jid">${esc(j.job_id).slice(0,8)}</span>${st}
-      <span class="s-meta">${age}s 前</span>${cancelBtn}${j.error?`<span class="err">${esc(String(j.error).slice(0,160))}</span>`:''}</div>`;
+      <span class="s-meta">${age}s 前</span>${cancelBtn}${diag}${j.error?`<span class="err">${esc(String(j.error).slice(0,160))}</span>`:''}</div>`;
   }).join('') : '<div class="s-meta">暂无任务</div>';
   document.querySelectorAll('[data-cancel]').forEach(b => b.onclick = async () => {
     if (!confirm('终止这个进行中的任务？\n（网页上的任务会被取消；已写入的内容不受影响）')) return;

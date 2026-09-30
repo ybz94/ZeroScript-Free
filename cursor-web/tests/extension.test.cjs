@@ -22,6 +22,7 @@ function content(options = {}) {
     querySelector: s => (s === 'code' ? {textContent: markerText} : null),
   };
   const document = {hidden:!!options.hidden, title:'Chat', addEventListener(){},
+    body: {innerText: options.pageText || '', textContent: options.pageText || ''},
     querySelectorAll: sel => (options.markerBlocks && sel && sel.indexOf('pre') !== -1) ? [markerBlock] : []};
   const provider = {
     id:options.provider || 'mock',
@@ -641,4 +642,29 @@ test('follow-up prompt triggers the marker sweep and delivers the protocol JSON'
   assert.equal(r.error, undefined);
   assert.equal(r.text, json);
   assert.equal(r.diagnostics.finalReason, 'turn_ended_prompt_json');
+});
+
+// ── Last-resort whole-page sweep ────────────────────────────────────────────
+test('whole-page sweep recovers a complete protocol JSON the provider and marker both missed', async () => {
+  // The reply block's DOM matches neither the provider's turn filter nor the
+  // pre/code markers, and no turn-ended probe exists: the complete answer
+  // still sits in the rendered page text and must be recovered from there.
+  const rid = 'fedcba9876543210';
+  const json = '{"request_id":"' + rid + '","content":"ok","tool_calls":[]}';
+  const c = content({answer: 'visible prose without the block', generating: true,
+                     pageText: 'chat text ... ' + json + ' ... trailing'});
+  c.dispatch({prompt: 'x "request_id":"' + rid + '" y', response_format: 'json_code_block'});
+  const r = await c.result();
+  assert.equal(r.error, undefined);
+  assert.equal(r.text, json);
+  assert.equal(r.diagnostics.finalReason, 'page_text_sweep');
+});
+test('whole-page sweep never mis-delivers the user prompt envelope (same id, different keys)', async () => {
+  const rid = '1234abcd5678ef90';
+  const env = '{"request_id":"' + rid + '","messages":[{"role":"user","content":"hi"}],"tools":[],"tool_choice":"auto"}';
+  const c = content({answer: 'still working, no answer yet', generating: true, pageText: env});
+  c.dispatch({prompt: 'x "request_id":"' + rid + '" y', response_format: 'json_code_block'});
+  const r = await c.result();
+  assert.match(r.error, /等待网页回答超时/);  // timed out: the envelope was NOT mis-delivered
+  assert.equal(c.sent, 1);
 });

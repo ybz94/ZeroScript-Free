@@ -76,6 +76,16 @@ async def handle(ws):
                     job = jobs.get(msg.get('job_id'))
                     if job and msg.get('build'):
                         job['build'] = msg['build']
+                elif kind == 'progress':
+                    # Live task diagnostics from the content script (phase,
+                    # wait age, hidden state, reply length, turn-ended prompt
+                    # state): the control window's task log shows WHERE a
+                    # running task is, so a stall is diagnosable from the
+                    # user's side without DevTools (2026-09-30 reports).
+                    job = jobs.get(msg.get('job_id'))
+                    if (job and job['owner'] == ws and job['status'] == 'running'
+                            and isinstance(msg.get('diagnostics'), dict)):
+                        job['diagnostics'] = msg['diagnostics']
                 elif kind == 'result':
                     job = jobs.get(msg.get('job_id'))
                     if job and job['owner'] == ws and job['status'] == 'running':

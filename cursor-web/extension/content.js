@@ -12,13 +12,13 @@
   // {type:'cancel', job_id} for the IN-FLIGHT job; the wait loop notices on
   // its next tick (~1s) and ends the task through the normal result path.
   let activeJob = null, cancelRequested = false;
-  const VERSION = '0.4.30';
+  const VERSION = '0.4.31';
   // Per-build stamp: a stale dedicated page running an OLDER extension is
   // otherwise invisible (the version gate only compares content script vs
   // providers, which travel in the same build). The endpoint expects its own
   // stamp; a mismatch (or no report at all) means the page still runs an old
   // extension and must be closed/reopened.
-  const BUILD_ID = '20260929.9';
+  const BUILD_ID = '20260929.10';
   const seen = new Set();
   // DOM events can wake the watcher even when background timers are throttled.
   // Keep a timer fallback for generation-state changes without DOM mutations.
@@ -75,6 +75,49 @@
       return !!v && typeof v === 'object' && v.request_id === rid &&
         Object.keys(v).sort().join(',') === 'content,request_id,tool_calls';
     } catch { return false; }
+  }
+  // Last-resort whole-page sweep (live 2026-09-30): the site's DOM for the
+  // reply block can match neither the provider's turn filter nor the
+  // pre/code marker selectors, leaving a COMPLETE answer on the page that
+  // nothing reads. The protocol object of THIS send is the only object in
+  // the page text carrying our request_id with exactly the protocol keys -
+  // the user's own prompt envelope carries the same id but different keys
+  // (request_id, messages, tools, tool_choice), so it can never be
+  // mis-delivered. Works regardless of how the page renders the reply.
+  function findProtocolInPageText(rid) {
+    if (!rid) return null;
+    let hay = '';
+    try {
+      const b = document.body;
+      if (!b) return null;
+      hay = b.innerText || b.textContent || '';
+    } catch { return null; }
+    const marker = '"request_id":"' + rid + '"';
+    let from = 0;
+    while (true) {
+      const i = hay.indexOf(marker, from);
+      if (i < 0) return null;
+      from = i + marker.length;
+      let s = -1;
+      for (let k = i; k >= 0 && i - k < 4000; k--) if (hay[k] === '{') { s = k; break; }
+      if (s < 0) continue;
+      let depth = 0, inStr = false, esc = false, end = -1;
+      for (let k = s; k < hay.length && k - s < 300000; k++) {
+        const ch = hay[k];
+        if (inStr) {
+          if (esc) esc = false;
+          else if (ch === '\\') esc = true;
+          else if (ch === '"') inStr = false;
+          continue;
+        }
+        if (ch === '"') inStr = true;
+        else if (ch === '{') depth++;
+        else if (ch === '}') { depth--; if (depth === 0) { end = k; break; } }
+      }
+      if (end < 0) continue;
+      const raw = hay.slice(s, end + 1);
+      if (isProtocolObject(rid, raw)) return raw;
+    }
   }
   const notify = data => chrome.runtime.sendMessage(data).catch(() => {});
   // The RESULT is the one message that must never be silently lost. A hidden
@@ -214,8 +257,9 @@
       const ridMatch = msg.prompt.match(/"request_id":"([0-9a-fA-F]{6,})"/);
       const rid = ridMatch ? ridMatch[1] : null;
       const deadline = Date.now() + 480000;  // 8 min: agent turns that use the file MCP take minutes
+      const diagStart = Date.now();
       let last = '', changed = Date.now(), idleSince = null, fresh = false, complete = false;
-      let errorSince = null, lastReadAt = 0, fbLogged = false, proseSince = null;
+      let errorSince = null, lastReadAt = 0, fbLogged = false, proseSince = null, sweepAt = 0, progressAt = 0;
       while (Date.now() < deadline) {
         await waitForChange();
         if (cancelRequested) {
@@ -309,6 +353,42 @@
           }
           // Text not stable for 4s yet: the prompt proves the turn is over,
           // so this covers a re-render settle - seconds, not minutes.
+        }
+        // Last-resort whole-page sweep - INDEPENDENT of the popup probe and
+        // the provider's reply reading. If the reply text has been stable
+        // for 4s (nothing is streaming) and a full protocol object for THIS
+        // send is sitting anywhere in the rendered page, deliver it. This
+        // closes the "complete JSON answer on the page, client sees nothing"
+        // case no matter which DOM layer failed to surface it (live
+        // 2026-09-30, twice). At most one scan per 5s (innerText is
+        // layout-forcing on a big page).
+        if (msg.response_format === 'json_code_block' && Date.now() - changed > 4000 &&
+            Date.now() - sweepAt >= 5000) {
+          sweepAt = Date.now();
+          const t = findProtocolInPageText(rid);
+          if (t) {
+            if (t !== last) { last = t; changed = Date.now(); }
+            text = t;
+            diagnostics.finalReason = 'page_text_sweep';
+            diagnostics.extraction = 'page_text_sweep';
+            console.log('[zs] reply not visible to provider/marker - recovered by whole-page sweep');
+            complete = true;
+            break;
+          }
+        }
+        // Live progress: the task log (control window) shows WHERE the task
+        // is while it runs, so a stall is readable without DevTools (the
+        // 2026-09-30 reports were undiagnosable from the user's side).
+        if (Date.now() - progressAt >= 20000) {
+          progressAt = Date.now();
+          void notify({type:'progress', job_id:msg.job_id, session_id:sessionId,
+            diagnostics:{phase:diagnostics.phase,
+              waitingS:Math.round((Date.now() - diagStart) / 1000),
+              hidden:document.hidden,
+              replyLen:(result.reply || '').length,
+              promptVisible:typeof P.followupPromptPresent === 'function' ? P.followupPromptPresent() : null,
+              extraction:diagnostics.extraction || null,
+              version:VERSION, build:BUILD_ID}});
         }
         if (!fresh) {
           // A visible site error (toast/alert) with no reply means the page
