@@ -14,6 +14,7 @@ function content(options = {}) {
   let listener, now = 0, sent = 0, old = {}, item = old, text = 'old answer', count = 1, key = '/c/1';
   let editorContent = options.draft || '', userCountVar = 1, turnAt = Infinity; // fake-time when OUR user turn becomes visible
   let followupClicked = false, lastPrompt = '', sweeps = 0, draftRestored = false;
+  let dropLeft = options.dropFirstResults || 0; // simulate SW restarts dropping result deliveries
   const markerText = options.markerText || '';
   const markerBlock = { // fake fenced code block for the 0.4.16 marker fallback
     textContent: markerText,
@@ -59,7 +60,7 @@ function content(options = {}) {
   vm.runInNewContext(fs.readFileSync(path.join(root,'content.js'),'utf8'), {
     ZSProvider:provider, ZSWebProtocol:{read:()=>options.protocol || {text:'',source:'code_block_unavailable',error:'Protocol code block missing'}}, crypto:{randomUUID}, document, location:{href:'https://site/c/1'},
     navigator:{language:options.language||'en-US', languages:[options.language||'en-US']},
-    chrome:{runtime:{sendMessage:async msg=>{messages.push(msg);},onMessage:{addListener:fn=>listener=fn}}},
+    chrome:{runtime:{sendMessage:async msg=>{ if(msg.type==='result' && dropLeft>0){dropLeft--; throw new Error('Receiving end does not exist');} messages.push(msg);},onMessage:{addListener:fn=>listener=fn}}},
     MutationObserver:class {observe(){} disconnect(){}}, clearTimeout(){},
     Date:{now:()=>now}, setInterval:fn=>intervals.push(fn),
     setTimeout:(fn, ms)=>{now+=ms;setImmediate(fn);}
@@ -409,11 +410,17 @@ test('site error is ignored once a real reply has started',async()=>{
   assert.equal(r.error,undefined);
   assert.equal(r.text,'new answer');
 });
-test('model protocol never returns missing code block as successful prose',async()=>{
+test('model protocol delivers a settled prose reply as the final answer (not a 480s black hole)',async()=>{
+  // b20: a reply that settles WITHOUT a protocol JSON block (the webpage AI
+  // answered in prose) is delivered after a short grace as the final answer
+  // - the old "never return prose" rule dead-ended the task for 480s while
+  // the visible answer never reached the client (live report 2026-09-30).
   const c=content({answer:'plain reply'});c.dispatch({response_format:'json_code_block'});
-  const r=await c.result();assert.match(r.error,/code block missing/);
-  assert.equal(r.diagnostics.extraction,'code_block_unavailable');
-  assert.equal(r.diagnostics.extraction_detail,'');
+  const r=await c.result();
+  assert.equal(r.error,undefined);
+  assert.equal(r.text,'plain reply');
+  assert.equal(r.diagnostics.finalReason,'prose_no_protocol_json');
+  assert.equal(r.diagnostics.extraction,'prose_fallback');
 });
 
 // ── arena.js composer writer (fake DOM: the 0.4.11 chunked-insert fix) ──────
@@ -568,5 +575,31 @@ test('cancel during the pre-send confirmation loop ends the task fast too', asyn
   const r = await c.result();
   assert.match(r.error, /任务被取消/);
   assert.equal(r.diagnostics.phase, 'confirming_send');
+  assert.equal(c.sent, 1);
+});
+
+test('prose reply (no protocol JSON block) is delivered as the final answer, not lost to a 480s wait', async () => {
+  // Live report 2026-09-30: the webpage AI answered in plain text (e.g. an
+  // MCP failure explanation) - the content sits on the page but the strict
+  // protocol wait used to dead-end for 480s. After the grace it must be
+  // delivered as the final answer.
+  const c = content({answer: 'MCP 服务暂时无法连接，先说明现状（纯文本，无 JSON 协议块）'});
+  c.dispatch({response_format: 'json_code_block'});
+  const r = await c.result();
+  assert.equal(r.error, undefined);
+  assert.equal(r.text, 'MCP 服务暂时无法连接，先说明现状（纯文本，无 JSON 协议块）');
+  assert.equal(r.diagnostics.finalReason, 'prose_no_protocol_json');
+  assert.equal(r.diagnostics.extraction, 'prose_fallback');
+  assert.equal(c.sent, 1);
+});
+test('result is retried when the service worker drops the first delivery attempt(s)', async () => {
+  // A hidden dedicated tab throttles the content timers; the MV3 service
+  // worker can be killed mid-task and a one-shot sendMessage is dropped -
+  // the answer would sit on the page while the bridge job stays "running".
+  const c = content({dropFirstResults: 2});
+  c.dispatch();
+  const r = await c.result();  // arrives on the third attempt (backoff)
+  assert.equal(r.error, undefined);
+  assert.equal(r.text, 'new answer');
   assert.equal(c.sent, 1);
 });

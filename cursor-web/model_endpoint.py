@@ -32,7 +32,7 @@ MAX_CACHE = 128
 # page still running an OLDER extension (stale browser window from a previous
 # build) silently misbehaves - stale prompts, stranded composer, popup
 # failures - so the endpoint refuses it with an actionable 409.
-EXTENSION_BUILD_ID = '20260929.6'
+EXTENSION_BUILD_ID = '20260929.7'
 
 
 class AdapterError(Exception):
@@ -667,6 +667,19 @@ def parse_answer(text, request_id, body, catalog):
     fence = re.fullmatch(r'```(?:json)?[ \t]*\r?\n(.*)\r?\n```', text, flags=re.DOTALL | re.IGNORECASE)
     if fence:
         text = fence.group(1).strip()
+    elif not (text.startswith('{') or text.startswith('[')):
+        # A settled PROSE answer (the webpage AI did not emit the protocol
+        # JSON block - no tool call is possible in that case, e.g. it
+        # explains an MCP connection problem in plain text): deliver the
+        # prose as a plain final answer instead of failing the request, so
+        # content the user can see on the page also reaches the client
+        # (live report 2026-09-30). JSON-like text (starts with {/[ or a
+        # json fence) is still held to the strict protocol below - a
+        # truncated/corrupted JSON is never mis-delivered as prose.
+        message = {'role': 'assistant', 'content': text}
+        return {'id': 'chatcmpl-' + uuid.uuid4().hex, 'object': 'chat.completion',
+                'created': int(time.time()), 'model': MODEL,
+                'choices': [{'index': 0, 'message': message, 'finish_reason': 'stop'}]}
     value = decode_output_json(text, 'output')
     if not isinstance(value, dict) or set(value) != {'request_id', 'content', 'tool_calls'}:
         raise output_error('web_envelope', 'Expected exactly request_id, content and tool_calls at the top level.')

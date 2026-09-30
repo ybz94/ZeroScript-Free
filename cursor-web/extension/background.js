@@ -10,7 +10,21 @@ const routes = new Map();
 function saveRoutes() { try { chrome.storage.session.set({zsRoutes: Object.fromEntries(routes)}); } catch {} }
 chrome.storage.session.get('zsRoutes').then(st => {
   for (const [k, v] of Object.entries(st.zsRoutes || {})) routes.set(k, v);
+  keepalive();
 }).catch(() => {});
+// While a job is in flight, keep the service worker alive with an extra
+// timer. A hidden dedicated tab (the user works in the foreground app) has
+// its CONTENT-script timers throttled, so the 30s alarm alone can let
+// Chrome kill this worker mid-task; the result message then races the
+// worker's wake-up and can be dropped (live report 2026-09-30).
+let keepaliveTimer = null;
+function keepalive() {
+  if (!keepaliveTimer && routes.size) {
+    keepaliveTimer = setInterval(() => {
+      if (!routes.size) { clearInterval(keepaliveTimer); keepaliveTimer = null; }
+    }, 20000);
+  }
+}
 // Outbox: a result sent while the WS is down (bridge/exe restarting) would
 // otherwise be SILENTLY dropped, leaving the bridge job 'running' until its
 // deadline and making every resend fail with "Session busy". Results are the
@@ -74,7 +88,7 @@ async function connect() {
     if (msg.type !== 'dispatch') return;
     const s = sessions.get(msg.session_id);
     if (!s) {send({type:'result', job_id:msg.job_id, error:'Session unavailable; list sessions again'}); return;}
-    routes.set(msg.job_id, {tabId:s.tabId, sessionId:s.id}); saveRoutes();
+    routes.set(msg.job_id, {tabId:s.tabId, sessionId:s.id}); saveRoutes(); keepalive();
     try {
       const ack = await chrome.tabs.sendMessage(s.tabId, {...msg, expectedKey:s.key});
       if (!ack?.accepted) throw new Error(ack?.error || 'Page rejected task');

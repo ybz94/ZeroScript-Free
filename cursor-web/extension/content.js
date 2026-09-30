@@ -12,13 +12,13 @@
   // {type:'cancel', job_id} for the IN-FLIGHT job; the wait loop notices on
   // its next tick (~1s) and ends the task through the normal result path.
   let activeJob = null, cancelRequested = false;
-  const VERSION = '0.4.27';
+  const VERSION = '0.4.28';
   // Per-build stamp: a stale dedicated page running an OLDER extension is
   // otherwise invisible (the version gate only compares content script vs
   // providers, which travel in the same build). The endpoint expects its own
   // stamp; a mismatch (or no report at all) means the page still runs an old
   // extension and must be closed/reopened.
-  const BUILD_ID = '20260929.6';
+  const BUILD_ID = '20260929.7';
   const seen = new Set();
   // DOM events can wake the watcher even when background timers are throttled.
   // Keep a timer fallback for generation-state changes without DOM mutations.
@@ -77,6 +77,19 @@
     } catch { return false; }
   }
   const notify = data => chrome.runtime.sendMessage(data).catch(() => {});
+  // The RESULT is the one message that must never be silently lost. A hidden
+  // dedicated tab (the user works in the foreground app) has its timers
+  // throttled, so the MV3 service worker can be KILLED while the task runs;
+  // a one-shot sendMessage during that window is dropped - the answer then
+  // sits on the page while the bridge job stays "running" for up to 9
+  // minutes and every resend fails with "网页忙" (live report 2026-09-30).
+  // Retry with backoff until the worker is reachable again.
+  async function notifyCritical(data) {
+    for (let i = 0; i < 20; i++) {
+      try { await chrome.runtime.sendMessage(data); return; } catch {}
+      await new Promise(r => setTimeout(r, 1000 + Math.min(i, 6) * 1000));
+    }
+  }
   function announce() {
     const current = P.conversationKey();
     // A deliberate navigation invalidates binding. Initial chat creation during
@@ -202,7 +215,7 @@
       const rid = ridMatch ? ridMatch[1] : null;
       const deadline = Date.now() + 480000;  // 8 min: agent turns that use the file MCP take minutes
       let last = '', changed = Date.now(), idleSince = null, fresh = false, complete = false;
-      let errorSince = null, lastReadAt = 0, fbLogged = false;
+      let errorSince = null, lastReadAt = 0, fbLogged = false, proseSince = null;
       while (Date.now() < deadline) {
         await waitForChange();
         if (cancelRequested) {
@@ -327,7 +340,25 @@
         const idleStable = idleSince !== null && Date.now() - idleSince > 4000;
         const jsonComplete = msg.response_format === 'json_code_block' && !extracted.error && isCompleteJson(text);
         if (text && settled && (idleStable || jsonComplete)) {
-          if (extracted.error) throw new Error(extracted.error);
+          if (extracted.error) {
+            // The reply SETTLED with no parseable protocol JSON: the webpage
+            // AI answered in prose (or broke the format). A tool call is
+            // impossible without the JSON - but the answer IS real and
+            // visible on the page. After a short grace (the model may still
+            // emit the block), deliver the prose as the final answer instead
+            // of dead-ending the task for 480s while the user stares at an
+            // answer that never reaches the client (live report 2026-09-30).
+            proseSince = idleStable ? (proseSince === null ? Date.now() : proseSince) : null;
+            if (proseSince !== null && Date.now() - proseSince >= 10000) {
+              if (P.findContinueBtn?.()) throw new Error('Reply is truncated; continue on webpage before requesting another task');
+              if (P.turnHalted?.(result.item)) throw new Error('Webpage generation was stopped');
+              diagnostics.finalReason = 'prose_no_protocol_json';
+              diagnostics.extraction = 'prose_fallback';
+              complete = true;
+              break;
+            }
+            continue;
+          }
           if (P.findContinueBtn?.()) throw new Error('Reply is truncated; continue on webpage before requesting another task');
           if (P.turnHalted?.(result.item)) throw new Error('Webpage generation was stopped');
           complete = true;
@@ -363,7 +394,7 @@
       key = P.conversationKey();
       busy = false;
       activeJob = null;
-      notify({type:'result', job_id:msg.job_id, session_id:sessionId,
+      void notifyCritical({type:'result', job_id:msg.job_id, session_id:sessionId,
               text:text.slice(0, 250000), error:failure, diagnostics:{...diagnostics, endedHidden:document.hidden}});
       announce();
     }

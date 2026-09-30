@@ -78,7 +78,15 @@ class FakeWeb:
         if self.waiting:
             return {'status': 'running', **({'build': self.build} if self.build else {})}
         if self.mode == 'bad':
-            return {'status': 'completed', 'result': 'please execute some code without JSON',
+            # A JSON-like answer that is truncated/corrupted: still held to
+            # the strict protocol (never mis-delivered as prose).
+            return {'status': 'completed', 'result': '{"request_id":"r","content":"x","tool_calls":',
+                    'diagnostics': self.diagnostics,
+                    **({'build': self.build} if self.build else {})}
+        if self.mode == 'prose':
+            # The webpage AI answered in plain text (no protocol JSON block),
+            # e.g. explaining an MCP connection problem.
+            return {'status': 'completed', 'result': 'MCP 服务暂时无法连接，先说明现状（纯文本，无 JSON 协议块）。',
                     'diagnostics': self.diagnostics,
                     **({'build': self.build} if self.build else {})}
         return {'status': 'completed', 'result': self.result, 'diagnostics': self.diagnostics,
@@ -229,6 +237,20 @@ class EndpointTests(unittest.IsolatedAsyncioTestCase):
         r = await self.post()
         self.assertEqual(r.status_code, 502)
         self.assertIn('Extraction source=unverified_or_old_extension', r.text)
+
+    async def test_prose_answer_reaches_client_as_final_content(self):
+        # Live report 2026-09-30: the webpage AI answered in prose (no
+        # protocol JSON block). That content must reach the client as a
+        # final answer - not dead-end the request while the user sees the
+        # answer on the page but nothing in the client.
+        self.web.mode = 'prose'
+        r = await self.post()
+        self.assertEqual(r.status_code, 200, r.text)
+        choice = r.json()['choices'][0]
+        self.assertEqual(choice['finish_reason'], 'stop')
+        self.assertIn('纯文本', choice['message']['content'])
+        self.assertNotIn('tool_calls', choice['message'])
+        self.assertEqual(len(self.web.sent), 1)
 
     async def test_stream_error_never_emits_success(self):
         self.web.failure = 'Login expired'
@@ -842,13 +864,22 @@ class EditOutputDiagnosticsTests(unittest.TestCase):
                     self.parse(calls, **kwargs)
                 self.assertEqual(caught.exception.code, code)
 
-    def test_prose_partial_and_duplicate_json_remain_rejected(self):
+    def test_json_like_garbage_remain_rejected(self):
         valid = json.dumps({'request_id':'r','content':'ok','tool_calls':[]})
-        for text in ['Here is the edit: '+valid, valid+valid, valid[:-1],
+        for text in [valid+valid, valid[:-1],
                      '{"request_id":"r","request_id":"r","content":"ok","tool_calls":[]}']:
             with self.assertRaises(endpoint.AdapterError) as caught:
                 endpoint.parse_answer(text, 'r', self.body, self.catalog)
             self.assertEqual(caught.exception.code, 'web_output_json')
+
+    def test_prose_with_embedded_json_is_delivered_as_content_never_executed(self):
+        # Prose (even containing a full JSON object) is delivered as plain
+        # final content - it is NEVER parsed for a tool call.
+        valid = json.dumps({'request_id': 'r', 'content': 'ok', 'tool_calls': []})
+        out = endpoint.parse_answer('Here is the edit: ' + valid, 'r', self.body, self.catalog)
+        self.assertEqual(out['choices'][0]['finish_reason'], 'stop')
+        self.assertEqual(out['choices'][0]['message']['content'], 'Here is the edit: ' + valid)
+        self.assertNotIn('tool_calls', out['choices'][0]['message'])
 
     def test_unescaped_edit_newline_reports_position_without_payload(self):
         text = '{"request_id":"r","content":"PRIVATE\nCODE","tool_calls":[]}'
