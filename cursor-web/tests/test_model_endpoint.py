@@ -356,21 +356,30 @@ class EndpointTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(self.web.sent), 4)  # every attempt reached exchange
         self.web.waiting = False
 
-    async def test_bridge_busy_error_surfaces_actionably(self):
-        # User incident 2026-09-29: the webpage was STILL answering when a
-        # resend hit the bridge's in-flight job - the raw machine-facing
-        # "Session busy; query the existing task instead of resending"
-        # reached the user verbatim and dead-ended. The endpoint must
-        # surface the (now actionable) bridge message instead of failing
-        # with an opaque error.
+    async def test_bridge_busy_is_queued_not_errored(self):
+        # Live report 2026-09-30 (busy at 26s, fifth time): a send that hits
+        # an in-flight job whose endpoint task is GONE (died in transit while
+        # the page kept working) used to dead-end with the bridge's busy
+        # error verbatim. Now it QUEUES: the bridge refuses a busy send
+        # without creating a job, so the retried send is the first and only
+        # execution of this prompt. The stream says so visibly, and the
+        # answer arrives once the page frees up.
         self.web.send_error = ('网页仍在回答上一个任务（abcd1234…，已运行 12 秒；最长约 9 分钟）。'
                                '请等网页回答完成后再发送——打开专用页可直接查看进度；重发会持续失败直到该任务结束')
-        r = await self.post()
-        self.assertEqual(r.status_code, 502, r.text)
-        self.assertIn('仍在回答上一个任务', r.text)
-        self.assertIn('已运行 12 秒', r.text)
-        self.assertEqual(self.web.sent, [])  # nothing re-sent into the page
-        self.web.send_error = None
+        r_task = asyncio.create_task(self.post(stream=True))
+        try:
+            await asyncio.sleep(0.05)  # the task hits the busy send and queues
+            self.web.send_error = None  # the previous job finishes: page free
+            r = await asyncio.wait_for(r_task, 15)
+            self.assertEqual(r.status_code, 200, r.text)
+            data = [line[6:] for line in r.text.splitlines() if line.startswith('data: ')]
+            self.assertIn('排队', json.loads(data[0])['choices'][0]['delta']['content'])
+            self.assertEqual(data[-1], '[DONE]')
+            self.assertEqual(len(self.web.sent), 1)  # sent exactly once, after the page freed
+        finally:
+            self.web.send_error = None
+            if not r_task.done():
+                r_task.cancel()
 
     async def test_new_content_is_queued_behind_running_task(self):
         # User request (2026-09-30): a NEW message arriving while the page is

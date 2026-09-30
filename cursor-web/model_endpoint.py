@@ -927,7 +927,36 @@ def create_app(api_key, session, rpc=bridge_rpc, poll_interval=1, heartbeat=10, 
             bound = next((s for s in listing.get('sessions', []) if s.get('id') == sid()), None)
             if bound is None:
                 raise AdapterError('Bound webpage session unavailable. Re-list sessions and restart endpoint with an explicit session ID.', 409)
-            raw, diagnostics = await exchange(prompt, fingerprint, request_id)
+            # A send can be refused 'busy' even when NO endpoint task is
+            # tracking the in-flight job: the previous task died in transit
+            # (a transport blip) while the page kept working, or the page is
+            # still finishing after its task gave up. The old code surfaced
+            # that bridge error verbatim to the user - a dead-end they keep
+            # hitting (live reports 2026-09-30: busy at 26s on a live job).
+            # Now: QUEUE the send - the bridge refuses a busy send WITHOUT
+            # creating a job, so retrying the send is safe (the prompt can
+            # never be typed twice). The page's 540s sweep guarantees the
+            # session frees up by then.
+            send_deadline = time.monotonic() + 540
+            self_t = asyncio.current_task()
+            queued = False
+            while True:
+                try:
+                    raw, diagnostics = await exchange(prompt, fingerprint, request_id)
+                    break
+                except AdapterError as exc:
+                    if queued and time.monotonic() >= send_deadline:
+                        raise
+                    if '仍在回答上一个任务' not in str(exc):
+                        raise
+                    if not queued:
+                        queued = True
+                        if self_t is not None:
+                            self_t.is_queued = True  # stream() shows the visible queued line
+                        print(f'[{request_id[:8]}] page busy with an untracked in-flight job - this send queues until the page frees up', flush=True)
+                    await asyncio.sleep(3)
+            if queued and self_t is not None:
+                self_t.is_queued = False  # the send landed: the job is live now
             try:
                 return parse_with_diagnostics(raw, request_id, body, catalog, diagnostics)
             except AdapterError as exc:

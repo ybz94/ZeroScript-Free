@@ -30,8 +30,8 @@ BRIDGE_PORT = int(os.getenv('CURSOR_WEB_PORT', '17614'))
 ENDPOINT_PORT = int(os.getenv('CURSOR_WEB_ENDPOINT_PORT', '17615'))
 UI_PORT = int(os.getenv('CURSOR_WEB_UI_PORT', '17616'))
 MODEL = 'web-ai'
-VERSION = '0.4.32'
-BUILD_ID = 'b21'  # printed in the banner: proves which build is actually running
+VERSION = '0.4.33'
+BUILD_ID = 'b22'  # printed in the banner: proves which build is actually running
 
 SITES = [
     ('deepseek', 'DeepSeek', 'https://chat.deepseek.com'),
@@ -68,7 +68,7 @@ def download_file(url, dst, progress_cb=None):
     import urllib.request
     dst = Path(dst)
     tmp = dst.with_suffix(dst.suffix + '.part')
-    req = urllib.request.Request(url, headers={'User-Agent': 'CursorWebAssistant/0.4.32'})
+    req = urllib.request.Request(url, headers={'User-Agent': 'CursorWebAssistant/0.4.33'})
     with urllib.request.urlopen(req, timeout=30) as resp:
         total = int(resp.headers.get('Content-Length') or 0)
         if progress_cb:
@@ -953,7 +953,12 @@ def run_with_window(center, ui_url, display='auto'):
         print(f'  \u7a97\u53e3\u5f15\u64ce: pywebview {webview.__version__} (edgechromium/WebView2)', flush=True)
     except Exception:
         pass
-    win = webview.create_window('Cursor Web Assistant', ui_url,
+    # The running build is shown in the TITLE BAR (not just the startup
+    # banner): when a field report says "still broken", the first question is
+    # which build is actually running - an old program instance left open
+    # after a rebuild would otherwise be invisible (live 2026-09-30: six
+    # reports traced to builds that were never pulled/rebuilt/reloaded).
+    win = webview.create_window(f'Cursor Web Assistant  {VERSION} ({BUILD_ID})', ui_url,
                                 width=1024, height=800, min_size=(860, 620))
 
     if display == 'auto':

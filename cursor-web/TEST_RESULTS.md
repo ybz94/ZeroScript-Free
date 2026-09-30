@@ -463,3 +463,11 @@ git diff --check
   - background.test.cjs +2：无路由无会话的结果必转发；唤醒竞态（路由未恢复）下结果经 outbox 重连冲刷送达。
   - test_bridge.py：`test_disconnect_marks_pending_error` 替换为 `test_disconnect_keeps_job_running_and_reconnect_delivers_answer`（断连不判死 → 重连认领 → 回答送达 → 200）+ `test_reconnect_does_not_adopt_a_foreign_pages_job`（别的页面偷不走任务）；`test_cancel_after_browser_disconnect_frees_the_job` 按新契约改写（断连后任务存活，取消立即释放）。
 - **版本号**：扩展 0.4.28→**0.4.29**（background.js 有改动；BUILD_ID 20260929.7→20260929.8），程序 0.4.31→**0.4.32**（构建 b21）。全量 **195** 项：112 Python + 83 JavaScript，0 失败。
+
+## 0.4.33 busy 缝隙堵死：任何撞上在跑任务的发送都排队（构建 b22，2026-09-30）
+
+- **背景**：实机再报"busy 26 秒"（任务 490bc640）。逻辑推论：若真在跑 b19+，同内容重发自动接管、不同内容自动排队，**不可能**出现该报错 → 要么在跑 b18（未重建），要么命中最新版的一个真实缝隙：**上一个任务的端点任务已死（传输中断等），但网页任务还在跑**——此时端点缓存里没有活任务可排队，新发送直接撞上 bridge 的 busy 报错。
+- **修复**（model_endpoint.py complete()）：发送被 bridge 以"仍在回答上一个任务"拒绝时**不再把错误抛给用户**，改为排队重试发送（每 3 秒，最长 540 秒——bridge 的 540 秒清扫保证届时会话必空）。bridge 在 busy 时**不创建任务**，所以重试发送绝不会把提示词写两遍。排队中 stream 立即显示 ⏳ 排队行。至此三种在跑状态全覆盖：端点任务活着→排在其后（b19）；端点任务死了但网页在跑→本条排队；相同内容→自动接管（b18）。**"busy N 秒"对用户不再可达。**
+- **版本号显示**：窗口标题栏现在显示 `Cursor Web Assistant  0.4.33 (b22)`——正在跑哪个构建一眼可见（多次实机报告根因是"旧程序实例没关/没重建"）。
+- **测试**：`test_bridge_busy_error_surfaces_actionably` 按新契约重写为 `test_bridge_busy_is_queued_not_errored`（busy→排队行→页面释放→恰好发送一次→200 交付；已验证回退旧代码必失败）。
+- **版本号**：仅后端改动——扩展保持 0.4.29/20260929.8 不变（**用户只需重建 exe，无需动扩展**），程序 0.4.32→**0.4.33**（构建 b22）。全量 **195** 项：112 Python + 83 JavaScript，0 失败。
